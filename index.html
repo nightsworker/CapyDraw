@@ -396,6 +396,77 @@
       return output;
     }
 
+    function buildRenameMap(oldList, newList) {
+      const oldSet = new Set(oldList);
+      const newSet = new Set(newList);
+      const renameMap = new Map();
+      const count = Math.min(oldList.length, newList.length);
+
+      for (let i = 0; i < count; i++) {
+        const oldName = oldList[i];
+        const newName = newList[i];
+
+        if (!oldName || !newName || oldName === newName) continue;
+
+        // 只有在「同一行被改名」時才視為改名：
+        // 1. 舊名字已經不在新名單裡
+        // 2. 新名字原本不是舊名單裡的人
+        // 這樣可以避免單純插入、刪除或排序時被誤判成改名。
+        if (!newSet.has(oldName) && !oldSet.has(newName)) {
+          renameMap.set(oldName, newName);
+        }
+      }
+
+      return renameMap;
+    }
+
+    function mergeRenameMaps(...maps) {
+      const merged = new Map();
+      for (const map of maps) {
+        for (const [oldName, newName] of map.entries()) {
+          merged.set(oldName, newName);
+        }
+      }
+      return merged;
+    }
+
+    function applyRenameMapToName(name, renameMap) {
+      const normalized = standardizeName(name);
+      return renameMap.get(normalized) || normalized;
+    }
+
+    function applyRenameMapToList(list, renameMap) {
+      return uniqueStrings((list || []).map(name => applyRenameMapToName(name, renameMap)));
+    }
+
+    function applyRenameMapToRecord(record, renameMap) {
+      if (!record || typeof record !== "object") return record;
+      const consumed = record.consumed || {};
+      return normalizeRecord({
+        ...record,
+        captain: applyRenameMapToName(record.captain, renameMap),
+        guardian: applyRenameMapToName(record.guardian, renameMap),
+        cabin4: applyRenameMapToList(record.cabin4 || [], renameMap),
+        consumed: {
+          captain: applyRenameMapToList(consumed.captain || [], renameMap),
+          guardian: applyRenameMapToList(consumed.guardian || [], renameMap),
+          cabin4: applyRenameMapToList(consumed.cabin4 || [], renameMap)
+        }
+      });
+    }
+
+    function applyRenameMapToState(working, renameMap) {
+      if (!renameMap || renameMap.size === 0) return;
+
+      working.captainPool = applyRenameMapToList(working.captainPool, renameMap);
+      working.guardianPool = applyRenameMapToList(working.guardianPool, renameMap);
+      working.cabin4Pool = applyRenameMapToList(working.cabin4Pool, renameMap);
+      working.history = Array.isArray(working.history)
+        ? working.history.map(record => applyRenameMapToRecord(record, renameMap)).filter(Boolean)
+        : [];
+      working.presidentName = applyRenameMapToName(working.presidentName, renameMap) || working.presidentName;
+    }
+
     function normalizeState(input) {
       const parsed = input && typeof input === "object" ? input : {};
       const guildMembers = uniqueStrings(parsed.guildMembers || []);
@@ -927,13 +998,21 @@
           const nextHighWar = parseTextarea($("highWarMembersInput").value);
           const nextPresident = standardizeName($("presidentName").value) || "會長00 - 公會會長";
 
+          const guildRenameMap = buildRenameMap(oldGuild, nextGuild);
+          const highWarRenameMap = buildRenameMap(oldHighWar, nextHighWar);
+          const renameMap = mergeRenameMaps(guildRenameMap, highWarRenameMap);
+          applyRenameMapToState(working, renameMap);
+
+          const oldGuildAfterRename = applyRenameMapToList(oldGuild, guildRenameMap);
+          const oldHighWarAfterRename = applyRenameMapToList(oldHighWar, highWarRenameMap);
+
           working.guildMembers = nextGuild;
           working.highWarMembers = nextHighWar;
           working.presidentName = nextPresident;
 
-          addNewNamesToPool(working, "captainPool", oldGuild, nextGuild);
-          addNewNamesToPool(working, "cabin4Pool", oldGuild, nextGuild);
-          addNewNamesToPool(working, "guardianPool", oldHighWar, nextHighWar);
+          addNewNamesToPool(working, "captainPool", oldGuildAfterRename, nextGuild);
+          addNewNamesToPool(working, "cabin4Pool", oldGuildAfterRename, nextGuild);
+          addNewNamesToPool(working, "guardianPool", oldHighWarAfterRename, nextHighWar);
 
           if (working.captainPool.length === 0 && nextGuild.length > 0) working.captainPool = shuffle(nextGuild);
           if (working.cabin4Pool.length === 0 && nextGuild.length > 0) working.cabin4Pool = shuffle(nextGuild);
