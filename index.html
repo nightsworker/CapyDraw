@@ -31,7 +31,7 @@
         radial-gradient(circle at top left, rgba(0, 172, 199, 0.22), transparent 34%),
         linear-gradient(135deg, #061017 0%, #0b1b24 50%, #08131a 100%);
     }
-    button, textarea, input { font-family: inherit; }
+    button, textarea, input, select { font-family: inherit; }
     .app { width: min(1240px, calc(100% - 28px)); margin: 0 auto; padding: 24px 0 44px; }
     .hero { display: grid; grid-template-columns: 1.45fr 1fr; gap: 18px; align-items: stretch; margin-bottom: 18px; }
     .card, .title-card, .result-card {
@@ -60,11 +60,16 @@
     .result-card { padding: 22px; display: flex; flex-direction: column; gap: 14px; }
     .draw-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
     label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 7px; }
-    input[type="date"], input[type="text"], input[type="password"], textarea {
+    input[type="date"], input[type="text"], input[type="password"], textarea, select {
       width: 100%; background: rgba(4, 12, 18, 0.72); border: 1px solid rgba(156, 183, 193, 0.25);
       color: var(--text); border-radius: 12px; outline: none; transition: border-color 0.16s, box-shadow 0.16s;
     }
-    input[type="date"], input[type="text"], input[type="password"] { height: 42px; padding: 0 12px; }
+    input[type="date"], input[type="text"], input[type="password"], select { height: 42px; padding: 0 12px; }
+    select { cursor: pointer; }
+    select:disabled { opacity: 0.72; cursor: not-allowed; }
+    .pool-controls { margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(156, 183, 193, 0.14); display: grid; gap: 10px; }
+    .pool-control-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+    .pool-control-row label { margin-bottom: 6px; }
     textarea { min-height: 260px; padding: 12px; resize: vertical; line-height: 1.55; font-family: var(--mono); font-size: 14px; }
     input:focus, textarea:focus { border-color: rgba(66, 217, 239, 0.8); box-shadow: 0 0 0 3px rgba(0, 172, 199, 0.15); }
     textarea:disabled, input:disabled { opacity: 0.72; cursor: not-allowed; }
@@ -238,9 +243,48 @@
         <h2>池子狀態</h2>
         <p class="hint">這裡顯示目前還沒被抽走的人。若某個池子沒有可用人選，系統會自動開新一輪。</p>
         <div class="pool-grid">
-          <div class="pool-box"><h3>船長池 <span class="count" id="captainPoolTitleCount">0 人</span></h3><div class="name-cloud" id="captainPoolView"></div></div>
-          <div class="pool-box"><h3>守護天使池 <span class="count" id="guardianPoolTitleCount">0 人</span></h3><div class="name-cloud" id="guardianPoolView"></div></div>
-          <div class="pool-box"><h3>船艙 4 池 <span class="count" id="cabin4PoolTitleCount">0 人</span></h3><div class="name-cloud" id="cabin4PoolView"></div></div>
+          <div class="pool-box">
+            <h3>船長池 <span class="count" id="captainPoolTitleCount">0 人</span></h3>
+            <div class="name-cloud" id="captainPoolView"></div>
+            <div class="pool-controls">
+              <div class="pool-control-row">
+                <div><label for="captainPoolAddSelect">新增成員到船長池</label><select id="captainPoolAddSelect" class="requires-auth-control"></select></div>
+                <button class="btn small requires-auth" id="captainPoolAddBtn">新增</button>
+              </div>
+              <div class="pool-control-row">
+                <div><label for="captainPoolRemoveSelect">從船長池刪除成員</label><select id="captainPoolRemoveSelect" class="requires-auth-control"></select></div>
+                <button class="btn danger small requires-auth" id="captainPoolRemoveBtn">刪除</button>
+              </div>
+            </div>
+          </div>
+          <div class="pool-box">
+            <h3>守護天使池 <span class="count" id="guardianPoolTitleCount">0 人</span></h3>
+            <div class="name-cloud" id="guardianPoolView"></div>
+            <div class="pool-controls">
+              <div class="pool-control-row">
+                <div><label for="guardianPoolAddSelect">新增成員到守護天使池</label><select id="guardianPoolAddSelect" class="requires-auth-control"></select></div>
+                <button class="btn small requires-auth" id="guardianPoolAddBtn">新增</button>
+              </div>
+              <div class="pool-control-row">
+                <div><label for="guardianPoolRemoveSelect">從守護天使池刪除成員</label><select id="guardianPoolRemoveSelect" class="requires-auth-control"></select></div>
+                <button class="btn danger small requires-auth" id="guardianPoolRemoveBtn">刪除</button>
+              </div>
+            </div>
+          </div>
+          <div class="pool-box">
+            <h3>船艙 4 池 <span class="count" id="cabin4PoolTitleCount">0 人</span></h3>
+            <div class="name-cloud" id="cabin4PoolView"></div>
+            <div class="pool-controls">
+              <div class="pool-control-row">
+                <div><label for="cabin4PoolAddSelect">新增成員到船艙 4 池</label><select id="cabin4PoolAddSelect" class="requires-auth-control"></select></div>
+                <button class="btn small requires-auth" id="cabin4PoolAddBtn">新增</button>
+              </div>
+              <div class="pool-control-row">
+                <div><label for="cabin4PoolRemoveSelect">從船艙 4 池刪除成員</label><select id="cabin4PoolRemoveSelect" class="requires-auth-control"></select></div>
+                <button class="btn danger small requires-auth" id="cabin4PoolRemoveBtn">刪除</button>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="actions"><button class="btn warning requires-auth" id="resetPoolsBtn">重置所有池子</button></div>
       </div>
@@ -532,6 +576,7 @@
     function updateAccessUi() {
       const canWrite = cloudReady && isUnlocked;
       document.querySelectorAll(".requires-auth").forEach(el => { el.disabled = !canWrite; });
+      document.querySelectorAll(".requires-auth-control").forEach(el => { el.disabled = !canWrite; });
       $("guildMembersInput").disabled = !canWrite;
       $("highWarMembersInput").disabled = !canWrite;
       $("presidentName").disabled = !canWrite;
@@ -782,6 +827,49 @@
       el.innerHTML = names.map(name => `<span class="name-token">${escapeHtml(name)}</span>`).join("");
     }
 
+    function getPoolAllowedMembers(poolKey) {
+      return poolKey === "guardianPool" ? state.highWarMembers : state.guildMembers;
+    }
+
+    function setSelectOptions(selectId, names, placeholder) {
+      const select = $(selectId);
+      if (!select) return;
+      const currentValue = select.value;
+      select.innerHTML = "";
+
+      const placeholderOption = document.createElement("option");
+      placeholderOption.value = "";
+      placeholderOption.textContent = placeholder;
+      select.appendChild(placeholderOption);
+
+      names.forEach(name => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        select.appendChild(option);
+      });
+
+      if (names.includes(currentValue)) select.value = currentValue;
+      else select.value = "";
+    }
+
+    function renderPoolControls() {
+      const configs = [
+        { poolKey: "captainPool", addSelect: "captainPoolAddSelect", removeSelect: "captainPoolRemoveSelect" },
+        { poolKey: "guardianPool", addSelect: "guardianPoolAddSelect", removeSelect: "guardianPoolRemoveSelect" },
+        { poolKey: "cabin4Pool", addSelect: "cabin4PoolAddSelect", removeSelect: "cabin4PoolRemoveSelect" }
+      ];
+
+      configs.forEach(config => {
+        const pool = uniqueStrings(state[config.poolKey] || []);
+        const poolSet = new Set(pool);
+        const allowed = getPoolAllowedMembers(config.poolKey);
+        const addCandidates = allowed.filter(name => !poolSet.has(name));
+        setSelectOptions(config.addSelect, addCandidates, addCandidates.length ? "選擇要新增的成員" : "沒有可新增的成員");
+        setSelectOptions(config.removeSelect, pool, pool.length ? "選擇要刪除的成員" : "池子目前是空的");
+      });
+    }
+
     function render() {
       isApplyingRemote = true;
       $("guildMembersInput").value = state.guildMembers.join("\n");
@@ -797,6 +885,7 @@
       renderPoolView("captainPoolView", state.captainPool);
       renderPoolView("guardianPoolView", state.guardianPool);
       renderPoolView("cabin4PoolView", state.cabin4Pool);
+      renderPoolControls();
       const selectedDate = $("drawDate").value || todayString();
       const record = state.history.find(x => x.date === selectedDate) || state.history[0];
       $("currentResult").innerHTML = renderRecord(record);
@@ -843,6 +932,51 @@
             </div>
           </div>`;
       }).join("");
+    }
+
+    async function addSelectedMemberToPool(poolKey, selectId) {
+      const selectedName = standardizeName($(selectId).value);
+      if (!selectedName) {
+        alert("請先選擇要新增的成員。");
+        return;
+      }
+
+      try {
+        await refreshFromCloud();
+        const allowed = getPoolAllowedMembers(poolKey);
+        if (!allowed.includes(selectedName)) throw new Error(`${selectedName} 不在 ${poolLabel(poolKey)} 的可用名單中。`);
+        if (state[poolKey].includes(selectedName)) throw new Error(`${selectedName} 已經在 ${poolLabel(poolKey)} 裡。`);
+
+        state[poolKey].push(selectedName);
+        await saveCloud(state);
+        alert(`已新增 ${selectedName} 到 ${poolLabel(poolKey)}。`);
+      } catch (error) {
+        alert(error.message);
+      }
+    }
+
+    async function removeSelectedMemberFromPool(poolKey, selectId) {
+      const selectedName = standardizeName($(selectId).value);
+      if (!selectedName) {
+        alert("請先選擇要刪除的成員。");
+        return;
+      }
+
+      if (!confirm(`確定要從 ${poolLabel(poolKey)} 刪除「${selectedName}」嗎？
+
+這只會修改目前池子，不會從公會名單或高戰名單刪除。`)) return;
+
+      try {
+        await refreshFromCloud();
+        const beforeCount = state[poolKey].length;
+        state[poolKey] = uniqueStrings(state[poolKey]).filter(name => name !== selectedName);
+        if (state[poolKey].length === beforeCount) throw new Error(`${selectedName} 不在 ${poolLabel(poolKey)} 裡。`);
+
+        await saveCloud(state);
+        alert(`已從 ${poolLabel(poolKey)} 刪除 ${selectedName}。`);
+      } catch (error) {
+        alert(error.message);
+      }
     }
 
     function openDetail(recordId) {
@@ -1294,6 +1428,13 @@
         if (file) importJsonFile(file);
         event.target.value = "";
       });
+
+      $("captainPoolAddBtn").addEventListener("click", () => addSelectedMemberToPool("captainPool", "captainPoolAddSelect"));
+      $("captainPoolRemoveBtn").addEventListener("click", () => removeSelectedMemberFromPool("captainPool", "captainPoolRemoveSelect"));
+      $("guardianPoolAddBtn").addEventListener("click", () => addSelectedMemberToPool("guardianPool", "guardianPoolAddSelect"));
+      $("guardianPoolRemoveBtn").addEventListener("click", () => removeSelectedMemberFromPool("guardianPool", "guardianPoolRemoveSelect"));
+      $("cabin4PoolAddBtn").addEventListener("click", () => addSelectedMemberToPool("cabin4Pool", "cabin4PoolAddSelect"));
+      $("cabin4PoolRemoveBtn").addEventListener("click", () => removeSelectedMemberFromPool("cabin4Pool", "cabin4PoolRemoveSelect"));
 
       $("resetPoolsBtn").addEventListener("click", async () => {
         if (!confirm("確定要重置所有池子嗎？歷史紀錄會保留，但抽籤池會重新洗牌補滿。")) return;
