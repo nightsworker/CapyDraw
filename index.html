@@ -142,7 +142,7 @@
   <main class="app">
     <section class="hero">
       <div class="title-card">
-        <h1 class="brand-title"><span>有嘻布嘻有貓餅 | 公會船抽籤工具</span><span class="creator-badge">製作人：挖系小嗨</span></h1>
+        <h1 class="brand-title"><span>有嘻布嘻有貓餅 | 公會船工具</span><span class="creator-badge">製作人：挖系小嗨</span></h1>
         <p class="subtitle">Firebase 雲端共用版。所有人打開同一個網址時，會讀寫同一份名單、池子狀態與歷史紀錄。</p>
         <div class="cloud-status">
           <span class="status-dot" id="cloudDot"></span>
@@ -968,17 +968,19 @@
       const isPoolSectionRow = poolSectionRows.has(first) && row.length <= 2 && !row.slice(1).some(value => String(value ?? "").trim());
       if (sectionRows.has(first) || isPoolSectionRow) return first === "公會抽籤結果" ? 30 : 26;
 
+      const newline = String.fromCharCode(10);
+      const carriage = String.fromCharCode(13);
       let maxLines = 1;
+
       row.forEach((cell, index) => {
         const text = String(cell ?? "");
         if (!text) return;
         const width = Math.max(columnWidths[index] || 16, 8);
-        const hardLines = text.split(/
-?
-/);
+        const normalizedText = text.split(carriage + newline).join(newline).split(carriage).join(newline);
+        const hardLines = normalizedText.split(newline);
         const visualLines = hardLines.reduce((sum, line) => {
-          const chineseWeightedLength = Array.from(line).reduce((count, ch) => count + (ch.charCodeAt(0) > 255 ? 1.7 : 1), 0);
-          return sum + Math.max(1, Math.ceil(chineseWeightedLength / Math.max(width - 2, 8)));
+          const weightedLength = Array.from(line).reduce((count, ch) => count + (ch.charCodeAt(0) > 255 ? 1.7 : 1), 0);
+          return sum + Math.max(1, Math.ceil(weightedLength / Math.max(width - 2, 8)));
         }, 0);
         maxLines = Math.max(maxLines, visualLines);
       });
