@@ -846,8 +846,7 @@
       const name = standardizeName(input.value);
       if (!name) throw new Error("請輸入要新增的人名。");
       if (!rule.allowedList.includes(name)) {
-        throw new Error(`${rule.label} 只能加入母體名單內的人。
-目前找不到：${name}`);
+        throw new Error(`${rule.label} 只能加入母體名單內的人。目前找不到：${name}`);
       }
       if (state[poolKey].includes(name)) throw new Error(`${name} 已經在 ${rule.label} 裡。`);
       state[poolKey].push(name);
@@ -873,10 +872,12 @@
       const record = state.history.find(x => x.id === recordId);
       if (!record) throw new Error("找不到這筆歷史紀錄，可能已被其他人刪除。");
 
-      const restore = confirm(`確定要刪除 ${record.date} 的歷史紀錄嗎？
-
-按「確定」：刪除歷史，並把該日扣掉的人補回池子。
-按「取消」：只刪除歷史，不還原池子。`);
+      const restore = confirm([
+        `確定要刪除 ${record.date} 的歷史紀錄嗎？`,
+        "",
+        "按「確定」：刪除歷史，並把該日扣掉的人補回池子。",
+        "按「取消」：只刪除歷史，不還原池子。"
+      ].join(String.fromCharCode(10)));
       if (restore) undoRecordConsumption(state, record);
       state.history = state.history.filter(x => x.id !== recordId);
       state = normalizeState(state);
@@ -976,9 +977,11 @@
           assertUnlocked();
           await refreshFromCloud();
           const hasExisting = state.history.some(record => record.date === date);
-          const allowOverwrite = hasExisting ? confirm(`${date} 已經抽過了。要覆蓋這一天的結果嗎？
-
-覆蓋前會先把原本當天扣掉的名單補回池子。`) : false;
+          const allowOverwrite = hasExisting ? confirm([
+            `${date} 已經抽過了。要覆蓋這一天的結果嗎？`,
+            "",
+            "覆蓋前會先把原本當天扣掉的名單補回池子。"
+          ].join(String.fromCharCode(10))) : false;
           if (hasExisting && !allowOverwrite) {
             const old = state.history.find(record => record.date === date);
             $("currentResult").innerHTML = renderRecord(old);
