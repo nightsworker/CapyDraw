@@ -442,8 +442,17 @@
     }
 
     function parseTextarea(value) {
-      return uniqueStrings(String(value || "").split(/[
-,，、;]/).map(x => x.trim()));
+      const text = String(value || "")
+        .replaceAll("，", "
+")
+        .replaceAll("、", "
+")
+        .replaceAll(",", "
+")
+        .replaceAll(";", "
+");
+      return uniqueStrings(text.split("
+").map(x => x.trim()));
     }
 
     function todayString() {
