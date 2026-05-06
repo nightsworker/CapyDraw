@@ -91,6 +91,9 @@
       color: var(--accent2); font-size: 13px; font-weight: 700; margin: 0 6px 8px 0;
     }
     .pill.special { color: #2b1d00; background: linear-gradient(135deg, #ffd166, #ffe49a); border: 0; }
+    .type-cell { white-space: nowrap; min-width: 86px; }
+    .type-cell .pill { margin: 0; white-space: nowrap; line-height: 1; }
+    .history-time-cell { white-space: nowrap; min-width: 150px; }
     .result-line { display: grid; grid-template-columns: 108px 1fr; gap: 10px; padding: 10px 0; border-bottom: 1px solid rgba(156, 183, 193, 0.12); }
     .result-line:last-child { border-bottom: 0; }
     .result-role { color: var(--muted); }
@@ -723,14 +726,14 @@
       }
       $("historyTableWrap").innerHTML = `
         <table>
-          <thead><tr><th>勾選</th><th>日期</th><th>建立時間 / 詳情</th><th>類型</th><th>船長</th><th>守護天使</th><th>船艙 4</th><th>操作</th></tr></thead>
+          <thead><tr><th>勾選</th><th>日期</th><th class="history-time-cell">建立時間 / 詳情</th><th class="type-cell">類型</th><th>船長</th><th>守護天使</th><th>船艙 4</th><th>操作</th></tr></thead>
           <tbody>
             ${list.map(record => `
               <tr>
                 <td><input type="checkbox" class="history-check" data-id="${escapeHtml(record.id)}" ${selectedHistoryIds.has(record.id) ? "checked" : ""}></td>
                 <td>${escapeHtml(record.date)}</td>
-                <td><button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></td>
-                <td>${record.specialDay ? `<span class="pill special">特別日</span>` : `<span class="pill">一般日</span>`}</td>
+                <td class="history-time-cell"><button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></td>
+                <td class="type-cell">${record.specialDay ? `<span class="pill special">特別日</span>` : `<span class="pill">一般日</span>`}</td>
                 <td><strong>${escapeHtml(record.captain)}</strong></td>
                 <td>${escapeHtml(record.guardian)}</td>
                 <td>${(record.cabin4 || []).map(escapeHtml).join("、")}</td>
@@ -877,23 +880,29 @@
     function excelRowsForRecord(record) {
       const rows = [];
 
-      rows.push(["結果"]);
+      rows.push(["公會抽籤結果"]);
+      rows.push([]);
+      rows.push(["基本資訊", ""]);
       rows.push(["日期", record.date]);
       rows.push(["類型", record.specialDay ? "特別日" : "一般日"]);
       rows.push(["建立時間", formatDateTime(record.createdAt)]);
+      rows.push([]);
+
+      rows.push(["抽籤結果", ""]);
+      rows.push(["角色", "成員"]);
       rows.push(["船長", record.captain]);
       rows.push(["守護天使", record.guardian]);
-      rows.push(["船艙 4", ...(record.cabin4 || [])]);
+      (record.cabin4 || []).forEach((name, index) => rows.push([`船艙 4 - ${index + 1}`, name]));
       rows.push([]);
 
-      rows.push(["本次實際扣除"]);
-      rows.push(["池子", "扣除名單"]);
-      rows.push(["船長池", ...(record.consumed?.captain || [])]);
-      rows.push(["守護天使池", ...(record.consumed?.guardian || [])]);
-      rows.push(["船艙 4 池", ...(record.consumed?.cabin4 || [])]);
+      rows.push(["本次實際扣除", ""]);
+      rows.push(["池子", "扣除人數", "扣除名單"]);
+      rows.push(["船長池", (record.consumed?.captain || []).length, (record.consumed?.captain || []).join("、") || "無"]);
+      rows.push(["守護天使池", (record.consumed?.guardian || []).length, (record.consumed?.guardian || []).join("、") || "無"]);
+      rows.push(["船艙 4 池", (record.consumed?.cabin4 || []).length, (record.consumed?.cabin4 || []).join("、") || "無"]);
       rows.push([]);
 
-      rows.push(["快照摘要"]);
+      rows.push(["池子快照摘要", ""]);
       rows.push(["池子", "抽籤前人數", "抽籤後人數", "本次扣除", "本次補入"]);
 
       if (!record.poolSnapshots || !record.poolSnapshots.before || !record.poolSnapshots.after) {
@@ -909,26 +918,60 @@
           poolLabel(key),
           before.length,
           after.length,
-          diff.removed.join("、"),
-          diff.added.join("、")
+          diff.removed.join("、") || "無",
+          diff.added.join("、") || "無"
         ]);
       }
 
       rows.push([]);
-      rows.push(["完整快照"]);
-      rows.push(["池子", "序號", "抽籤前剩餘", "抽籤後剩餘"]);
+      rows.push(["完整快照明細", ""]);
+      rows.push(["說明", "扣除：抽籤前存在、抽籤後不存在。補入：抽籤前不存在、抽籤後存在。"]);
+      rows.push([]);
 
       for (const key of ["captainPool", "guardianPool", "cabin4Pool"]) {
         const before = record.poolSnapshots.before[key] || [];
         const after = record.poolSnapshots.after[key] || [];
+        const beforeSet = new Set(before);
+        const afterSet = new Set(after);
         const max = Math.max(before.length, after.length);
+
+        rows.push([poolLabel(key), ""]);
+        rows.push(["序號", "抽籤前剩餘", "抽籤後剩餘", "前項狀態", "後項狀態"]);
+
         for (let i = 0; i < max; i++) {
-          rows.push([poolLabel(key), i + 1, before[i] || "", after[i] || ""]);
+          const beforeName = before[i] || "";
+          const afterName = after[i] || "";
+          const beforeStatus = beforeName ? (afterSet.has(beforeName) ? "保留" : "扣除") : "";
+          const afterStatus = afterName ? (beforeSet.has(afterName) ? "保留" : "補入") : "";
+          rows.push([i + 1, beforeName, afterName, beforeStatus, afterStatus]);
         }
         rows.push([]);
       }
 
       return rows;
+    }
+
+    function applyWorksheetLayout(ws, rows) {
+      ws["!cols"] = [
+        { wch: 16 },
+        { wch: 34 },
+        { wch: 34 },
+        { wch: 16 },
+        { wch: 42 },
+        { wch: 42 }
+      ];
+      ws["!freeze"] = { xSplit: 0, ySplit: 1 };
+      ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length - 1, 0), c: 4 } }) };
+
+      // SheetJS CE 對樣式支援有限；這裡主要用清楚分段、固定欄寬與垂直明細提升可讀性。
+      const sectionTitles = new Set(["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細", "船長池", "守護天使池", "船艙 4 池"]);
+      rows.forEach((row, r) => {
+        if (!row || !row.length) return;
+        const first = row[0];
+        if (sectionTitles.has(first) && ws[XLSX.utils.encode_cell({ r, c: 0 })]) {
+          ws[XLSX.utils.encode_cell({ r, c: 0 })].s = { font: { bold: true } };
+        }
+      });
     }
 
     function buildExcelFilename(records) {
@@ -961,10 +1004,9 @@
         const wb = XLSX.utils.book_new();
         const used = new Set();
         selected.slice().reverse().forEach(record => {
-          const ws = XLSX.utils.aoa_to_sheet(excelRowsForRecord(record));
-          ws["!cols"] = [
-            { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 42 }, { wch: 42 }, { wch: 80 }, { wch: 80 }
-          ];
+          const rows = excelRowsForRecord(record);
+          const ws = XLSX.utils.aoa_to_sheet(rows);
+          applyWorksheetLayout(ws, rows);
           XLSX.utils.book_append_sheet(wb, ws, safeSheetName(record.date, used));
         });
         XLSX.writeFile(wb, buildExcelFilename(selected));
