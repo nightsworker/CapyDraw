@@ -9,7 +9,6 @@
       --bg: #08131a;
       --panel: #10232e;
       --panel2: #132c39;
-      --line: #275062;
       --text: #e9f7fb;
       --muted: #9cb7c1;
       --accent: #00acc7;
@@ -32,7 +31,7 @@
         radial-gradient(circle at top left, rgba(0, 172, 199, 0.22), transparent 34%),
         linear-gradient(135deg, #061017 0%, #0b1b24 50%, #08131a 100%);
     }
-    button, textarea, input, select { font-family: inherit; }
+    button, textarea, input { font-family: inherit; }
     .app { width: min(1240px, calc(100% - 28px)); margin: 0 auto; padding: 24px 0 44px; }
     .hero { display: grid; grid-template-columns: 1.45fr 1fr; gap: 18px; align-items: stretch; margin-bottom: 18px; }
     .card, .title-card, .result-card {
@@ -42,10 +41,6 @@
       border-radius: var(--radius);
     }
     .title-card { padding: 28px; position: relative; overflow: hidden; }
-    .title-card:after {
-      content: ""; position: absolute; width: 180px; height: 180px; border-radius: 999px;
-      border: 1px solid rgba(66, 217, 239, 0.16); right: -54px; top: -54px;
-    }
     h1 { margin: 0 0 8px; font-size: clamp(28px, 4vw, 42px); letter-spacing: 0.04em; }
     h2, h3 { margin: 0 0 14px; letter-spacing: 0.03em; }
     .subtitle, .hint { color: var(--muted); line-height: 1.7; }
@@ -56,22 +51,6 @@
     .status-dot.ok { background: var(--ok); box-shadow: 0 0 12px rgba(126, 231, 135, 0.65); }
     .status-dot.bad { background: var(--danger); box-shadow: 0 0 12px rgba(255, 107, 107, 0.65); }
     .status-text { color: var(--muted); font-size: 14px; }
-    .auth-box {
-      margin-top: 18px;
-      padding: 14px;
-      border-radius: 16px;
-      background: rgba(4, 12, 18, 0.45);
-      border: 1px solid rgba(156, 183, 193, 0.18);
-    }
-    .auth-box.locked { border-color: rgba(255, 209, 102, 0.38); }
-    .auth-box.unlocked { border-color: rgba(126, 231, 135, 0.38); }
-    .auth-row input { max-width: 280px; }
-    .readonly-banner {
-      margin-top: 10px;
-      color: var(--warning);
-      font-size: 14px;
-      line-height: 1.6;
-    }
     .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 22px; }
     .status-box { background: rgba(8, 19, 26, 0.55); border: 1px solid rgba(156, 183, 193, 0.2); border-radius: 14px; padding: 14px; }
     .status-label { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
@@ -79,13 +58,14 @@
     .result-card { padding: 22px; display: flex; flex-direction: column; gap: 14px; }
     .draw-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
     label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 7px; }
-    input[type="date"], input[type="text"], input[type="password"], select, textarea {
+    input[type="date"], input[type="text"], input[type="password"], textarea {
       width: 100%; background: rgba(4, 12, 18, 0.72); border: 1px solid rgba(156, 183, 193, 0.25);
       color: var(--text); border-radius: 12px; outline: none; transition: border-color 0.16s, box-shadow 0.16s;
     }
-    input[type="date"], input[type="text"], input[type="password"], select { height: 42px; padding: 0 12px; }
+    input[type="date"], input[type="text"], input[type="password"] { height: 42px; padding: 0 12px; }
     textarea { min-height: 260px; padding: 12px; resize: vertical; line-height: 1.55; font-family: var(--mono); font-size: 14px; }
-    input:focus, textarea:focus, select:focus { border-color: rgba(66, 217, 239, 0.8); box-shadow: 0 0 0 3px rgba(0, 172, 199, 0.15); }
+    input:focus, textarea:focus { border-color: rgba(66, 217, 239, 0.8); box-shadow: 0 0 0 3px rgba(0, 172, 199, 0.15); }
+    textarea:disabled, input:disabled { opacity: 0.72; cursor: not-allowed; }
     .btn {
       border: 0; border-radius: 12px; padding: 11px 16px; color: #041116;
       background: linear-gradient(135deg, var(--accent), var(--accent2)); font-weight: 800; cursor: pointer;
@@ -98,7 +78,7 @@
     .btn.danger { color: #fff; background: rgba(255, 107, 107, 0.2); border: 1px solid rgba(255, 107, 107, 0.55); }
     .btn.warning { color: #2b1d00; background: linear-gradient(135deg, #ffd166, #ffe49a); }
     .btn.small { padding: 8px 10px; font-size: 13px; }
-    .btn.icon { padding: 3px 7px; min-width: 0; font-size: 12px; border-radius: 999px; }
+    .link-btn { background: none; border: 0; color: var(--accent2); text-decoration: underline; cursor: pointer; padding: 0; font: inherit; }
     .message { min-height: 24px; color: var(--muted); line-height: 1.6; font-size: 14px; white-space: pre-line; }
     .message.ok { color: var(--ok); }
     .message.warn { color: var(--warning); }
@@ -117,7 +97,6 @@
     .result-name { font-weight: 800; }
     .member-list, .name-cloud { display: flex; flex-wrap: wrap; gap: 8px; }
     .member-chip, .name-token { padding: 7px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12); }
-    .name-token { display: inline-flex; align-items: center; gap: 6px; }
     .tabs { display: flex; gap: 8px; margin: 18px 0; flex-wrap: wrap; }
     .tab-btn { color: var(--muted); background: rgba(16, 35, 46, 0.82); border: 1px solid rgba(156, 183, 193, 0.18); border-radius: 999px; padding: 10px 14px; cursor: pointer; font-weight: 800; }
     .tab-btn.active { color: #041116; background: linear-gradient(135deg, var(--accent), var(--accent2)); border-color: transparent; }
@@ -132,24 +111,25 @@
     th, td { text-align: left; padding: 12px; border-bottom: 1px solid rgba(156, 183, 193, 0.14); vertical-align: top; line-height: 1.55; }
     th { color: var(--accent2); background: rgba(0, 172, 199, 0.08); font-size: 13px; letter-spacing: 0.04em; }
     tr:last-child td { border-bottom: 0; }
-    .history-tools { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; margin-bottom: 14px; align-items: end; }
+    .history-tools { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 10px; margin-bottom: 14px; align-items: end; }
     .pool-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
     .pool-box { background: rgba(4, 12, 18, 0.45); border: 1px solid rgba(156, 183, 193, 0.14); border-radius: 16px; padding: 16px; min-height: 180px; }
     .pool-box h3 { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
-    .pool-tools { margin-top: 14px; display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-    .pool-tools input { min-width: 0; }
     .count { color: var(--accent2); font-family: var(--mono); font-size: 14px; }
     .danger-zone { border-color: rgba(255, 107, 107, 0.34); background: linear-gradient(180deg, rgba(255, 107, 107, 0.06), rgba(19, 44, 57, 0.8)); }
-    .setup-box { background: rgba(255, 209, 102, 0.08); border-color: rgba(255, 209, 102, 0.35); }
     .footer-note { margin-top: 20px; color: var(--muted); font-size: 13px; line-height: 1.7; text-align: center; }
-    code { color: var(--accent2); }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.68); display: none; align-items: center; justify-content: center; padding: 18px; z-index: 99; }
+    .modal-backdrop.open { display: flex; }
+    .modal { width: min(980px, 100%); max-height: 88vh; overflow: auto; background: #0b1b24; border: 1px solid rgba(66,217,239,.35); border-radius: 18px; box-shadow: 0 22px 80px rgba(0,0,0,.55); padding: 20px; }
+    .modal-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 14px; }
+    .compare-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .compare-box { background: rgba(4,12,18,.55); border: 1px solid rgba(156,183,193,.18); border-radius: 14px; padding: 14px; }
     @media (max-width: 920px) {
-      .hero, .grid-2, .pool-grid, .history-tools { grid-template-columns: 1fr; }
+      .hero, .grid-2, .pool-grid, .history-tools, .compare-grid { grid-template-columns: 1fr; }
       .status-grid { grid-template-columns: 1fr; }
       .draw-row { grid-template-columns: 1fr; }
       .result-line { grid-template-columns: 1fr; }
       th, td { font-size: 14px; }
-      .pool-tools { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -163,14 +143,11 @@
           <span class="status-dot" id="cloudDot"></span>
           <span class="status-text" id="cloudStatus">正在初始化 Firebase...</span>
         </div>
-        <div class="auth-box locked" id="authBox">
-          <div class="status-text" id="authStatus">目前為瀏覽模式。輸入管理密碼後才能操作。</div>
-          <div class="auth-row">
-            <input type="password" id="adminPassword" placeholder="請輸入管理密碼" autocomplete="current-password" />
-            <button class="btn small" id="unlockBtn">解鎖操作</button>
-            <button class="btn secondary small" id="lockBtn" style="display:none">鎖定</button>
-          </div>
-          <div class="readonly-banner" id="readonlyBanner">未解鎖時只能瀏覽名單、池子與歷史結果。</div>
+        <div class="auth-row">
+          <input type="password" id="authPassword" placeholder="輸入管理密碼後可操作" style="max-width:260px" />
+          <button class="btn small" id="unlockBtn">解鎖操作</button>
+          <button class="btn secondary small" id="lockBtn">鎖定</button>
+          <span class="message" id="authMessage"></span>
         </div>
         <div class="status-grid">
           <div class="status-box"><div class="status-label">船長池剩餘</div><div class="status-value" id="captainPoolCount">0</div></div>
@@ -204,15 +181,15 @@
       <div class="grid-2">
         <div class="card">
           <h2>表單 1：公會成員列表</h2>
-          <p class="hint">一行一個名字。名單是母體，船長池與船艙 4 池會以這份名單為準。儲存時會自動標準化 <code>名字 - 暱稱</code> 的空白格式。</p>
-          <textarea id="guildMembersInput" class="requires-auth-field" placeholder="例：&#10;會長00 - 公會會長&#10;高戰01 - 龍騎士&#10;成員01 - 阿火"></textarea>
+          <p class="hint">一行一個名字。船長與船艙 4 都會從這份名單建立各自獨立池子。名稱會自動標準化成「名字 - 暱稱」。</p>
+          <textarea id="guildMembersInput"></textarea>
         </div>
         <div class="card">
           <h2>表單 2：高戰成員列表</h2>
-          <p class="hint">請填 6 個人，一行一個名字。會長不需要放在高戰清單。守護天使池會以這份名單為準。</p>
-          <textarea id="highWarMembersInput" class="requires-auth-field" placeholder="例：&#10;高戰01 - 龍騎士&#10;高戰02 - 聖騎士&#10;高戰03 - 狂戰士&#10;高戰04 - 狙擊手&#10;高戰05 - 大法師&#10;高戰06 - 刺客"></textarea>
+          <p class="hint">請填 6 個人，一行一個名字。會長不需要放在高戰清單。</p>
+          <textarea id="highWarMembersInput"></textarea>
           <label for="presidentName" style="margin-top: 14px;">會長名稱（特別日守護天使固定使用）</label>
-          <input type="text" id="presidentName" class="requires-auth-field" placeholder="例：會長00 - 公會會長" />
+          <input type="text" id="presidentName" placeholder="例：Chia - 嘻嘻不嘻嘻" />
         </div>
       </div>
 
@@ -222,8 +199,7 @@
           <li><strong>一般日：</strong>船長從公會成員池抽 1 人；守護天使從高戰池抽 1 人；船艙 4 從公會成員池抽 5 人，並排除當日船長與守護天使。</li>
           <li><strong>三個池子獨立：</strong>船長池、守護天使池、船艙 4 池互不影響，各自抽完才重複。</li>
           <li><strong>特別日：</strong>如果船長抽到高戰名單中的人，守護天使固定為會長，船艙 4 自動塞入剩餘 5 位高戰；當天只扣船長池，其餘池子不扣。</li>
-          <li><strong>名單是母體：</strong>儲存或匯入時，池子會自動依母體名單校正，池子裡不存在於名單的人會被移除。</li>
-          <li><strong>同日覆蓋：</strong>同一日期已有紀錄時，再抽會詢問是否覆蓋；覆蓋前會先把原本當天扣掉的人補回池子。</li>
+          <li><strong>改名保護：</strong>如果同一行只修改名字，系統會視為同一人改名，並同步更新池子與歷史紀錄，不會當成新人補進池子。</li>
         </ol>
         <div class="actions">
           <button class="btn requires-auth" id="saveSettingsBtn">儲存名單到雲端</button>
@@ -236,14 +212,18 @@
     <section id="historyPanel" class="tab-panel">
       <div class="card">
         <h2>歷史紀錄</h2>
+        <p class="hint">勾選想要的日期後，可匯出成 Excel。每個日期會是一個分頁。點擊建立時間可查看該次抽籤前後的池子剩餘比較。</p>
         <div class="history-tools">
           <div>
             <label for="historySearch">搜尋名字 / 日期</label>
             <input type="text" id="historySearch" placeholder="輸入日期或成員名稱" />
           </div>
-          <button class="btn secondary" id="exportCsvBtn">匯出 CSV</button>
+          <button class="btn secondary" id="selectVisibleHistoryBtn">全選目前結果</button>
+          <button class="btn secondary" id="clearHistorySelectionBtn">清除勾選</button>
+          <button class="btn secondary" id="exportCsvBtn">匯出 Excel 分頁</button>
           <button class="btn danger requires-auth" id="clearHistoryBtn">清空歷史</button>
         </div>
+        <div class="message" id="historyMessage"></div>
         <div id="historyTableWrap"></div>
       </div>
     </section>
@@ -251,32 +231,11 @@
     <section id="poolsPanel" class="tab-panel">
       <div class="card">
         <h2>池子狀態</h2>
-        <p class="hint">池子會以名單為母體：船長池與船艙 4 池只能加入公會成員；守護天使池只能加入高戰成員。手動新增時也會自動標準化名字格式。</p>
+        <p class="hint">這裡顯示目前還沒被抽走的人。若某個池子沒有可用人選，系統會自動開新一輪。</p>
         <div class="pool-grid">
-          <div class="pool-box">
-            <h3>船長池 <span class="count" id="captainPoolTitleCount">0 人</span></h3>
-            <div class="name-cloud" id="captainPoolView"></div>
-            <div class="pool-tools">
-              <input type="text" id="captainPoolAddInput" class="requires-auth-field" placeholder="新增船長池成員" />
-              <button class="btn small requires-auth" data-add-pool="captainPool">新增</button>
-            </div>
-          </div>
-          <div class="pool-box">
-            <h3>守護天使池 <span class="count" id="guardianPoolTitleCount">0 人</span></h3>
-            <div class="name-cloud" id="guardianPoolView"></div>
-            <div class="pool-tools">
-              <input type="text" id="guardianPoolAddInput" class="requires-auth-field" placeholder="新增守護天使池成員" />
-              <button class="btn small requires-auth" data-add-pool="guardianPool">新增</button>
-            </div>
-          </div>
-          <div class="pool-box">
-            <h3>船艙 4 池 <span class="count" id="cabin4PoolTitleCount">0 人</span></h3>
-            <div class="name-cloud" id="cabin4PoolView"></div>
-            <div class="pool-tools">
-              <input type="text" id="cabin4PoolAddInput" class="requires-auth-field" placeholder="新增船艙 4 池成員" />
-              <button class="btn small requires-auth" data-add-pool="cabin4Pool">新增</button>
-            </div>
-          </div>
+          <div class="pool-box"><h3>船長池 <span class="count" id="captainPoolTitleCount">0 人</span></h3><div class="name-cloud" id="captainPoolView"></div></div>
+          <div class="pool-box"><h3>守護天使池 <span class="count" id="guardianPoolTitleCount">0 人</span></h3><div class="name-cloud" id="guardianPoolView"></div></div>
+          <div class="pool-box"><h3>船艙 4 池 <span class="count" id="cabin4PoolTitleCount">0 人</span></h3><div class="name-cloud" id="cabin4PoolView"></div></div>
         </div>
         <div class="actions"><button class="btn warning requires-auth" id="resetPoolsBtn">重置所有池子</button></div>
       </div>
@@ -285,7 +244,7 @@
     <section id="toolsPanel" class="tab-panel">
       <div class="card">
         <h2>備份 / 匯入</h2>
-        <p class="hint">雲端資料也建議定期匯出 JSON 備份。匯入 JSON 會標準化名單並直接覆蓋目前 Firebase 雲端資料。</p>
+        <p class="hint">雲端資料也建議定期匯出 JSON 備份。匯入 JSON 會直接覆蓋目前 Firebase 雲端資料。</p>
         <div class="actions">
           <button class="btn" id="exportJsonBtn">匯出 JSON 備份</button>
           <button class="btn secondary requires-auth" id="importJsonBtn">匯入 JSON 備份</button>
@@ -300,17 +259,26 @@
     </section>
 
     <section id="setupPanel" class="tab-panel">
-      <div class="card setup-box">
+      <div class="card">
         <h2>Firebase 設定</h2>
-        <p class="hint">目前資料儲存在 <code>guildDraw/main</code>。注意：頁面密碼只限制前端操作，不等於真正的資料庫安全。如果 Realtime Database Rules 是公開寫入，知道資料庫路徑的人仍可能直接寫入。</p>
+        <p class="hint">目前資料路徑：<code>guildDraw/main</code></p>
+        <p class="hint">目前 databaseURL：<code>https://capydraw-7f7de-default-rtdb.asia-southeast1.firebasedatabase.app/</code></p>
+        <p class="hint">注意：頁面密碼是前端操作鎖。若 Firebase Rules 仍開放寫入，懂技術的人仍可能直接改資料庫。</p>
       </div>
     </section>
 
     <div class="footer-note">雲端版工具：建議部署到 GitHub Pages，對方手機直接開網址即可共用同一份資料。</div>
   </main>
 
-  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+  <div class="modal-backdrop" id="detailModal" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-head">
+        <div><h2 id="detailTitle">抽籤詳情</h2><div class="hint" id="detailSubtitle"></div></div>
+        <button class="btn secondary small" id="closeDetailBtn">關閉</button>
+      </div>
+      <div id="detailBody"></div>
+    </div>
+  </div>
 
   <script>
     window.addEventListener("error", function (event) {
@@ -330,9 +298,6 @@
       console.error("Unhandled rejection:", event.reason);
     });
 
-    const ADMIN_PASSWORD = "ALZMsk12#$";
-    const AUTH_SESSION_KEY = "capydraw-admin-unlocked-v1";
-
     const firebaseConfig = {
       apiKey: "AIzaSyDum6S0M8M-462Q0L2-7kk-FRJQ6_ff4ZY",
       authDomain: "capydraw-7f7de.firebaseapp.com",
@@ -345,11 +310,13 @@
     };
 
     const DB_ROOT = "guildDraw/main";
+    const AUTH_PASSWORD = "ALZMsk12#$";
+    const AUTH_KEY = "capydraw-unlocked-v2";
 
     const defaultState = {
       guildMembers: [],
       highWarMembers: [],
-      presidentName: "會長00 - 公會會長",
+      presidentName: "Chia - 嘻嘻不嘻嘻",
       captainPool: [],
       guardianPool: [],
       cabin4Pool: [],
@@ -360,7 +327,9 @@
     let dbRef = null;
     let cloudReady = false;
     let isApplyingRemote = false;
-    let isUnlocked = localStorage.getItem(AUTH_SESSION_KEY) === "true";
+    let isUnlocked = localStorage.getItem(AUTH_KEY) === "true";
+    let selectedHistoryIds = new Set();
+    let visibleHistoryIds = [];
 
     const $ = (id) => document.getElementById(id);
 
@@ -369,31 +338,93 @@
     }
 
     function standardizeName(value) {
-      let name = String(value || "")
-        .replace(/ /g, " ")
-        .replace(/[－–—―]/g, "-")
-        .replace(/[ 	]+/g, " ")
+      return String(value || "")
+        .replaceAll("\\n", "\n")
+        .replaceAll("\r\n", "\n")
+        .replaceAll("\r", "\n")
+        .replace(/[–—－]/g, "-")
+        .replace(/\s*-\s*/g, " - ")
+        .replace(/[ \t]+/g, " ")
         .trim();
+    }
 
-      const firstDash = name.indexOf("-");
-      if (firstDash >= 0) {
-        const left = name.slice(0, firstDash).trim();
-        const right = name.slice(firstDash + 1).trim();
-        if (left && right) name = `${left} - ${right}`;
-      }
-      return name;
+    function splitNameText(value) {
+      return String(value || "")
+        .replaceAll("\\n", "\n")
+        .replaceAll("\r\n", "\n")
+        .replaceAll("\r", "\n")
+        .split(/[\n,，、;]/)
+        .map(x => standardizeName(x))
+        .filter(Boolean);
     }
 
     function uniqueStrings(list) {
       const seen = new Set();
       const output = [];
-      for (const item of list || []) {
-        const name = standardizeName(item);
-        if (!name || seen.has(name)) continue;
-        seen.add(name);
-        output.push(name);
+      const source = Array.isArray(list) ? list : [list];
+      for (const item of source || []) {
+        const parts = splitNameText(item);
+        for (const name of parts) {
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          output.push(name);
+        }
       }
       return output;
+    }
+
+    function parseTextarea(value) {
+      return uniqueStrings(value);
+    }
+
+    function normalizeRecord(record) {
+      if (!record || typeof record !== "object") return null;
+      const consumed = record.consumed || {};
+      const normalized = {
+        ...record,
+        captain: standardizeName(record.captain),
+        guardian: standardizeName(record.guardian),
+        cabin4: uniqueStrings(record.cabin4 || []),
+        consumed: {
+          captain: uniqueStrings(consumed.captain || []),
+          guardian: uniqueStrings(consumed.guardian || []),
+          cabin4: uniqueStrings(consumed.cabin4 || [])
+        }
+      };
+      if (record.poolSnapshots) normalized.poolSnapshots = normalizePoolSnapshots(record.poolSnapshots);
+      return normalized;
+    }
+
+    function normalizePoolSnapshots(snapshots) {
+      if (!snapshots || typeof snapshots !== "object") return null;
+      return {
+        before: normalizePoolSnapshot(snapshots.before),
+        after: normalizePoolSnapshot(snapshots.after)
+      };
+    }
+
+    function normalizePoolSnapshot(snapshot) {
+      if (!snapshot || typeof snapshot !== "object") return null;
+      return {
+        captainPool: uniqueStrings(snapshot.captainPool || []),
+        guardianPool: uniqueStrings(snapshot.guardianPool || []),
+        cabin4Pool: uniqueStrings(snapshot.cabin4Pool || [])
+      };
+    }
+
+    function normalizeState(input) {
+      const parsed = input && typeof input === "object" ? input : {};
+      return {
+        ...clone(defaultState),
+        ...parsed,
+        guildMembers: uniqueStrings(parsed.guildMembers || []),
+        highWarMembers: uniqueStrings(parsed.highWarMembers || []),
+        presidentName: standardizeName(parsed.presidentName || "Chia - 嘻嘻不嘻嘻") || "Chia - 嘻嘻不嘻嘻",
+        captainPool: uniqueStrings(parsed.captainPool || []),
+        guardianPool: uniqueStrings(parsed.guardianPool || []),
+        cabin4Pool: uniqueStrings(parsed.cabin4Pool || []),
+        history: Array.isArray(parsed.history) ? parsed.history.map(normalizeRecord).filter(Boolean) : []
+      };
     }
 
     function buildRenameMap(oldList, newList) {
@@ -401,125 +432,75 @@
       const newSet = new Set(newList);
       const renameMap = new Map();
       const count = Math.min(oldList.length, newList.length);
-
       for (let i = 0; i < count; i++) {
         const oldName = oldList[i];
         const newName = newList[i];
-
         if (!oldName || !newName || oldName === newName) continue;
-
-        // 只有在「同一行被改名」時才視為改名：
-        // 1. 舊名字已經不在新名單裡
-        // 2. 新名字原本不是舊名單裡的人
-        // 這樣可以避免單純插入、刪除或排序時被誤判成改名。
-        if (!newSet.has(oldName) && !oldSet.has(newName)) {
-          renameMap.set(oldName, newName);
-        }
+        if (!newSet.has(oldName) && !oldSet.has(newName)) renameMap.set(oldName, newName);
       }
-
       return renameMap;
     }
 
     function mergeRenameMaps(...maps) {
       const merged = new Map();
-      for (const map of maps) {
-        for (const [oldName, newName] of map.entries()) {
-          merged.set(oldName, newName);
-        }
-      }
+      for (const map of maps) for (const [oldName, newName] of map.entries()) merged.set(oldName, newName);
       return merged;
     }
 
-    function applyRenameMapToName(name, renameMap) {
+    function renameName(name, renameMap) {
       const normalized = standardizeName(name);
       return renameMap.get(normalized) || normalized;
     }
 
-    function applyRenameMapToList(list, renameMap) {
-      return uniqueStrings((list || []).map(name => applyRenameMapToName(name, renameMap)));
-    }
-
-    function applyRenameMapToRecord(record, renameMap) {
-      if (!record || typeof record !== "object") return record;
-      const consumed = record.consumed || {};
-      return normalizeRecord({
-        ...record,
-        captain: applyRenameMapToName(record.captain, renameMap),
-        guardian: applyRenameMapToName(record.guardian, renameMap),
-        cabin4: applyRenameMapToList(record.cabin4 || [], renameMap),
-        consumed: {
-          captain: applyRenameMapToList(consumed.captain || [], renameMap),
-          guardian: applyRenameMapToList(consumed.guardian || [], renameMap),
-          cabin4: applyRenameMapToList(consumed.cabin4 || [], renameMap)
-        }
-      });
+    function renameList(list, renameMap) {
+      return uniqueStrings((list || []).map(name => renameName(name, renameMap)));
     }
 
     function applyRenameMapToState(working, renameMap) {
       if (!renameMap || renameMap.size === 0) return;
-
-      working.captainPool = applyRenameMapToList(working.captainPool, renameMap);
-      working.guardianPool = applyRenameMapToList(working.guardianPool, renameMap);
-      working.cabin4Pool = applyRenameMapToList(working.cabin4Pool, renameMap);
-      working.history = Array.isArray(working.history)
-        ? working.history.map(record => applyRenameMapToRecord(record, renameMap)).filter(Boolean)
-        : [];
-      working.presidentName = applyRenameMapToName(working.presidentName, renameMap) || working.presidentName;
+      working.captainPool = renameList(working.captainPool, renameMap);
+      working.guardianPool = renameList(working.guardianPool, renameMap);
+      working.cabin4Pool = renameList(working.cabin4Pool, renameMap);
+      working.presidentName = renameName(working.presidentName, renameMap) || working.presidentName;
+      working.history = (working.history || []).map(record => {
+        const renamed = normalizeRecord({
+          ...record,
+          captain: renameName(record.captain, renameMap),
+          guardian: renameName(record.guardian, renameMap),
+          cabin4: renameList(record.cabin4 || [], renameMap),
+          consumed: {
+            captain: renameList(record.consumed?.captain || [], renameMap),
+            guardian: renameList(record.consumed?.guardian || [], renameMap),
+            cabin4: renameList(record.consumed?.cabin4 || [], renameMap)
+          },
+          poolSnapshots: renamePoolSnapshots(record.poolSnapshots, renameMap)
+        });
+        return renamed;
+      }).filter(Boolean);
     }
 
-    function normalizeState(input) {
-      const parsed = input && typeof input === "object" ? input : {};
-      const guildMembers = uniqueStrings(parsed.guildMembers || []);
-      const highWarMembers = uniqueStrings(parsed.highWarMembers || []);
-      const guildSet = new Set(guildMembers);
-      const highWarSet = new Set(highWarMembers);
-
-      const captainPool = uniqueStrings(parsed.captainPool || []).filter(name => guildSet.has(name));
-      const guardianPool = uniqueStrings(parsed.guardianPool || []).filter(name => highWarSet.has(name));
-      const cabin4Pool = uniqueStrings(parsed.cabin4Pool || []).filter(name => guildSet.has(name));
-
-      const history = Array.isArray(parsed.history) ? parsed.history.map(normalizeRecord).filter(Boolean) : [];
-
+    function renamePoolSnapshots(snapshots, renameMap) {
+      if (!snapshots) return snapshots;
       return {
-        ...clone(defaultState),
-        ...parsed,
-        guildMembers,
-        highWarMembers,
-        presidentName: standardizeName(parsed.presidentName || "會長00 - 公會會長") || "會長00 - 公會會長",
-        captainPool,
-        guardianPool,
-        cabin4Pool,
-        history
+        before: snapshots.before ? renamePoolSnapshot(snapshots.before, renameMap) : null,
+        after: snapshots.after ? renamePoolSnapshot(snapshots.after, renameMap) : null
       };
     }
 
-    function normalizeRecord(record) {
-      if (!record || typeof record !== "object") return null;
-      const captain = standardizeName(record.captain);
-      const guardian = standardizeName(record.guardian);
-      const cabin4 = uniqueStrings(record.cabin4 || []);
-      const consumed = record.consumed || {};
+    function renamePoolSnapshot(snapshot, renameMap) {
       return {
-        ...record,
-        captain,
-        guardian,
-        cabin4,
-        consumed: {
-          captain: uniqueStrings(consumed.captain || []),
-          guardian: uniqueStrings(consumed.guardian || []),
-          cabin4: uniqueStrings(consumed.cabin4 || [])
-        }
+        captainPool: renameList(snapshot.captainPool || [], renameMap),
+        guardianPool: renameList(snapshot.guardianPool || [], renameMap),
+        cabin4Pool: renameList(snapshot.cabin4Pool || [], renameMap)
       };
     }
 
-    function parseTextarea(value) {
-      const separator = String.fromCharCode(10);
-      const text = String(value || "")
-        .replaceAll("，", separator)
-        .replaceAll("、", separator)
-        .replaceAll(",", separator)
-        .replaceAll(";", separator);
-      return uniqueStrings(text.split(separator).map(x => x.trim()));
+    function poolSnapshot(working) {
+      return {
+        captainPool: [...(working.captainPool || [])],
+        guardianPool: [...(working.guardianPool || [])],
+        cabin4Pool: [...(working.cabin4Pool || [])]
+      };
     }
 
     function todayString() {
@@ -532,35 +513,28 @@
 
     function setMessage(elementId, text, type = "") {
       const el = $(elementId);
+      if (!el) return;
       el.textContent = text || "";
       el.className = `message ${type}`.trim();
-    }
-
-    function assertUnlocked() {
-      if (!isUnlocked) throw new Error("目前是瀏覽模式，請先輸入管理密碼解鎖操作。");
     }
 
     function setCloudStatus(text, type = "warn") {
       $("cloudStatus").textContent = text;
       $("cloudDot").className = `status-dot ${type === "ok" ? "ok" : type === "bad" ? "bad" : ""}`.trim();
-      updateAuthUi();
+      updateAccessUi();
     }
 
-    function updateAuthUi() {
-      const authBox = $("authBox");
-      authBox.className = `auth-box ${isUnlocked ? "unlocked" : "locked"}`;
-      $("authStatus").textContent = isUnlocked ? "已解鎖：可操作抽籤、名單、池子與歷史紀錄。" : "目前為瀏覽模式。輸入管理密碼後才能操作。";
-      $("readonlyBanner").style.display = isUnlocked ? "none" : "block";
+    function updateAccessUi() {
+      const canWrite = cloudReady && isUnlocked;
+      document.querySelectorAll(".requires-auth").forEach(el => { el.disabled = !canWrite; });
+      $("guildMembersInput").disabled = !canWrite;
+      $("highWarMembersInput").disabled = !canWrite;
+      $("presidentName").disabled = !canWrite;
+      $("authMessage").textContent = isUnlocked ? "已解鎖：可以操作。" : "未解鎖：只能瀏覽。";
+      $("authMessage").className = isUnlocked ? "message ok" : "message warn";
       $("unlockBtn").style.display = isUnlocked ? "none" : "inline-flex";
       $("lockBtn").style.display = isUnlocked ? "inline-flex" : "none";
-      $("adminPassword").style.display = isUnlocked ? "none" : "block";
-
-      document.querySelectorAll(".requires-auth").forEach(btn => {
-        btn.disabled = !cloudReady || !isUnlocked;
-      });
-      document.querySelectorAll(".requires-auth-field").forEach(field => {
-        field.disabled = !isUnlocked;
-      });
+      $("authPassword").style.display = isUnlocked ? "none" : "block";
     }
 
     function randomIndex(max) {
@@ -597,10 +571,8 @@
     }
 
     async function saveCloud(nextState = state) {
-      assertUnlocked();
       if (!cloudReady || !dbRef) throw new Error("Firebase 尚未連線，請確認 Realtime Database 設定。");
-      const normalized = normalizeState(nextState);
-      await dbRef.set(normalized);
+      await dbRef.set(normalizeState(nextState));
     }
 
     async function refreshFromCloud() {
@@ -615,17 +587,12 @@
       const newSet = new Set(newList);
       working[poolKey] = uniqueStrings(working[poolKey]).filter(name => newSet.has(name));
       const actuallyNew = newList.filter(name => !oldSet.has(name));
-      for (const name of actuallyNew) {
-        if (!working[poolKey].includes(name)) working[poolKey].push(name);
-      }
+      for (const name of actuallyNew) if (!working[poolKey].includes(name)) working[poolKey].push(name);
     }
 
     function addBackToPool(working, poolKey, names, allowedList) {
       const allowed = new Set(allowedList);
-      for (const name of names || []) {
-        const normalized = standardizeName(name);
-        if (allowed.has(normalized) && !working[poolKey].includes(normalized)) working[poolKey].push(normalized);
-      }
+      for (const name of names || []) if (allowed.has(name) && !working[poolKey].includes(name)) working[poolKey].push(name);
     }
 
     function undoRecordConsumption(working, record) {
@@ -643,18 +610,14 @@
     function pickOneFromPool(working, poolKey, allowedList, excludeSet = new Set()) {
       const allowed = uniqueStrings(allowedList);
       if (allowed.length === 0) throw new Error("抽籤名單是空的，請先設定名單。");
-
       sanitizePool(working, poolKey, allowed);
       let available = working[poolKey].filter(name => !excludeSet.has(name));
-
       if (working[poolKey].length === 0 || available.length === 0) {
         const missingFromPool = shuffle(allowed.filter(name => !working[poolKey].includes(name)));
         working[poolKey].push(...missingFromPool);
         available = working[poolKey].filter(name => !excludeSet.has(name));
       }
-
       if (available.length === 0) throw new Error("目前沒有可用人選，請檢查排除條件或名單人數。");
-
       const picked = available[randomIndex(available.length)];
       working[poolKey] = working[poolKey].filter(name => name !== picked);
       return picked;
@@ -663,37 +626,31 @@
     function validateBeforeDraw(working) {
       const errors = [];
       const warnings = [];
-
       if (working.guildMembers.length < 7) errors.push("公會成員至少需要 7 人，才能抽出船長、守護天使、5 位船艙 4 並避免同日重複。");
       if (working.highWarMembers.length !== 6) errors.push(`高戰成員請剛好設定 6 人。目前是 ${working.highWarMembers.length} 人。`);
       if (!working.presidentName.trim()) errors.push("請設定會長名稱，特別日時會用作固定守護天使。");
-
       const guildSet = new Set(working.guildMembers);
       const missingHighWar = working.highWarMembers.filter(name => !guildSet.has(name));
       if (missingHighWar.length > 0) warnings.push(`提醒：以下高戰不在公會成員名單中：${missingHighWar.join("、")}。船長特別日只會在船長抽到公會名單內的高戰時觸發。`);
-
       return { errors, warnings };
     }
 
     function buildDrawResult(working, date, allowOverwrite) {
       const { errors, warnings } = validateBeforeDraw(working);
       if (errors.length > 0) throw new Error(errors.join("\n"));
-
       const existingIndex = working.history.findIndex(record => record.date === date);
       if (existingIndex >= 0) {
         if (!allowOverwrite) return { cancelled: true, record: working.history[existingIndex] };
-        const oldRecord = working.history[existingIndex];
-        undoRecordConsumption(working, oldRecord);
+        undoRecordConsumption(working, working.history[existingIndex]);
         working.history.splice(existingIndex, 1);
       }
-
+      const before = poolSnapshot(working);
       const highWarSet = new Set(working.highWarMembers);
       const captain = pickOneFromPool(working, "captainPool", working.guildMembers);
       const specialDay = highWarSet.has(captain);
       let guardian;
       let cabin4;
       let consumed;
-
       if (specialDay) {
         guardian = working.presidentName.trim();
         cabin4 = working.highWarMembers.filter(name => name !== captain);
@@ -711,7 +668,7 @@
         }
         consumed = { captain: [captain], guardian: [guardian], cabin4: [...cabin4] };
       }
-
+      const after = poolSnapshot(working);
       const record = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         date,
@@ -721,9 +678,9 @@
         captain,
         guardian,
         cabin4,
-        consumed
+        consumed,
+        poolSnapshots: { before, after }
       };
-
       working.history.unshift(record);
       return { cancelled: false, record };
     }
@@ -746,108 +703,159 @@
         <div class="result-line"><div class="result-role">船艙 4</div><div class="member-list">${(record.cabin4 || []).map(name => `<span class="member-chip">${escapeHtml(name)}</span>`).join("")}</div></div>
         ${record.specialDay ? `<div class="message warn">特別日規則：今天只扣船長池；守護天使池與船艙 4 池不扣。</div>` : ""}
         ${warnings}
-        <div class="hint">建立時間：${escapeHtml(formatDateTime(record.createdAt))}</div>
+        <div class="hint">建立時間：<button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></div>
       `;
     }
 
-    function renderHistory() {
+    function filteredHistory() {
       const keyword = $("historySearch").value.trim().toLowerCase();
       let list = [...state.history];
-      if (keyword) {
-        list = list.filter(record => [record.date, record.captain, record.guardian, ...(record.cabin4 || [])].join(" ").toLowerCase().includes(keyword));
-      }
+      if (keyword) list = list.filter(record => [record.date, record.captain, record.guardian, ...(record.cabin4 || [])].join(" ").toLowerCase().includes(keyword));
+      return list;
+    }
+
+    function renderHistory() {
+      const list = filteredHistory();
+      visibleHistoryIds = list.map(record => record.id);
       if (list.length === 0) {
         $("historyTableWrap").innerHTML = `<p class="empty">沒有符合條件的歷史紀錄。</p>`;
         return;
       }
       $("historyTableWrap").innerHTML = `
         <table>
-          <thead><tr><th>日期</th><th>類型</th><th>船長</th><th>守護天使</th><th>船艙 4</th><th>操作</th></tr></thead>
+          <thead><tr><th>勾選</th><th>日期</th><th>建立時間 / 詳情</th><th>類型</th><th>船長</th><th>守護天使</th><th>船艙 4</th><th>操作</th></tr></thead>
           <tbody>
             ${list.map(record => `
               <tr>
+                <td><input type="checkbox" class="history-check" data-id="${escapeHtml(record.id)}" ${selectedHistoryIds.has(record.id) ? "checked" : ""}></td>
                 <td>${escapeHtml(record.date)}</td>
+                <td><button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></td>
                 <td>${record.specialDay ? `<span class="pill special">特別日</span>` : `<span class="pill">一般日</span>`}</td>
                 <td><strong>${escapeHtml(record.captain)}</strong></td>
                 <td>${escapeHtml(record.guardian)}</td>
                 <td>${(record.cabin4 || []).map(escapeHtml).join("、")}</td>
-                <td>
-                  <button class="btn secondary small" data-show-record="${escapeHtml(record.id)}">查看</button>
-                  <button class="btn danger small requires-auth" data-delete-record="${escapeHtml(record.id)}">刪除</button>
-                </td>
+                <td><button class="btn secondary small" data-show-record="${escapeHtml(record.id)}">查看</button></td>
               </tr>`).join("")}
           </tbody>
         </table>`;
+      bindHistoryEvents();
+    }
 
+    function bindHistoryEvents() {
+      document.querySelectorAll(".history-check").forEach(chk => {
+        chk.addEventListener("change", () => {
+          if (chk.checked) selectedHistoryIds.add(chk.dataset.id);
+          else selectedHistoryIds.delete(chk.dataset.id);
+          setMessage("historyMessage", `已勾選 ${selectedHistoryIds.size} 筆。`, selectedHistoryIds.size ? "ok" : "");
+        });
+      });
       document.querySelectorAll("[data-show-record]").forEach(btn => {
         btn.addEventListener("click", () => {
           const record = state.history.find(x => x.id === btn.dataset.showRecord);
           $("currentResult").innerHTML = renderRecord(record);
+          bindDetailButtons();
           $("drawDate").value = record.date;
           setMessage("drawMessage", `已顯示 ${record.date} 的歷史結果。`, "ok");
           window.scrollTo({ top: 0, behavior: "smooth" });
         });
       });
-
-      document.querySelectorAll("[data-delete-record]").forEach(btn => {
-        btn.addEventListener("click", async () => {
-          try {
-            assertUnlocked();
-            await deleteHistoryRecord(btn.dataset.deleteRecord);
-          } catch (error) {
-            alert(error.message);
-          }
-        });
-      });
-      updateAuthUi();
+      bindDetailButtons();
     }
 
-    function renderPoolView(elementId, names, poolKey) {
+    function bindDetailButtons() {
+      document.querySelectorAll("[data-detail-id]").forEach(btn => {
+        btn.onclick = () => openDetail(btn.dataset.detailId);
+      });
+    }
+
+    function renderPoolView(elementId, names) {
       const el = $(elementId);
       if (!names || names.length === 0) {
         el.innerHTML = `<span class="empty">目前池子是空的；下次需要抽這個池子時會自動補滿。</span>`;
         return;
       }
-      el.innerHTML = names.map(name => `
-        <span class="name-token">
-          ${escapeHtml(name)}
-          ${isUnlocked ? `<button class="btn danger icon" title="從池子移除" data-remove-pool="${poolKey}" data-remove-name="${escapeHtml(name)}">×</button>` : ""}
-        </span>`).join("");
-
-      document.querySelectorAll(`[data-remove-pool="${poolKey}"]`).forEach(btn => {
-        btn.addEventListener("click", async () => {
-          try {
-            assertUnlocked();
-            await removeFromPool(btn.dataset.removePool, btn.dataset.removeName);
-          } catch (error) {
-            alert(error.message);
-          }
-        });
-      });
+      el.innerHTML = names.map(name => `<span class="name-token">${escapeHtml(name)}</span>`).join("");
     }
 
     function render() {
       isApplyingRemote = true;
       $("guildMembersInput").value = state.guildMembers.join("\n");
       $("highWarMembersInput").value = state.highWarMembers.join("\n");
-      $("presidentName").value = state.presidentName || "會長00 - 公會會長";
+      $("presidentName").value = state.presidentName || "Chia - 嘻嘻不嘻嘻";
       isApplyingRemote = false;
-
       $("captainPoolCount").textContent = state.captainPool.length;
       $("guardianPoolCount").textContent = state.guardianPool.length;
       $("cabin4PoolCount").textContent = state.cabin4Pool.length;
       $("captainPoolTitleCount").textContent = `${state.captainPool.length} 人`;
       $("guardianPoolTitleCount").textContent = `${state.guardianPool.length} 人`;
       $("cabin4PoolTitleCount").textContent = `${state.cabin4Pool.length} 人`;
-      renderPoolView("captainPoolView", state.captainPool, "captainPool");
-      renderPoolView("guardianPoolView", state.guardianPool, "guardianPool");
-      renderPoolView("cabin4PoolView", state.cabin4Pool, "cabin4Pool");
-
+      renderPoolView("captainPoolView", state.captainPool);
+      renderPoolView("guardianPoolView", state.guardianPool);
+      renderPoolView("cabin4PoolView", state.cabin4Pool);
       const selectedDate = $("drawDate").value || todayString();
       const record = state.history.find(x => x.date === selectedDate) || state.history[0];
       $("currentResult").innerHTML = renderRecord(record);
+      bindDetailButtons();
       renderHistory();
-      updateAuthUi();
+      updateAccessUi();
+    }
+
+    function poolDiff(before = [], after = []) {
+      const afterSet = new Set(after);
+      const beforeSet = new Set(before);
+      return {
+        removed: before.filter(name => !afterSet.has(name)),
+        added: after.filter(name => !beforeSet.has(name))
+      };
+    }
+
+    function poolLabel(key) {
+      return key === "captainPool" ? "船長池" : key === "guardianPool" ? "守護天使池" : "船艙 4 池";
+    }
+
+    function chipList(names) {
+      if (!names || names.length === 0) return `<span class="empty">無</span>`;
+      return `<div class="name-cloud">${names.map(name => `<span class="name-token">${escapeHtml(name)}</span>`).join("")}</div>`;
+    }
+
+    function renderPoolCompare(record) {
+      const snapshots = record.poolSnapshots;
+      if (!snapshots || !snapshots.before || !snapshots.after) {
+        return `<p class="empty">這筆紀錄沒有抽籤前後池子快照。之後產生的新抽籤紀錄會自動保存詳細池子比較。</p>`;
+      }
+      return ["captainPool", "guardianPool", "cabin4Pool"].map(key => {
+        const before = snapshots.before[key] || [];
+        const after = snapshots.after[key] || [];
+        const diff = poolDiff(before, after);
+        return `
+          <div class="card" style="box-shadow:none">
+            <h3>${poolLabel(key)} <span class="count">${before.length} → ${after.length} 人</span></h3>
+            <div class="compare-grid">
+              <div class="compare-box"><strong>抽籤前剩餘</strong>${chipList(before)}</div>
+              <div class="compare-box"><strong>抽籤後剩餘</strong>${chipList(after)}</div>
+              <div class="compare-box"><strong>本次扣除</strong>${chipList(diff.removed)}</div>
+              <div class="compare-box"><strong>本次補入</strong>${chipList(diff.added)}</div>
+            </div>
+          </div>`;
+      }).join("");
+    }
+
+    function openDetail(recordId) {
+      const record = state.history.find(x => x.id === recordId);
+      if (!record) return;
+      $("detailTitle").textContent = `${record.date} 抽籤詳情`;
+      $("detailSubtitle").textContent = `建立時間：${formatDateTime(record.createdAt)}｜${record.specialDay ? "特別日" : "一般日"}`;
+      $("detailBody").innerHTML = `
+        ${renderRecord(record)}
+        <h3 style="margin-top:18px">抽籤前後剩餘池子比較</h3>
+        ${renderPoolCompare(record)}
+      `;
+      bindDetailButtons();
+      $("detailModal").classList.add("open");
+    }
+
+    function closeDetail() {
+      $("detailModal").classList.remove("open");
     }
 
     function downloadText(filename, content, mimeType = "text/plain;charset=utf-8") {
@@ -862,29 +870,83 @@
       URL.revokeObjectURL(url);
     }
 
-    function toCsvCell(value) {
-      const text = Array.isArray(value) ? value.join("、") : String(value ?? "");
-      return `"${text.replaceAll('"', '""')}"`;
-    }
-
-    function exportCsv() {
-      const header = ["日期", "類型", "船長", "守護天使", "船艙4", "建立時間"];
-      const rows = state.history.slice().reverse().map(record => [record.date, record.specialDay ? "特別日" : "一般日", record.captain, record.guardian, record.cabin4, formatDateTime(record.createdAt)]);
-      const csv = "﻿" + [header, ...rows].map(row => row.map(toCsvCell).join(",")).join("\n");
-      downloadText(`公會抽籤歷史_${todayString()}.csv`, csv, "text/csv;charset=utf-8");
-    }
-
     function exportJson() {
-      downloadText(`公會抽籤備份_${todayString()}.json`, JSON.stringify(normalizeState(state), null, 2), "application/json;charset=utf-8");
+      downloadText(`公會抽籤備份_${todayString()}.json`, JSON.stringify(state, null, 2), "application/json;charset=utf-8");
+    }
+
+    function excelRowsForRecord(record) {
+      const rows = [];
+      rows.push(["日期", record.date]);
+      rows.push(["類型", record.specialDay ? "特別日" : "一般日"]);
+      rows.push(["建立時間", formatDateTime(record.createdAt)]);
+      rows.push(["船長", record.captain]);
+      rows.push(["守護天使", record.guardian]);
+      rows.push(["船艙 4", ...(record.cabin4 || [])]);
+      rows.push([]);
+      rows.push(["池子", "抽籤前人數", "抽籤後人數", "本次扣除", "本次補入", "抽籤前剩餘", "抽籤後剩餘"]);
+      if (!record.poolSnapshots || !record.poolSnapshots.before || !record.poolSnapshots.after) {
+        rows.push(["舊紀錄", "", "", "", "", "此紀錄沒有池子快照", ""]);
+        return rows;
+      }
+      for (const key of ["captainPool", "guardianPool", "cabin4Pool"]) {
+        const before = record.poolSnapshots.before[key] || [];
+        const after = record.poolSnapshots.after[key] || [];
+        const diff = poolDiff(before, after);
+        rows.push([
+          poolLabel(key),
+          before.length,
+          after.length,
+          diff.removed.join("、"),
+          diff.added.join("、"),
+          before.join("、"),
+          after.join("、")
+        ]);
+      }
+      return rows;
+    }
+
+    function safeSheetName(name, used) {
+      let base = String(name || "Sheet").replace(/[\\/?*:[\]]/g, "_").slice(0, 31) || "Sheet";
+      let finalName = base;
+      let i = 2;
+      while (used.has(finalName)) {
+        const suffix = `_${i++}`;
+        finalName = base.slice(0, 31 - suffix.length) + suffix;
+      }
+      used.add(finalName);
+      return finalName;
+    }
+
+    async function exportSelectedExcel() {
+      const selected = state.history.filter(record => selectedHistoryIds.has(record.id));
+      if (selected.length === 0) {
+        setMessage("historyMessage", "請先勾選要匯出的日期。", "warn");
+        return;
+      }
+      try {
+        await ensureXlsx();
+        const wb = XLSX.utils.book_new();
+        const used = new Set();
+        selected.slice().reverse().forEach(record => {
+          const ws = XLSX.utils.aoa_to_sheet(excelRowsForRecord(record));
+          ws["!cols"] = [
+            { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 42 }, { wch: 42 }, { wch: 80 }, { wch: 80 }
+          ];
+          XLSX.utils.book_append_sheet(wb, ws, safeSheetName(record.date, used));
+        });
+        XLSX.writeFile(wb, `公會抽籤_${todayString()}.xlsx`);
+        setMessage("historyMessage", `已匯出 ${selected.length} 個日期，每個日期一個分頁。`, "ok");
+      } catch (error) {
+        setMessage("historyMessage", `Excel 匯出失敗：${error.message}`, "danger");
+      }
     }
 
     async function importJsonFile(file) {
       const reader = new FileReader();
       reader.onload = async () => {
         try {
-          assertUnlocked();
           const imported = normalizeState(JSON.parse(reader.result));
-          if (!confirm("匯入 JSON 會標準化並覆蓋目前 Firebase 雲端資料，確定匯入？")) return;
+          if (!confirm("匯入 JSON 會覆蓋目前 Firebase 雲端資料，確定匯入？")) return;
           state = imported;
           await saveCloud(state);
           alert("匯入完成。");
@@ -893,63 +955,6 @@
         }
       };
       reader.readAsText(file, "utf-8");
-    }
-
-    function getPoolRule(poolKey) {
-      if (poolKey === "guardianPool") {
-        return { allowedList: state.highWarMembers, label: "守護天使池", inputId: "guardianPoolAddInput" };
-      }
-      if (poolKey === "captainPool") {
-        return { allowedList: state.guildMembers, label: "船長池", inputId: "captainPoolAddInput" };
-      }
-      return { allowedList: state.guildMembers, label: "船艙 4 池", inputId: "cabin4PoolAddInput" };
-    }
-
-    async function addToPool(poolKey) {
-      assertUnlocked();
-      await refreshFromCloud();
-      const rule = getPoolRule(poolKey);
-      const input = $(rule.inputId);
-      const name = standardizeName(input.value);
-      if (!name) throw new Error("請輸入要新增的人名。");
-      if (!rule.allowedList.includes(name)) {
-        throw new Error(`${rule.label} 只能加入母體名單內的人。目前找不到：${name}`);
-      }
-      if (state[poolKey].includes(name)) throw new Error(`${name} 已經在 ${rule.label} 裡。`);
-      state[poolKey].push(name);
-      state = normalizeState(state);
-      await saveCloud(state);
-      input.value = "";
-    }
-
-    async function removeFromPool(poolKey, name) {
-      assertUnlocked();
-      await refreshFromCloud();
-      const normalized = standardizeName(name);
-      const rule = getPoolRule(poolKey);
-      if (!confirm(`確定要從${rule.label}移除「${normalized}」嗎？`)) return;
-      state[poolKey] = state[poolKey].filter(x => x !== normalized);
-      state = normalizeState(state);
-      await saveCloud(state);
-    }
-
-    async function deleteHistoryRecord(recordId) {
-      assertUnlocked();
-      await refreshFromCloud();
-      const record = state.history.find(x => x.id === recordId);
-      if (!record) throw new Error("找不到這筆歷史紀錄，可能已被其他人刪除。");
-
-      const restore = confirm([
-        `確定要刪除 ${record.date} 的歷史紀錄嗎？`,
-        "",
-        "按「確定」：刪除歷史，並把該日扣掉的人補回池子。",
-        "按「取消」：只刪除歷史，不還原池子。"
-      ].join(String.fromCharCode(10)));
-      if (restore) undoRecordConsumption(state, record);
-      state.history = state.history.filter(x => x.id !== recordId);
-      state = normalizeState(state);
-      await saveCloud(state);
-      setMessage("drawMessage", `已刪除 ${record.date} 的歷史紀錄。${restore ? "已嘗試還原該日扣除的池子。" : "未還原池子。"}`, restore ? "ok" : "warn");
     }
 
     function initEvents() {
@@ -963,81 +968,66 @@
       });
 
       $("unlockBtn").addEventListener("click", () => {
-        const password = $("adminPassword").value;
-        if (password === ADMIN_PASSWORD) {
+        if ($("authPassword").value === AUTH_PASSWORD) {
+          localStorage.setItem(AUTH_KEY, "true");
           isUnlocked = true;
-          localStorage.setItem(AUTH_SESSION_KEY, "true");
-          $("adminPassword").value = "";
-          updateAuthUi();
-          render();
+          $("authPassword").value = "";
+          updateAccessUi();
         } else {
-          alert("密碼錯誤。");
+          setMessage("authMessage", "密碼錯誤。", "danger");
         }
       });
-
-      $("adminPassword").addEventListener("keydown", event => {
-        if (event.key === "Enter") $("unlockBtn").click();
-      });
-
+      $("authPassword").addEventListener("keydown", e => { if (e.key === "Enter") $("unlockBtn").click(); });
       $("lockBtn").addEventListener("click", () => {
+        localStorage.removeItem(AUTH_KEY);
         isUnlocked = false;
-        localStorage.removeItem(AUTH_SESSION_KEY);
-        updateAuthUi();
-        render();
+        updateAccessUi();
       });
+      $("closeDetailBtn").addEventListener("click", closeDetail);
+      $("detailModal").addEventListener("click", e => { if (e.target.id === "detailModal") closeDetail(); });
 
       $("saveSettingsBtn").addEventListener("click", async () => {
         if (isApplyingRemote) return;
         try {
-          assertUnlocked();
           await refreshFromCloud();
           const working = clone(state);
           const oldGuild = [...working.guildMembers];
           const oldHighWar = [...working.highWarMembers];
           const nextGuild = parseTextarea($("guildMembersInput").value);
           const nextHighWar = parseTextarea($("highWarMembersInput").value);
-          const nextPresident = standardizeName($("presidentName").value) || "會長00 - 公會會長";
-
+          const nextPresident = standardizeName($("presidentName").value) || "Chia - 嘻嘻不嘻嘻";
           const guildRenameMap = buildRenameMap(oldGuild, nextGuild);
           const highWarRenameMap = buildRenameMap(oldHighWar, nextHighWar);
-          const renameMap = mergeRenameMaps(guildRenameMap, highWarRenameMap);
-          applyRenameMapToState(working, renameMap);
-
-          const oldGuildAfterRename = applyRenameMapToList(oldGuild, guildRenameMap);
-          const oldHighWarAfterRename = applyRenameMapToList(oldHighWar, highWarRenameMap);
-
+          applyRenameMapToState(working, mergeRenameMaps(guildRenameMap, highWarRenameMap));
+          const oldGuildAfterRename = renameList(oldGuild, guildRenameMap);
+          const oldHighWarAfterRename = renameList(oldHighWar, highWarRenameMap);
           working.guildMembers = nextGuild;
           working.highWarMembers = nextHighWar;
           working.presidentName = nextPresident;
-
           addNewNamesToPool(working, "captainPool", oldGuildAfterRename, nextGuild);
           addNewNamesToPool(working, "cabin4Pool", oldGuildAfterRename, nextGuild);
           addNewNamesToPool(working, "guardianPool", oldHighWarAfterRename, nextHighWar);
-
           if (working.captainPool.length === 0 && nextGuild.length > 0) working.captainPool = shuffle(nextGuild);
           if (working.cabin4Pool.length === 0 && nextGuild.length > 0) working.cabin4Pool = shuffle(nextGuild);
           if (working.guardianPool.length === 0 && nextHighWar.length > 0) working.guardianPool = shuffle(nextHighWar);
-
           state = normalizeState(working);
           await saveCloud(state);
-
           const warnings = [];
           if (nextHighWar.length !== 6) warnings.push(`高戰名單目前是 ${nextHighWar.length} 人，建議調整為 6 人。`);
           const guildSet = new Set(nextGuild);
           const missing = nextHighWar.filter(name => !guildSet.has(name));
           if (missing.length) warnings.push(`高戰不在公會名單中：${missing.join("、")}。`);
-          setMessage("settingsMessage", warnings.length ? `已標準化並儲存。${warnings.join(" ")}` : "已標準化並儲存到 Firebase 雲端。", warnings.length ? "warn" : "ok");
+          setMessage("settingsMessage", warnings.length ? `已儲存。${warnings.join(" ")}` : "已儲存到 Firebase 雲端。", warnings.length ? "warn" : "ok");
         } catch (error) {
           setMessage("settingsMessage", error.message, "danger");
         }
       });
 
       $("loadSampleBtn").addEventListener("click", () => {
-        try { assertUnlocked(); } catch (error) { alert(error.message); return; }
         if (!confirm("載入範例會覆蓋目前文字框內容，但不會立即儲存到雲端。確定載入？")) return;
         const president = "會長00 - 公會會長";
         const highWar = ["高戰01 - 龍騎士", "高戰02 - 聖騎士", "高戰03 - 狂戰士", "高戰04 - 狙擊手", "高戰05 - 大法師", "高戰06 - 刺客"];
-        const normal = ["成員01 - 阿火", "成員02 - 阿水", "成員03 - 阿木", "成員04 - 阿光", "成員05 - 阿暗", "成員06 - 小狼", "成員07 - 小鹿", "成員08 - 小熊", "成員09 - 小貓", "成員10 - 小狗", "成員11 - 星星", "成員12 - 月月"];
+        const normal = ["成員01 - 阿火", "成員02 - 阿水", "成員03 - 阿木", "成員04 - 阿光", "成員05 - 阿暗", "成員06 - 小狼"];
         $("guildMembersInput").value = [president, ...highWar, ...normal].join("\n");
         $("highWarMembersInput").value = highWar.join("\n");
         $("presidentName").value = president;
@@ -1047,17 +1037,13 @@
       $("drawBtn").addEventListener("click", async () => {
         const date = $("drawDate").value || todayString();
         try {
-          assertUnlocked();
           await refreshFromCloud();
           const hasExisting = state.history.some(record => record.date === date);
-          const allowOverwrite = hasExisting ? confirm([
-            `${date} 已經抽過了。要覆蓋這一天的結果嗎？`,
-            "",
-            "覆蓋前會先把原本當天扣掉的名單補回池子。"
-          ].join(String.fromCharCode(10))) : false;
+          const allowOverwrite = hasExisting ? confirm(`${date} 已經抽過了。要覆蓋這一天的結果嗎？\n\n覆蓋前會先把原本當天扣掉的名單補回池子。`) : false;
           if (hasExisting && !allowOverwrite) {
             const old = state.history.find(record => record.date === date);
             $("currentResult").innerHTML = renderRecord(old);
+            bindDetailButtons();
             setMessage("drawMessage", "已取消覆蓋，保留原本結果。", "warn");
             return;
           }
@@ -1067,6 +1053,7 @@
           state = normalizeState(working);
           await saveCloud(state);
           $("currentResult").innerHTML = renderRecord(result.record);
+          bindDetailButtons();
           setMessage("drawMessage", result.record.specialDay ? "抽籤完成：今天是特別日。" : "抽籤完成。", result.record.specialDay ? "warn" : "ok");
         } catch (error) {
           setMessage("drawMessage", error.message, "danger");
@@ -1077,114 +1064,125 @@
         const date = $("drawDate").value;
         const record = state.history.find(x => x.date === date);
         $("currentResult").innerHTML = renderRecord(record || null);
+        bindDetailButtons();
         setMessage("drawMessage", record ? "這天已經有抽籤結果。" : "");
       });
 
       $("historySearch").addEventListener("input", renderHistory);
-      $("exportCsvBtn").addEventListener("click", exportCsv);
-      $("exportJsonBtn").addEventListener("click", exportJson);
-      $("importJsonBtn").addEventListener("click", () => {
-        try { assertUnlocked(); $("importJsonFile").click(); } catch (error) { alert(error.message); }
+      $("selectVisibleHistoryBtn").addEventListener("click", () => {
+        visibleHistoryIds.forEach(id => selectedHistoryIds.add(id));
+        renderHistory();
+        setMessage("historyMessage", `已勾選 ${selectedHistoryIds.size} 筆。`, "ok");
       });
+      $("clearHistorySelectionBtn").addEventListener("click", () => {
+        selectedHistoryIds.clear();
+        renderHistory();
+        setMessage("historyMessage", "已清除勾選。", "");
+      });
+      $("exportCsvBtn").addEventListener("click", exportSelectedExcel);
+      $("exportJsonBtn").addEventListener("click", exportJson);
+      $("importJsonBtn").addEventListener("click", () => $("importJsonFile").click());
       $("importJsonFile").addEventListener("change", (event) => {
         const file = event.target.files && event.target.files[0];
         if (file) importJsonFile(file);
         event.target.value = "";
       });
 
-      document.querySelectorAll("[data-add-pool]").forEach(btn => {
-        btn.addEventListener("click", async () => {
-          try {
-            await addToPool(btn.dataset.addPool);
-          } catch (error) {
-            alert(error.message);
-          }
-        });
-      });
-
       $("resetPoolsBtn").addEventListener("click", async () => {
         if (!confirm("確定要重置所有池子嗎？歷史紀錄會保留，但抽籤池會重新洗牌補滿。")) return;
         try {
-          assertUnlocked();
           await refreshFromCloud();
           state.captainPool = shuffle(state.guildMembers);
           state.guardianPool = shuffle(state.highWarMembers);
           state.cabin4Pool = shuffle(state.guildMembers);
-          state = normalizeState(state);
           await saveCloud(state);
           alert("池子已重置。");
-        } catch (error) {
-          alert(error.message);
-        }
+        } catch (error) { alert(error.message); }
       });
 
       $("clearHistoryBtn").addEventListener("click", async () => {
         if (!confirm("確定要清空所有歷史紀錄嗎？這不會自動還原池子。")) return;
         try {
-          assertUnlocked();
           await refreshFromCloud();
           state.history = [];
+          selectedHistoryIds.clear();
           await saveCloud(state);
-        } catch (error) {
-          alert(error.message);
-        }
+        } catch (error) { alert(error.message); }
       });
 
       $("wipeAllBtn").addEventListener("click", async () => {
         if (!confirm("確定要清除全部雲端資料嗎？名單、池子、歷史都會消失。")) return;
         try {
-          assertUnlocked();
           state = clone(defaultState);
+          selectedHistoryIds.clear();
           await saveCloud(state);
           alert("全部雲端資料已清除。");
-        } catch (error) {
-          alert(error.message);
-        }
+        } catch (error) { alert(error.message); }
       });
     }
 
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector(`script[src="${src}"]`);
+        if (existing) {
+          if (existing.dataset.loaded === "true") return resolve();
+          existing.addEventListener("load", resolve, { once: true });
+          existing.addEventListener("error", () => reject(new Error(`載入失敗：${src}`)), { once: true });
+          return;
+        }
+        const script = document.createElement("script");
+        const timer = setTimeout(() => { script.remove(); reject(new Error(`載入逾時：${src}`)); }, 15000);
+        script.src = src;
+        script.async = true;
+        script.onload = () => { script.dataset.loaded = "true"; clearTimeout(timer); resolve(); };
+        script.onerror = () => { clearTimeout(timer); reject(new Error(`載入失敗：${src}`)); };
+        document.head.appendChild(script);
+      });
+    }
+
+    async function ensureFirebaseSdk() {
+      if (typeof firebase !== "undefined" && firebase.database) return;
+      setCloudStatus("正在載入 Firebase SDK...", "warn");
+      await loadScript("https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js");
+      await loadScript("https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js");
+      if (typeof firebase === "undefined" || !firebase.database) throw new Error("Firebase SDK 已載入，但 database 模組不存在。");
+    }
+
+    async function ensureXlsx() {
+      if (typeof XLSX !== "undefined") return;
+      setMessage("historyMessage", "正在載入 Excel 匯出套件...", "warn");
+      await loadScript("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js");
+      if (typeof XLSX === "undefined") throw new Error("XLSX 套件載入失敗。");
+    }
+
     async function initFirebase() {
-      setCloudStatus("正在檢查 Firebase SDK...", "warn");
-
-      if (typeof firebase === "undefined") {
+      setCloudStatus("HTML 程式已啟動，正在檢查 Firebase SDK...", "warn");
+      try { await ensureFirebaseSdk(); }
+      catch (error) {
         cloudReady = false;
-        setCloudStatus("Firebase SDK 載入失敗：請確認網路可連到 www.gstatic.com，或不要直接在 ChatGPT Canvas 預覽中測試。", "bad");
+        setCloudStatus("Firebase SDK 載入失敗：" + error.message + "。請確認網路可連到 www.gstatic.com。", "bad");
         render();
         return;
       }
-
-      const hasDatabaseUrl = firebaseConfig.databaseURL && !firebaseConfig.databaseURL.includes("PASTE_DATABASE_URL_HERE");
-      if (!hasDatabaseUrl) {
-        cloudReady = false;
-        setCloudStatus("尚未設定 databaseURL。請先建立 Realtime Database，並把資料庫網址貼到程式裡。", "bad");
-        render();
-        return;
-      }
-
       try {
-        firebase.initializeApp(firebaseConfig);
+        if (!firebase.apps || firebase.apps.length === 0) firebase.initializeApp(firebaseConfig);
         dbRef = firebase.database().ref(DB_ROOT);
         cloudReady = true;
         setCloudStatus("Firebase 已連線，正在讀取雲端資料...", "warn");
-
         dbRef.on("value", async (snapshot) => {
           const val = snapshot.val();
           if (!val) {
             state = clone(defaultState);
-            try {
-              if (isUnlocked) await dbRef.set(normalizeState(state));
-            } catch (error) {
-              console.warn(error);
-            }
-          } else {
-            state = normalizeState(val);
+            await dbRef.set(state);
+            return;
           }
+          state = normalizeState(val);
+          selectedHistoryIds = new Set([...selectedHistoryIds].filter(id => state.history.some(r => r.id === id)));
           setCloudStatus("Firebase 已連線，資料同步中。", "ok");
           render();
         }, (error) => {
           cloudReady = false;
           setCloudStatus(`Firebase 讀取失敗：${error.message}`, "bad");
-          updateAuthUi();
         });
       } catch (error) {
         cloudReady = false;
@@ -1194,16 +1192,14 @@
     }
 
     function bootstrap() {
-      setCloudStatus("HTML 程式已啟動，準備初始化...", "warn");
       $("drawDate").value = todayString();
       initEvents();
       render();
       initFirebase();
     }
 
-    try {
-      bootstrap();
-    } catch (error) {
+    try { bootstrap(); }
+    catch (error) {
       setCloudStatus("啟動失敗：" + error.message, "bad");
       console.error(error);
     }
