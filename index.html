@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>公會每日抽籤工具｜Firebase 雲端版</title>
+  <title>有嘻布嘻有貓餅｜專屬抽籤工具</title>
   <style>
     :root {
       --bg: #08131a;
@@ -42,6 +42,8 @@
     }
     .title-card { padding: 28px; position: relative; overflow: hidden; }
     h1 { margin: 0 0 8px; font-size: clamp(28px, 4vw, 42px); letter-spacing: 0.04em; }
+    .brand-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }
+    .creator-badge { font-size: 13px; color: var(--muted); font-weight: 700; letter-spacing: 0.03em; opacity: 0.86; white-space: nowrap; }
     h2, h3 { margin: 0 0 14px; letter-spacing: 0.03em; }
     .subtitle, .hint { color: var(--muted); line-height: 1.7; }
     .subtitle { margin: 0; max-width: 850px; }
@@ -140,7 +142,7 @@
   <main class="app">
     <section class="hero">
       <div class="title-card">
-        <h1>公會每日抽籤工具</h1>
+        <h1 class="brand-title"><span>有嘻布嘻有貓餅</span><span class="creator-badge">製作人：挖系小嗨</span></h1>
         <p class="subtitle">Firebase 雲端共用版。所有人打開同一個網址時，會讀寫同一份名單、池子狀態與歷史紀錄。</p>
         <div class="cloud-status">
           <span class="status-dot" id="cloudDot"></span>
@@ -952,26 +954,132 @@
     }
 
     function applyWorksheetLayout(ws, rows) {
-      ws["!cols"] = [
-        { wch: 16 },
-        { wch: 34 },
-        { wch: 34 },
-        { wch: 16 },
-        { wch: 42 },
-        { wch: 42 }
-      ];
-      ws["!freeze"] = { xSplit: 0, ySplit: 1 };
-      ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length - 1, 0), c: 4 } }) };
+      const range = XLSX.utils.decode_range(ws["!ref"] || "A1:A1");
+      const lastRow = range.e.r;
+      const lastCol = Math.max(range.e.c, 5);
 
-      // SheetJS CE 對樣式支援有限；這裡主要用清楚分段、固定欄寬與垂直明細提升可讀性。
-      const sectionTitles = new Set(["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細", "船長池", "守護天使池", "船艙 4 池"]);
-      rows.forEach((row, r) => {
-        if (!row || !row.length) return;
+      ws["!cols"] = [
+        { wch: 18 },
+        { wch: 36 },
+        { wch: 36 },
+        { wch: 16 },
+        { wch: 48 },
+        { wch: 48 },
+        { wch: 48 }
+      ];
+
+      ws["!rows"] = rows.map(row => {
+        if (!row || row.length === 0) return { hpt: 8 };
         const first = row[0];
-        if (sectionTitles.has(first) && ws[XLSX.utils.encode_cell({ r, c: 0 })]) {
-          ws[XLSX.utils.encode_cell({ r, c: 0 })].s = { font: { bold: true } };
-        }
+        if (["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細", "船長池", "守護天使池", "船艙 4 池"].includes(first)) return { hpt: 24 };
+        return { hpt: 22 };
       });
+
+      const borderThin = {
+        top: { style: "thin", color: { rgb: "8EAFC0" } },
+        bottom: { style: "thin", color: { rgb: "8EAFC0" } },
+        left: { style: "thin", color: { rgb: "8EAFC0" } },
+        right: { style: "thin", color: { rgb: "8EAFC0" } }
+      };
+
+      const borderMedium = {
+        top: { style: "medium", color: { rgb: "275062" } },
+        bottom: { style: "medium", color: { rgb: "275062" } },
+        left: { style: "medium", color: { rgb: "275062" } },
+        right: { style: "medium", color: { rgb: "275062" } }
+      };
+
+      const baseStyle = {
+        font: { name: "Microsoft JhengHei", sz: 11, color: { rgb: "1F2933" } },
+        alignment: { vertical: "top", wrapText: true },
+        border: borderThin
+      };
+
+      const titleStyle = {
+        font: { name: "Microsoft JhengHei", sz: 16, bold: true, color: { rgb: "FFFFFF" } },
+        fill: { patternType: "solid", fgColor: { rgb: "10232E" } },
+        alignment: { horizontal: "center", vertical: "center" },
+        border: borderMedium
+      };
+
+      const sectionStyle = {
+        font: { name: "Microsoft JhengHei", sz: 13, bold: true, color: { rgb: "FFFFFF" } },
+        fill: { patternType: "solid", fgColor: { rgb: "275062" } },
+        alignment: { horizontal: "left", vertical: "center" },
+        border: borderMedium
+      };
+
+      const tableHeaderStyle = {
+        font: { name: "Microsoft JhengHei", sz: 11, bold: true, color: { rgb: "00313A" } },
+        fill: { patternType: "solid", fgColor: { rgb: "BDEFF7" } },
+        alignment: { horizontal: "center", vertical: "center", wrapText: true },
+        border: borderMedium
+      };
+
+      const labelStyle = {
+        font: { name: "Microsoft JhengHei", sz: 11, bold: true, color: { rgb: "0B1B24" } },
+        fill: { patternType: "solid", fgColor: { rgb: "EAF8FB" } },
+        alignment: { vertical: "center", wrapText: true },
+        border: borderThin
+      };
+
+      const highlightStyle = {
+        font: { name: "Microsoft JhengHei", sz: 11, bold: true, color: { rgb: "2B1D00" } },
+        fill: { patternType: "solid", fgColor: { rgb: "FFE49A" } },
+        alignment: { vertical: "center", wrapText: true },
+        border: borderThin
+      };
+
+      const removedStyle = {
+        font: { name: "Microsoft JhengHei", sz: 11, color: { rgb: "8A1F1F" } },
+        fill: { patternType: "solid", fgColor: { rgb: "FFE5E5" } },
+        alignment: { vertical: "top", wrapText: true },
+        border: borderThin
+      };
+
+      const addedStyle = {
+        font: { name: "Microsoft JhengHei", sz: 11, color: { rgb: "155724" } },
+        fill: { patternType: "solid", fgColor: { rgb: "E5F8EA" } },
+        alignment: { vertical: "top", wrapText: true },
+        border: borderThin
+      };
+
+      const sectionTitles = new Set(["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細", "船長池", "守護天使池", "船艙 4 池"]);
+      const headerFirstCells = new Set(["角色", "池子", "序號", "日期", "類型", "建立時間"]);
+      const merges = [];
+
+      for (let r = 0; r <= lastRow; r++) {
+        const row = rows[r] || [];
+        const first = row[0] || "";
+        const isTitle = first === "公會抽籤結果";
+        const isSection = sectionTitles.has(first) && !isTitle;
+        const isHeader = ["角色", "池子", "序號"].includes(first);
+
+        if (isTitle || isSection) {
+          merges.push({ s: { r, c: 0 }, e: { r, c: 5 } });
+        }
+
+        for (let c = 0; c <= lastCol; c++) {
+          const addr = XLSX.utils.encode_cell({ r, c });
+          if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+
+          let style = baseStyle;
+          if (isTitle) style = titleStyle;
+          else if (isSection) style = sectionStyle;
+          else if (isHeader) style = tableHeaderStyle;
+          else if (c === 0 && row.length > 1 && row[0]) style = labelStyle;
+
+          const value = ws[addr].v;
+          if (value === "扣除") style = removedStyle;
+          if (value === "補入") style = addedStyle;
+          if (first === "類型" && c === 1 && value === "特別日") style = highlightStyle;
+
+          ws[addr].s = style;
+        }
+      }
+
+      ws["!merges"] = merges;
+      ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length - 1, 0), c: Math.min(lastCol, 5) } }) };
     }
 
     function buildExcelFilename(records) {
@@ -1235,7 +1343,7 @@
     async function ensureXlsx() {
       if (typeof XLSX !== "undefined") return;
       setMessage("historyMessage", "正在載入 Excel 匯出套件...", "warn");
-      await loadScript("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js");
+      await loadScript("https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.min.js");
       if (typeof XLSX === "undefined") throw new Error("XLSX 套件載入失敗。");
     }
 
