@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>有嘻布嘻有貓餅｜專屬抽籤工具</title>
+  <title>有嘻布嘻有貓餅｜公會船抽籤工具</title>
   <style>
     :root {
       --bg: #08131a;
@@ -142,7 +142,7 @@
   <main class="app">
     <section class="hero">
       <div class="title-card">
-        <h1 class="brand-title"><span>有嘻布嘻有貓餅</span><span class="creator-badge">製作人：挖系小嗨</span></h1>
+        <h1 class="brand-title"><span>有嘻布嘻有貓餅 公會船工具</span><span class="creator-badge">製作人：挖系小嗨</span></h1>
         <p class="subtitle">Firebase 雲端共用版。所有人打開同一個網址時，會讀寫同一份名單、池子狀態與歷史紀錄。</p>
         <div class="cloud-status">
           <span class="status-dot" id="cloudDot"></span>
@@ -897,18 +897,22 @@
       (record.cabin4 || []).forEach((name, index) => rows.push([`船艙 4 - ${index + 1}`, name]));
       rows.push([]);
 
+      const consumedCaptain = uniqueStrings(record.consumed?.captain || []);
+      const consumedGuardian = uniqueStrings(record.consumed?.guardian || []);
+      const consumedCabin4 = uniqueStrings(record.consumed?.cabin4 || []);
+
       rows.push(["本次實際扣除", ""]);
       rows.push(["池子", "扣除人數", "扣除名單"]);
-      rows.push(["船長池", (record.consumed?.captain || []).length, (record.consumed?.captain || []).join("、") || "無"]);
-      rows.push(["守護天使池", (record.consumed?.guardian || []).length, (record.consumed?.guardian || []).join("、") || "無"]);
-      rows.push(["船艙 4 池", (record.consumed?.cabin4 || []).length, (record.consumed?.cabin4 || []).join("、") || "無"]);
+      rows.push(["船長池", consumedCaptain.length, consumedCaptain.join("、") || "無"]);
+      rows.push(["守護天使池", consumedGuardian.length, consumedGuardian.join("、") || "無"]);
+      rows.push(["船艙 4 池", consumedCabin4.length, consumedCabin4.join("、") || "無"]);
       rows.push([]);
 
       rows.push(["池子快照摘要", ""]);
-      rows.push(["池子", "抽籤前人數", "抽籤後人數", "本次扣除", "本次補入"]);
+      rows.push(["池子", "抽籤前人數", "抽籤後人數", "扣除人數", "本次扣除", "補入人數", "本次補入"]);
 
       if (!record.poolSnapshots || !record.poolSnapshots.before || !record.poolSnapshots.after) {
-        rows.push(["舊紀錄", "", "", "", "此紀錄沒有池子快照。之後產生的新抽籤紀錄會自動保存。"]);
+        rows.push(["舊紀錄", "", "", "", "", "", "此紀錄沒有池子快照。之後產生的新抽籤紀錄會自動保存。"]);
         return rows;
       }
 
@@ -920,7 +924,9 @@
           poolLabel(key),
           before.length,
           after.length,
+          diff.removed.length,
           diff.removed.join("、") || "無",
+          diff.added.length,
           diff.added.join("、") || "無"
         ]);
       }
@@ -953,27 +959,38 @@
       return rows;
     }
 
+    function estimateExcelRowHeight(row, columnWidths) {
+      if (!row || row.length === 0) return 8;
+
+      const first = row[0];
+      const sectionRows = new Set(["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細", "船長池", "守護天使池", "船艙 4 池"]);
+      if (sectionRows.has(first)) return first === "公會抽籤結果" ? 30 : 26;
+
+      let maxLines = 1;
+      row.forEach((cell, index) => {
+        const text = String(cell ?? "");
+        if (!text) return;
+        const width = Math.max(columnWidths[index] || 16, 8);
+        const hardLines = text.split(/\r?\n/);
+        const visualLines = hardLines.reduce((sum, line) => {
+          const chineseWeightedLength = Array.from(line).reduce((count, ch) => count + (ch.charCodeAt(0) > 255 ? 1.7 : 1), 0);
+          return sum + Math.max(1, Math.ceil(chineseWeightedLength / Math.max(width - 2, 8)));
+        }, 0);
+        maxLines = Math.max(maxLines, visualLines);
+      });
+
+      return Math.min(120, Math.max(22, 18 + maxLines * 15));
+    }
+
     function applyWorksheetLayout(ws, rows) {
       const range = XLSX.utils.decode_range(ws["!ref"] || "A1:A1");
       const lastRow = range.e.r;
       const lastCol = Math.max(range.e.c, 5);
 
-      ws["!cols"] = [
-        { wch: 18 },
-        { wch: 36 },
-        { wch: 36 },
-        { wch: 16 },
-        { wch: 48 },
-        { wch: 48 },
-        { wch: 48 }
-      ];
+      const columnWidths = [18, 36, 42, 16, 52, 16, 52];
+      ws["!cols"] = columnWidths.map(wch => ({ wch }));
 
-      ws["!rows"] = rows.map(row => {
-        if (!row || row.length === 0) return { hpt: 8 };
-        const first = row[0];
-        if (["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細", "船長池", "守護天使池", "船艙 4 池"].includes(first)) return { hpt: 24 };
-        return { hpt: 22 };
-      });
+      ws["!rows"] = rows.map(row => ({ hpt: estimateExcelRowHeight(row, columnWidths) }));
 
       const borderThin = {
         top: { style: "thin", color: { rgb: "8EAFC0" } },
