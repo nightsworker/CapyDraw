@@ -142,7 +142,7 @@
   <main class="app">
     <section class="hero">
       <div class="title-card">
-        <h1 class="brand-title"><span>有嘻布嘻有貓餅 公會船工具</span><span class="creator-badge">製作人：挖系小嗨</span></h1>
+        <h1 class="brand-title"><span>有嘻布嘻有貓餅 | 公會船抽籤工具</span><span class="creator-badge">製作人：挖系小嗨</span></h1>
         <p class="subtitle">Firebase 雲端共用版。所有人打開同一個網址時，會讀寫同一份名單、池子狀態與歷史紀錄。</p>
         <div class="cloud-status">
           <span class="status-dot" id="cloudDot"></span>
@@ -963,15 +963,19 @@
       if (!row || row.length === 0) return 8;
 
       const first = row[0];
-      const sectionRows = new Set(["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細", "船長池", "守護天使池", "船艙 4 池"]);
-      if (sectionRows.has(first)) return first === "公會抽籤結果" ? 30 : 26;
+      const sectionRows = new Set(["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細"]);
+      const poolSectionRows = new Set(["船長池", "守護天使池", "船艙 4 池"]);
+      const isPoolSectionRow = poolSectionRows.has(first) && row.length <= 2 && !row.slice(1).some(value => String(value ?? "").trim());
+      if (sectionRows.has(first) || isPoolSectionRow) return first === "公會抽籤結果" ? 30 : 26;
 
       let maxLines = 1;
       row.forEach((cell, index) => {
         const text = String(cell ?? "");
         if (!text) return;
         const width = Math.max(columnWidths[index] || 16, 8);
-        const hardLines = text.split(/\r?\n/);
+        const hardLines = text.split(/
+?
+/);
         const visualLines = hardLines.reduce((sum, line) => {
           const chineseWeightedLength = Array.from(line).reduce((count, ch) => count + (ch.charCodeAt(0) > 255 ? 1.7 : 1), 0);
           return sum + Math.max(1, Math.ceil(chineseWeightedLength / Math.max(width - 2, 8)));
@@ -1061,15 +1065,16 @@
         border: borderThin
       };
 
-      const sectionTitles = new Set(["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細", "船長池", "守護天使池", "船艙 4 池"]);
-      const headerFirstCells = new Set(["角色", "池子", "序號", "日期", "類型", "建立時間"]);
+      const sectionTitles = new Set(["公會抽籤結果", "基本資訊", "抽籤結果", "本次實際扣除", "池子快照摘要", "完整快照明細"]);
+      const poolSectionTitles = new Set(["船長池", "守護天使池", "船艙 4 池"]);
       const merges = [];
 
       for (let r = 0; r <= lastRow; r++) {
         const row = rows[r] || [];
         const first = row[0] || "";
         const isTitle = first === "公會抽籤結果";
-        const isSection = sectionTitles.has(first) && !isTitle;
+        const isPoolSection = poolSectionTitles.has(first) && row.length <= 2 && !row.slice(1).some(value => String(value ?? "").trim());
+        const isSection = (sectionTitles.has(first) && !isTitle) || isPoolSection;
         const isHeader = ["角色", "池子", "序號"].includes(first);
 
         if (isTitle || isSection) {
