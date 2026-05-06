@@ -212,7 +212,7 @@
     <section id="historyPanel" class="tab-panel">
       <div class="card">
         <h2>歷史紀錄</h2>
-        <p class="hint">勾選想要的日期後，可匯出成 Excel。每個日期會是一個分頁。點擊建立時間可查看該次抽籤前後的池子剩餘比較。</p>
+        <p class="hint">先勾選想要操作的歷史日期，再選擇匯出或刪除。匯出 Excel 時，每個日期會是一個分頁；點擊建立時間可查看該次抽籤前後的池子剩餘比較。</p>
         <div class="history-tools">
           <div>
             <label for="historySearch">搜尋名字 / 日期</label>
@@ -220,8 +220,8 @@
           </div>
           <button class="btn secondary" id="selectVisibleHistoryBtn">全選目前結果</button>
           <button class="btn secondary" id="clearHistorySelectionBtn">清除勾選</button>
-          <button class="btn secondary" id="exportCsvBtn">匯出 Excel 分頁</button>
-          <button class="btn danger requires-auth" id="clearHistoryBtn">清空歷史</button>
+          <button class="btn secondary" id="exportCsvBtn">匯出勾選 Excel</button>
+          <button class="btn danger requires-auth" id="deleteSelectedHistoryBtn">刪除勾選紀錄</button>
         </div>
         <div class="message" id="historyMessage"></div>
         <div id="historyTableWrap"></div>
@@ -876,6 +876,8 @@
 
     function excelRowsForRecord(record) {
       const rows = [];
+
+      rows.push(["結果"]);
       rows.push(["日期", record.date]);
       rows.push(["類型", record.specialDay ? "特別日" : "一般日"]);
       rows.push(["建立時間", formatDateTime(record.createdAt)]);
@@ -883,11 +885,22 @@
       rows.push(["守護天使", record.guardian]);
       rows.push(["船艙 4", ...(record.cabin4 || [])]);
       rows.push([]);
-      rows.push(["池子", "抽籤前人數", "抽籤後人數", "本次扣除", "本次補入", "抽籤前剩餘", "抽籤後剩餘"]);
+
+      rows.push(["本次實際扣除"]);
+      rows.push(["池子", "扣除名單"]);
+      rows.push(["船長池", ...(record.consumed?.captain || [])]);
+      rows.push(["守護天使池", ...(record.consumed?.guardian || [])]);
+      rows.push(["船艙 4 池", ...(record.consumed?.cabin4 || [])]);
+      rows.push([]);
+
+      rows.push(["快照摘要"]);
+      rows.push(["池子", "抽籤前人數", "抽籤後人數", "本次扣除", "本次補入"]);
+
       if (!record.poolSnapshots || !record.poolSnapshots.before || !record.poolSnapshots.after) {
-        rows.push(["舊紀錄", "", "", "", "", "此紀錄沒有池子快照", ""]);
+        rows.push(["舊紀錄", "", "", "", "此紀錄沒有池子快照。之後產生的新抽籤紀錄會自動保存。"]);
         return rows;
       }
+
       for (const key of ["captainPool", "guardianPool", "cabin4Pool"]) {
         const before = record.poolSnapshots.before[key] || [];
         const after = record.poolSnapshots.after[key] || [];
@@ -897,12 +910,32 @@
           before.length,
           after.length,
           diff.removed.join("、"),
-          diff.added.join("、"),
-          before.join("、"),
-          after.join("、")
+          diff.added.join("、")
         ]);
       }
+
+      rows.push([]);
+      rows.push(["完整快照"]);
+      rows.push(["池子", "序號", "抽籤前剩餘", "抽籤後剩餘"]);
+
+      for (const key of ["captainPool", "guardianPool", "cabin4Pool"]) {
+        const before = record.poolSnapshots.before[key] || [];
+        const after = record.poolSnapshots.after[key] || [];
+        const max = Math.max(before.length, after.length);
+        for (let i = 0; i < max; i++) {
+          rows.push([poolLabel(key), i + 1, before[i] || "", after[i] || ""]);
+        }
+        rows.push([]);
+      }
+
       return rows;
+    }
+
+    function buildExcelFilename(records) {
+      const dates = records.map(record => record.date).filter(Boolean).sort();
+      if (dates.length === 0) return `公會抽籤_${todayString()}.xlsx`;
+      if (dates.length === 1) return `公會抽籤_${dates[0]}.xlsx`;
+      return `公會抽籤_${dates[0]}_to_${dates[dates.length - 1]}_共${dates.length}筆.xlsx`;
     }
 
     function safeSheetName(name, used) {
@@ -934,7 +967,7 @@
           ];
           XLSX.utils.book_append_sheet(wb, ws, safeSheetName(record.date, used));
         });
-        XLSX.writeFile(wb, `公會抽籤_${todayString()}.xlsx`);
+        XLSX.writeFile(wb, buildExcelFilename(selected));
         setMessage("historyMessage", `已匯出 ${selected.length} 個日期，每個日期一個分頁。`, "ok");
       } catch (error) {
         setMessage("historyMessage", `Excel 匯出失敗：${error.message}`, "danger");
@@ -1100,13 +1133,22 @@
         } catch (error) { alert(error.message); }
       });
 
-      $("clearHistoryBtn").addEventListener("click", async () => {
-        if (!confirm("確定要清空所有歷史紀錄嗎？這不會自動還原池子。")) return;
+      $("deleteSelectedHistoryBtn").addEventListener("click", async () => {
+        if (selectedHistoryIds.size === 0) {
+          alert("請先勾選要刪除的歷史紀錄。");
+          return;
+        }
+        if (!confirm(`確定要刪除勾選的 ${selectedHistoryIds.size} 筆歷史紀錄嗎？
+
+注意：這只會刪除歷史紀錄，不會自動回補池子。`)) return;
         try {
           await refreshFromCloud();
-          state.history = [];
+          const selected = new Set(selectedHistoryIds);
+          const beforeCount = state.history.length;
+          state.history = state.history.filter(record => !selected.has(record.id));
           selectedHistoryIds.clear();
           await saveCloud(state);
+          alert(`已刪除 ${beforeCount - state.history.length} 筆歷史紀錄。`);
         } catch (error) { alert(error.message); }
       });
 
