@@ -606,7 +606,7 @@
 
     function buildDrawResult(working, date, allowOverwrite) {
       const { errors, warnings } = validateBeforeDraw(working);
-      if (errors.length > 0) throw new Error(errors.join("\\n"));
+      if (errors.length > 0) throw new Error(errors.join("\n"));
 
       const existingIndex = working.history.findIndex(record => record.date === date);
       if (existingIndex >= 0) {
@@ -757,8 +757,8 @@
 
     function render() {
       isApplyingRemote = true;
-      $("guildMembersInput").value = state.guildMembers.join("\\n");
-      $("highWarMembersInput").value = state.highWarMembers.join("\\n");
+      $("guildMembersInput").value = state.guildMembers.join("\n");
+      $("highWarMembersInput").value = state.highWarMembers.join("\n");
       $("presidentName").value = state.presidentName || "會長00 - 公會會長";
       isApplyingRemote = false;
 
@@ -799,7 +799,7 @@
     function exportCsv() {
       const header = ["日期", "類型", "船長", "守護天使", "船艙4", "建立時間"];
       const rows = state.history.slice().reverse().map(record => [record.date, record.specialDay ? "特別日" : "一般日", record.captain, record.guardian, record.cabin4, formatDateTime(record.createdAt)]);
-      const csv = "﻿" + [header, ...rows].map(row => row.map(toCsvCell).join(",")).join("\\n");
+      const csv = "﻿" + [header, ...rows].map(row => row.map(toCsvCell).join(",")).join("\n");
       downloadText(`公會抽籤歷史_${todayString()}.csv`, csv, "text/csv;charset=utf-8");
     }
 
@@ -959,8 +959,8 @@
         const president = "會長00 - 公會會長";
         const highWar = ["高戰01 - 龍騎士", "高戰02 - 聖騎士", "高戰03 - 狂戰士", "高戰04 - 狙擊手", "高戰05 - 大法師", "高戰06 - 刺客"];
         const normal = ["成員01 - 阿火", "成員02 - 阿水", "成員03 - 阿木", "成員04 - 阿光", "成員05 - 阿暗", "成員06 - 小狼", "成員07 - 小鹿", "成員08 - 小熊", "成員09 - 小貓", "成員10 - 小狗", "成員11 - 星星", "成員12 - 月月"];
-        $("guildMembersInput").value = [president, ...highWar, ...normal].join("\\n");
-        $("highWarMembersInput").value = highWar.join("\\n");
+        $("guildMembersInput").value = [president, ...highWar, ...normal].join("\n");
+        $("highWarMembersInput").value = highWar.join("\n");
         $("presidentName").value = president;
         setMessage("settingsMessage", "已載入範例到文字框，按「儲存名單到雲端」後才會生效。", "warn");
       });
