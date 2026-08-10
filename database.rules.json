@@ -1,0 +1,20 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "guildDraw": {
+      "main": {
+        ".read": true,
+        ".write": true
+      },
+      "lineBindings": {
+        ".read": false,
+        ".write": false
+      },
+      "lineSettings": {
+        ".read": false,
+        ".write": false
+      }
+    }
+  }
+}

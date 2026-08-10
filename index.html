@@ -136,6 +136,8 @@
     .modal-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 14px; }
     .compare-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
     .compare-box { background: rgba(4,12,18,.55); border: 1px solid rgba(156,183,193,.18); border-radius: 14px; padding: 14px; }
+    .line-auth-row { padding-top: 12px; border-top: 1px solid rgba(156, 183, 193, 0.14); }
+    .line-id { color: var(--muted); font-family: var(--mono); font-size: 12px; }
     @media (max-width: 920px) {
       .hero, .grid-2, .pool-grid, .history-tools, .compare-grid { grid-template-columns: 1fr; }
       .status-grid { grid-template-columns: 1fr; }
@@ -161,6 +163,11 @@
           <button class="btn secondary small" id="lockBtn">鎖定</button>
           <span class="message" id="authMessage"></span>
         </div>
+        <div class="auth-row line-auth-row">
+          <button class="btn secondary small" id="lineSignInBtn">使用 Google 登入 LINE 管理</button>
+          <button class="btn secondary small" id="lineSignOutBtn" style="display:none">登出 Google</button>
+          <span class="message" id="lineAuthStatus">LINE 管理功能尚未登入。</span>
+        </div>
         <div class="status-grid">
           <div class="status-box"><div class="status-label">船長池剩餘</div><div class="status-value" id="captainPoolCount">0</div></div>
           <div class="status-box"><div class="status-label">守護天使池剩餘</div><div class="status-value" id="guardianPoolCount">0</div></div>
@@ -178,6 +185,10 @@
         </div>
         <div class="message" id="drawMessage"></div>
         <div class="current-result" id="currentResult"><p class="empty">尚未載入資料。</p></div>
+        <div class="actions">
+          <button class="btn requires-auth requires-line-admin" id="sendLineBtn">發送到 LINE</button>
+          <span class="message" id="lineSendMessage"></span>
+        </div>
       </div>
     </section>
 
@@ -185,6 +196,7 @@
       <button class="tab-btn active" data-tab="settingsPanel">名單設定</button>
       <button class="tab-btn" data-tab="historyPanel">歷史紀錄</button>
       <button class="tab-btn" data-tab="poolsPanel">池子狀態</button>
+      <button class="tab-btn" data-tab="linePanel">LINE 設定</button>
       <button class="tab-btn" data-tab="toolsPanel">備份與重置</button>
       <button class="tab-btn" data-tab="setupPanel">Firebase 設定</button>
     </nav>
@@ -307,6 +319,18 @@
       </div>
     </section>
 
+    <section id="linePanel" class="tab-panel">
+      <div class="card">
+        <h2>LINE 設定</h2>
+        <p class="hint">玩家需在公會 LINE 群組輸入「綁定 暱稱」。綁定資料與完整 LINE userId 只由後端讀取；管理操作需要 Google 登入及管理員 UID。</p>
+        <div class="actions">
+          <button class="btn secondary requires-line-admin" id="refreshLineBindingsBtn">重新整理</button>
+          <span class="message" id="lineSettingsMessage"></span>
+        </div>
+        <div id="lineBindingsTableWrap"><p class="empty">登入 LINE 管理帳號後可查看綁定狀態。</p></div>
+      </div>
+    </section>
+
     <section id="toolsPanel" class="tab-panel">
       <div class="card">
         <h2>備份 / 匯入</h2>
@@ -329,6 +353,7 @@
         <h2>Firebase 設定</h2>
         <p class="hint">目前資料路徑：<code>guildDraw/main</code></p>
         <p class="hint">目前 databaseURL：<code>https://capydraw-7f7de-default-rtdb.asia-southeast1.firebasedatabase.app/</code></p>
+        <p class="hint">LINE Functions region：<code>asia-southeast1</code></p>
         <p class="hint">注意：頁面密碼是前端操作鎖。若 Firebase Rules 仍開放寫入，懂技術的人仍可能直接改資料庫。</p>
       </div>
     </section>
@@ -376,6 +401,7 @@
     };
 
     const DB_ROOT = "guildDraw/main";
+    const FUNCTIONS_BASE = "https://asia-southeast1-capydraw-7f7de.cloudfunctions.net";
     const AUTH_PASSWORD = "ALZMsk12#$";
     const AUTH_KEY = "capydraw-unlocked-v2";
 
@@ -397,6 +423,11 @@
     let isUnlocked = localStorage.getItem(AUTH_KEY) === "true";
     let selectedHistoryIds = new Set();
     let visibleHistoryIds = [];
+    let firebaseUser = null;
+    let authReady = false;
+    let currentRecordId = null;
+    let lineSending = false;
+    let lineBindingsCache = [];
 
     const $ = (id) => document.getElementById(id);
 
@@ -612,6 +643,8 @@
       const canWrite = cloudReady && isUnlocked;
       document.querySelectorAll(".requires-auth").forEach(el => { el.disabled = !canWrite; });
       document.querySelectorAll(".requires-auth-control").forEach(el => { el.disabled = !canWrite; });
+      const canManageLine = canWrite && Boolean(firebaseUser) && !lineSending;
+      document.querySelectorAll(".requires-line-admin").forEach(el => { el.disabled = !canManageLine; });
       $("guildMembersInput").disabled = !canWrite;
       $("highWarMembersInput").disabled = !canWrite;
       $("presidentName").disabled = !canWrite;
@@ -620,6 +653,13 @@
       $("unlockBtn").style.display = isUnlocked ? "none" : "inline-flex";
       $("lockBtn").style.display = isUnlocked ? "inline-flex" : "none";
       $("authPassword").style.display = isUnlocked ? "none" : "block";
+      $("lineSignInBtn").disabled = !authReady || Boolean(firebaseUser);
+      $("lineSignInBtn").style.display = firebaseUser ? "none" : "inline-flex";
+      $("lineSignOutBtn").style.display = firebaseUser ? "inline-flex" : "none";
+      $("lineAuthStatus").textContent = firebaseUser ?
+        `LINE 管理登入：${firebaseUser.displayName || firebaseUser.email || firebaseUser.uid}` :
+        "LINE 管理功能尚未登入。";
+      $("lineAuthStatus").className = firebaseUser ? "message ok" : "message warn";
     }
 
     function randomIndex(max) {
@@ -784,8 +824,9 @@
       if (!record) return `<p class="empty">尚未抽籤。請先到「名單設定」輸入公會成員與 6 位高戰成員。</p>`;
       const special = record.specialDay ? `<span class="pill special">特別日</span>` : `<span class="pill">一般日</span>`;
       const warnings = (record.warnings || []).map(w => `<div class="message warn">${escapeHtml(w)}</div>`).join("");
+      const lineStatus = record.lineSendCount ? `<span class="pill">LINE 已發送 ${Number(record.lineSendCount)} 次</span>` : "";
       return `
-        <div>${special}<span class="pill">${escapeHtml(record.date)}</span></div>
+        <div>${special}<span class="pill">${escapeHtml(record.date)}</span>${lineStatus}</div>
         <div class="result-line"><div class="result-role">船長</div><div class="result-name">${escapeHtml(record.captain)}</div></div>
         <div class="result-line"><div class="result-role">守護天使</div><div class="result-name">${escapeHtml(record.guardian)}</div></div>
         <div class="result-line"><div class="result-role">船艙 4</div><div class="member-list">${(record.cabin4 || []).map(name => `<span class="member-chip">${escapeHtml(name)}</span>`).join("")}</div></div>
@@ -793,6 +834,13 @@
         ${warnings}
         <div class="hint">建立時間：<button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></div>
       `;
+    }
+
+    function setCurrentRecord(record) {
+      currentRecordId = record && record.id ? record.id : null;
+      $("currentResult").innerHTML = renderRecord(record);
+      bindDetailButtons();
+      updateAccessUi();
     }
 
     function filteredHistory() {
@@ -840,8 +888,7 @@
       document.querySelectorAll("[data-show-record]").forEach(btn => {
         btn.addEventListener("click", () => {
           const record = state.history.find(x => x.id === btn.dataset.showRecord);
-          $("currentResult").innerHTML = renderRecord(record);
-          bindDetailButtons();
+          setCurrentRecord(record);
           $("drawDate").value = record.date;
           setMessage("drawMessage", `已顯示 ${record.date} 的歷史結果。`, "ok");
           window.scrollTo({ top: 0, behavior: "smooth" });
@@ -957,10 +1004,117 @@
       renderCabin4Exclusions();
       const selectedDate = $("drawDate").value || todayString();
       const record = state.history.find(x => x.date === selectedDate) || state.history[0];
-      $("currentResult").innerHTML = renderRecord(record);
-      bindDetailButtons();
+      setCurrentRecord(record);
       renderHistory();
       updateAccessUi();
+    }
+
+    async function callLineAdminFunction(name, { method = "POST", body } = {}) {
+      if (!firebaseUser) throw new Error("請先使用 Google 登入 LINE 管理功能。");
+      const idToken = await firebaseUser.getIdToken();
+      const response = await fetch(`${FUNCTIONS_BASE}/${name}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          ...(body ? { "Content-Type": "application/json" } : {})
+        },
+        ...(body ? { body: JSON.stringify(body) } : {})
+      });
+      let payload;
+      try { payload = await response.json(); }
+      catch (_error) { payload = null; }
+      if (!response.ok || !payload || payload.ok === false) {
+        throw new Error(payload && payload.error ? payload.error : `後端回傳 HTTP ${response.status}`);
+      }
+      return payload;
+    }
+
+    function renderLineBindings() {
+      if (!firebaseUser) {
+        $("lineBindingsTableWrap").innerHTML = `<p class="empty">登入 LINE 管理帳號後可查看綁定狀態。</p>`;
+        return;
+      }
+      if (!lineBindingsCache.length) {
+        $("lineBindingsTableWrap").innerHTML = `<p class="empty">目前沒有公會成員資料。</p>`;
+        return;
+      }
+      $("lineBindingsTableWrap").innerHTML = `
+        <table>
+          <thead><tr><th>玩家</th><th>LINE</th><th>userId</th><th>狀態</th><th>操作</th></tr></thead>
+          <tbody>${lineBindingsCache.map(member => `
+            <tr>
+              <td><strong>${escapeHtml(member.playerName)}</strong></td>
+              <td>${escapeHtml(member.lineDisplayName || "-")}</td>
+              <td><span class="line-id">${escapeHtml(member.maskedLineUserId || "-")}</span></td>
+              <td>${member.bound ? "✅ 已綁定" : "❌ 未綁定"}</td>
+              <td>${member.bound ? `<button class="btn danger small requires-line-admin" data-remove-binding="${escapeHtml(member.bindingId)}" data-player-name="${escapeHtml(member.playerName)}">解除綁定</button>` : "-"}</td>
+            </tr>`).join("")}</tbody>
+        </table>`;
+      document.querySelectorAll("[data-remove-binding]").forEach(btn => {
+        btn.addEventListener("click", () => removeLineBinding(btn.dataset.removeBinding, btn.dataset.playerName));
+      });
+      updateAccessUi();
+    }
+
+    async function loadLineBindings() {
+      if (!firebaseUser) {
+        lineBindingsCache = [];
+        renderLineBindings();
+        setMessage("lineSettingsMessage", "請先使用 Google 登入。", "warn");
+        return;
+      }
+      setMessage("lineSettingsMessage", "正在讀取 LINE 綁定狀態...", "warn");
+      try {
+        const result = await callLineAdminFunction("getLineBindings", { method: "GET" });
+        lineBindingsCache = Array.isArray(result.members) ? result.members : [];
+        renderLineBindings();
+        setMessage("lineSettingsMessage", result.hasDefaultGroup ?
+          "已取得綁定狀態；LINE 群組已登記。" :
+          "已取得綁定狀態；尚未登記 LINE 群組，請先在正式群組完成一筆有效綁定。", result.hasDefaultGroup ? "ok" : "warn");
+      } catch (error) {
+        setMessage("lineSettingsMessage", `讀取失敗：${error.message}`, "danger");
+      }
+    }
+
+    async function removeLineBinding(bindingId, playerName) {
+      if (!confirm(`確定要解除「${playerName}」的 LINE 綁定嗎？`)) return;
+      try {
+        await callLineAdminFunction("removeLineBinding", { body: { bindingId } });
+        setMessage("lineSettingsMessage", `已解除 ${playerName} 的 LINE 綁定。`, "ok");
+        await loadLineBindings();
+      } catch (error) {
+        setMessage("lineSettingsMessage", `解除失敗：${error.message}`, "danger");
+      }
+    }
+
+    async function sendCurrentRecordToLine() {
+      const record = state.history.find(item => item.id === currentRecordId);
+      if (!record) {
+        setMessage("lineSendMessage", "❌ 請先顯示一筆抽籤結果。", "danger");
+        return;
+      }
+      if ((Number(record.lineSendCount) || 0) > 0 || record.lineSentAt) {
+        if (!confirm("這筆結果已經發送過 LINE，確定要再次發送嗎？")) return;
+      }
+      lineSending = true;
+      updateAccessUi();
+      setMessage("lineSendMessage", "正在發送...", "warn");
+      try {
+        const result = await callLineAdminFunction("sendDrawToLine", { body: { recordId: record.id } });
+        await refreshFromCloud();
+        const updatedRecord = state.history.find(item => item.id === record.id) || record;
+        setCurrentRecord(updatedRecord);
+        if (result.unboundMembers && result.unboundMembers.length) {
+          setMessage("lineSendMessage", `⚠️ 已發送，但有未綁定玩家：${result.unboundMembers.join("、")}`, "warn");
+        } else {
+          setMessage("lineSendMessage", "✅ 已發送到 LINE", "ok");
+        }
+      } catch (error) {
+        setMessage("lineSendMessage", `❌ LINE 發送失敗：${error.message}`, "danger");
+      } finally {
+        lineSending = false;
+        updateAccessUi();
+      }
     }
 
     function poolDiff(before = [], after = []) {
@@ -1415,8 +1569,25 @@
           document.querySelectorAll(".tab-panel").forEach(x => x.classList.remove("active"));
           btn.classList.add("active");
           $(btn.dataset.tab).classList.add("active");
+          if (btn.dataset.tab === "linePanel") loadLineBindings();
         });
       });
+
+      $("lineSignInBtn").addEventListener("click", async () => {
+        try {
+          if (!authReady || !firebase.auth) throw new Error("Firebase Authentication 尚未準備完成。");
+          const provider = new firebase.auth.GoogleAuthProvider();
+          await firebase.auth().signInWithPopup(provider);
+        } catch (error) {
+          setMessage("lineAuthStatus", `Google 登入失敗：${error.message}`, "danger");
+        }
+      });
+      $("lineSignOutBtn").addEventListener("click", async () => {
+        try { await firebase.auth().signOut(); }
+        catch (error) { setMessage("lineAuthStatus", `登出失敗：${error.message}`, "danger"); }
+      });
+      $("sendLineBtn").addEventListener("click", sendCurrentRecordToLine);
+      $("refreshLineBindingsBtn").addEventListener("click", loadLineBindings);
 
       $("unlockBtn").addEventListener("click", () => {
         if ($("authPassword").value === AUTH_PASSWORD) {
@@ -1502,8 +1673,7 @@
           const allowOverwrite = hasExisting ? confirm(`${date} 已經抽過了。要覆蓋這一天的結果嗎？\n\n覆蓋前會先把原本當天扣掉的名單補回池子。`) : false;
           if (hasExisting && !allowOverwrite) {
             const old = state.history.find(record => record.date === date);
-            $("currentResult").innerHTML = renderRecord(old);
-            bindDetailButtons();
+            setCurrentRecord(old);
             setMessage("drawMessage", "已取消覆蓋，保留原本結果。", "warn");
             return;
           }
@@ -1512,8 +1682,7 @@
           if (result.cancelled) return;
           state = normalizeState(working);
           await saveCloud(state);
-          $("currentResult").innerHTML = renderRecord(result.record);
-          bindDetailButtons();
+          setCurrentRecord(result.record);
           setMessage("drawMessage", result.record.specialDay ? "抽籤完成：今天是特別日。" : "抽籤完成。", result.record.specialDay ? "warn" : "ok");
         } catch (error) {
           setMessage("drawMessage", error.message, "danger");
@@ -1523,8 +1692,7 @@
       $("drawDate").addEventListener("change", () => {
         const date = $("drawDate").value;
         const record = state.history.find(x => x.date === date);
-        $("currentResult").innerHTML = renderRecord(record || null);
-        bindDetailButtons();
+        setCurrentRecord(record || null);
         setMessage("drawMessage", record ? "這天已經有抽籤結果。" : "");
       });
 
@@ -1618,11 +1786,13 @@
     }
 
     async function ensureFirebaseSdk() {
-      if (typeof firebase !== "undefined" && firebase.database) return;
       setCloudStatus("正在載入 Firebase SDK...", "warn");
-      await loadScript("https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js");
-      await loadScript("https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js");
-      if (typeof firebase === "undefined" || !firebase.database) throw new Error("Firebase SDK 已載入，但 database 模組不存在。");
+      if (typeof firebase === "undefined" || !firebase.initializeApp) {
+        await loadScript("https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js");
+      }
+      if (!firebase.database) await loadScript("https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js");
+      if (!firebase.auth) await loadScript("https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js");
+      if (typeof firebase === "undefined" || !firebase.database || !firebase.auth) throw new Error("Firebase SDK 已載入，但 database 或 auth 模組不存在。");
     }
 
     async function ensureXlsx() {
@@ -1643,6 +1813,13 @@
       }
       try {
         if (!firebase.apps || firebase.apps.length === 0) firebase.initializeApp(firebaseConfig);
+        authReady = true;
+        firebase.auth().onAuthStateChanged(user => {
+          firebaseUser = user || null;
+          if (!firebaseUser) lineBindingsCache = [];
+          renderLineBindings();
+          updateAccessUi();
+        });
         dbRef = firebase.database().ref(DB_ROOT);
         cloudReady = true;
         setCloudStatus("Firebase 已連線，正在讀取雲端資料...", "warn");

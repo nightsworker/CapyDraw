@@ -10,3 +10,13 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
+### Firebase / Node
+node_modules/
+firebase-debug.log
+firebase-debug.*.log
+.firebase/
+.secret.local
+.secret.*.local
+.env*
+!.env.example
