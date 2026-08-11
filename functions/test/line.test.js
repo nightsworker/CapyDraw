@@ -6,6 +6,7 @@ const test = require("node:test");
 const {
   bindingKey,
   buildBindingListText,
+  buildBotHelpText,
   buildDrawLineMessage,
   buildMemberBindingRows,
   buildUnboundListText,
@@ -16,11 +17,21 @@ const {
   findBindingForMember,
   findMembersByLineName,
   isGroupMessageEvent,
+  parseBotCommand,
   parseMemberName,
+  planWebhookEvent,
   resolveBindingLineName,
   splitTextMessages,
   verifyLineSignature,
 } = require("../lib/line");
+const {
+  buildMemberSyncPlan,
+  buildObservedMemberRecord,
+  buildSyncReply,
+  decideLineSyncAccess,
+  fetchAllGroupMemberIds,
+  resolveSyncMemberSource,
+} = require("../lib/line-sync");
 
 const GROUP_ID = "C_GROUP_A";
 const NOW = "2026-08-11T00:00:00.000Z";
@@ -241,7 +252,7 @@ test("long reply text is safely split and capped at five LINE messages", () => {
   const messages = splitTextMessages(Array.from({length: 30}, (_, index) => `玩家${index}-${"x".repeat(20)}`).join("\n"), 50, 5);
   assert.equal(messages.length, 5);
   assert.ok(messages.every((message) => message.length <= 50 || message.includes("內容過長")));
-  assert.match(messages[4], /未綁定清單/);
+  assert.match(messages[4], /!未綁定/);
 });
 
 test("LINE signature accepts correct signature and rejects incorrect signature", () => {
@@ -267,14 +278,14 @@ test("first valid bind can claim an unset default group", () => {
 });
 
 test("commands from the current default group are processed", () => {
-  ["bind", "status", "unbind", "binding-list", "unbound-list"].forEach((type) => {
+  ["bind", "status", "unbind", "binding-list", "unbound-list", "sync"].forEach((type) => {
     assert.equal(decideLineGroupAction(GROUP_ID, GROUP_ID, type).action, "process");
   });
 });
 
 test("ordinary text and commands from another group cannot change the send target", () => {
   assert.equal(decideLineGroupAction(GROUP_ID, "C_GROUP_B", null).action, "ignore");
-  ["bind", "status", "unbind", "binding-list", "unbound-list"].forEach((type) => {
+  ["bind", "status", "unbind", "binding-list", "unbound-list", "sync"].forEach((type) => {
     assert.equal(decideLineGroupAction(GROUP_ID, "C_GROUP_B", type).action, "reject-other-group");
   });
   assert.equal(claimDefaultLineGroup(GROUP_ID, "C_GROUP_B"), GROUP_ID);
@@ -288,4 +299,224 @@ test("literal braces in unbound player names are escaped for textV2", () => {
     cabin4: [],
   }, {}, GROUP_ID);
   assert.match(result.message.text, /船\{\{長\}\} @Rain\{\{R\}\}/);
+});
+
+test("prefixed command parser ignores ordinary chat", () => {
+  assert.equal(parseBotCommand("綁定一下晚點再說"), null);
+  assert.equal(parseBotCommand("今天還沒綁定"), null);
+});
+
+test("prefixed bind command supports trim and an optional exact LINE name", () => {
+  const automatic = parseBotCommand("  !綁定  ");
+  assert.deepEqual(automatic, {
+    command: "bind",
+    args: "",
+    isLegacy: false,
+    auto: true,
+    query: null,
+  });
+  const manual = parseBotCommand("!綁定 @Hank");
+  assert.deepEqual(manual, {
+    command: "bind",
+    args: "@Hank",
+    isLegacy: false,
+    auto: false,
+    query: "@Hank",
+  });
+  assert.equal(resolveBindingLineName(automatic, "@Hank"), "@Hank");
+  assert.equal(resolveBindingLineName(manual, "ignored"), "@Hank");
+});
+
+test("all official prefixed commands are parsed centrally", () => {
+  const commands = new Map([
+    ["!狀態", "status"],
+    ["!清單", "binding-list"],
+    ["!未綁定", "unbound-list"],
+    ["!解除", "unbind"],
+    ["!同步", "sync"],
+    ["!說明", "help"],
+  ]);
+  commands.forEach((command, input) => {
+    assert.deepEqual(parseBotCommand(input), {command, args: "", isLegacy: false});
+  });
+  assert.deepEqual(parseBotCommand("!abc"), {
+    command: "unknown",
+    args: "",
+    isLegacy: false,
+    input: "!abc",
+  });
+});
+
+test("legacy commands remain centralized and backward compatible", () => {
+  assert.equal(parseBotCommand("綁定").isLegacy, true);
+  assert.equal(parseBotCommand("綁定 @Hank").command, "bind");
+  assert.equal(parseBotCommand("bind @Hank").args, "@Hank");
+  assert.equal(parseBotCommand("綁定狀態").command, "status");
+  assert.equal(parseBotCommand("LINE清單").command, "binding-list");
+  assert.equal(parseBotCommand("解除綁定").command, "unbind");
+});
+
+test("LINE name matching preserves @ and case exactly", () => {
+  assert.equal(findMembersByLineName(["@Hank - 挖系小嗨"], "@Hank").length, 1);
+  assert.equal(findMembersByLineName(["@Hank - 挖系小嗨"], "Hank").length, 0);
+  assert.equal(findMembersByLineName(["Rain - 流鬼"], "Rain").length, 1);
+  assert.equal(findMembersByLineName(["Rain - 流鬼"], "rain").length, 0);
+  assert.equal(findMembersByLineName(["A  B - 帳號"], "A  B").length, 0);
+});
+
+test("member sync binds all exact game IDs for one LINE identity", () => {
+  const result = buildMemberSyncPlan({
+    memberNames: ["Chia - 嘻嘻不嘻嘻", "Chia - CC x CC"],
+    bindings: {},
+    profiles: [{userId: "U_CHIA", displayName: "Chia"}],
+    groupId: GROUP_ID,
+    now: NOW,
+  });
+  assert.equal(result.added, 2);
+  assert.equal(result.boundGuildAccounts, 2);
+  assert.deepEqual(new Set(Object.values(result.updates).map((row) => row.lineUserId)), new Set(["U_CHIA"]));
+});
+
+test("member sync skips non-guild LINE members", () => {
+  const result = buildMemberSyncPlan({
+    memberNames: ["Rain - 流鬼"],
+    bindings: {},
+    profiles: [{userId: "U_GUEST", displayName: "路人甲"}],
+    groupId: GROUP_ID,
+    now: NOW,
+  });
+  assert.equal(result.nonGuild, 1);
+  assert.equal(result.added, 0);
+  assert.deepEqual(result.updates, {});
+});
+
+test("full group member API pagination follows every next token", async () => {
+  const starts = [];
+  const memberIds = await fetchAllGroupMemberIds(async (start) => {
+    starts.push(start);
+    if (!start) return {memberIds: ["U1", "U2"], next: "PAGE_2"};
+    return {memberIds: ["U2", "U3"]};
+  });
+  assert.deepEqual(starts, [null, "PAGE_2"]);
+  assert.deepEqual(memberIds, ["U1", "U2", "U3"]);
+});
+
+test("group member API 403 falls back to observed members", async () => {
+  const forbidden = Object.assign(new Error("forbidden"), {lineStatus: 403});
+  const source = await resolveSyncMemberSource(async () => {
+    throw forbidden;
+  }, {
+    U1: {lineUserId: "U1", displayName: "Rain", groupId: GROUP_ID},
+  });
+  assert.equal(source.mode, "observed");
+  assert.deepEqual(source.memberIds, ["U1"]);
+  assert.match(buildSyncReply({
+    scannedMembers: 1,
+    added: 0,
+    alreadyBound: 0,
+    nonGuild: 0,
+    conflicts: 0,
+    unboundGuildAccounts: 1,
+    boundGuildAccounts: 0,
+    totalGuildAccounts: 1,
+  }, source.mode), /Bot 曾經看過的群組成員/);
+});
+
+test("group member API errors other than 403 never use observed fallback", async () => {
+  for (const lineStatus of [404, 429, 500]) {
+    const error = Object.assign(new Error(String(lineStatus)), {lineStatus});
+    await assert.rejects(
+      resolveSyncMemberSource(async () => { throw error; }, {}),
+      (caught) => caught.lineStatus === lineStatus,
+    );
+  }
+  const networkError = new Error("network");
+  await assert.rejects(
+    resolveSyncMemberSource(async () => { throw networkError; }, {}),
+    (caught) => caught === networkError,
+  );
+});
+
+test("verified group webhook identity builds observed member metadata", () => {
+  const event = {
+    type: "message",
+    message: {type: "text", text: "普通聊天"},
+    source: {type: "group", groupId: GROUP_ID, userId: "U_HANK"},
+  };
+  const plan = planWebhookEvent(event);
+  assert.equal(plan.observeMember, true);
+  assert.equal(plan.command, null);
+  const first = buildObservedMemberRecord(null, {
+    lineUserId: "U_HANK",
+    displayName: "@Hank",
+    groupId: GROUP_ID,
+    pictureUrl: "https://example.com/hank.png",
+  }, NOW);
+  const next = buildObservedMemberRecord(first, {
+    lineUserId: "U_HANK",
+    displayName: "@Hank",
+    groupId: GROUP_ID,
+  }, "2026-08-12T00:00:00.000Z");
+  assert.equal(next.firstSeenAt, NOW);
+  assert.equal(next.lastSeenAt, "2026-08-12T00:00:00.000Z");
+  assert.equal("message" in next, false);
+});
+
+test("member sync updates an existing identity without adding a duplicate", () => {
+  const playerName = "Rain - 流鬼";
+  const key = bindingKey(playerName);
+  const result = buildMemberSyncPlan({
+    memberNames: [playerName],
+    bindings: {[key]: makeBinding(playerName, "U_RAIN")},
+    profiles: [{userId: "U_RAIN", displayName: "Rain"}],
+    groupId: GROUP_ID,
+    now: "2026-08-12T00:00:00.000Z",
+  });
+  assert.equal(result.added, 0);
+  assert.equal(result.alreadyBound, 1);
+  assert.deepEqual(Object.keys(result.updates), [key]);
+});
+
+test("member sync reports a conflicting userId without overwriting", () => {
+  const playerName = "Rain - 流鬼";
+  const key = bindingKey(playerName);
+  const existing = makeBinding(playerName, "U_RAIN_A");
+  const result = buildMemberSyncPlan({
+    memberNames: [playerName],
+    bindings: {[key]: existing},
+    profiles: [{userId: "U_RAIN_B", displayName: "Rain"}],
+    groupId: GROUP_ID,
+    now: "2026-08-12T00:00:00.000Z",
+  });
+  assert.equal(result.conflicts, 1);
+  assert.equal(result.added, 0);
+  assert.deepEqual(result.updates, {});
+  assert.equal(existing.lineUserId, "U_RAIN_A");
+});
+
+test("member sync requires a LINE admin in the default group", () => {
+  const admins = {U_ADMIN: true};
+  assert.deepEqual(decideLineSyncAccess(GROUP_ID, GROUP_ID, admins, "U_MEMBER"), {
+    allowed: false,
+    reason: "not-admin",
+  });
+  assert.deepEqual(decideLineSyncAccess(GROUP_ID, "C_GROUP_B", admins, "U_ADMIN"), {
+    allowed: false,
+    reason: "other-group",
+  });
+  assert.deepEqual(decideLineSyncAccess(GROUP_ID, GROUP_ID, admins, "U_ADMIN"), {
+    allowed: true,
+    reason: null,
+  });
+});
+
+test("help documents only the new prefixed commands", () => {
+  const help = buildBotHelpText();
+  ["!綁定", "!狀態", "!清單", "!未綁定", "!解除", "!同步"].forEach((command) => {
+    assert.match(help, new RegExp(command.replace("!", "\\!")));
+  });
+  const lines = help.split("\n");
+  ["綁定狀態", "解除綁定", "line list"].forEach((legacyCommand) => {
+    assert.equal(lines.includes(legacyCommand), false);
+  });
 });

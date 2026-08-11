@@ -50,9 +50,9 @@ function findMembersByLineName(memberNames, lineName) {
   const members = uniqueMembers(memberValues(memberNames)
     .map(parseMemberName)
     .filter((member) => member.fullName));
-  const standardizedQuery = standardizeName(lineName);
-  if (!standardizedQuery) return [];
-  return members.filter((member) => member.lineName === standardizedQuery);
+  const exactQuery = String(lineName || "").trim();
+  if (!exactQuery) return [];
+  return members.filter((member) => member.lineName === exactQuery);
 }
 
 function verifyLineSignature(rawBody, signature, channelSecret) {
@@ -75,25 +75,107 @@ function bindingKey(playerName) {
   return `p_${digest}`;
 }
 
-function extractBindingCommand(text) {
-  const message = String(text || "").trim();
-  const normalizedEnglish = message.replace(/\s+/g, " ").toLowerCase();
-  if (message === "綁定狀態") return {type: "status"};
-  if (message === "解除綁定") return {type: "unbind"};
-  if (message === "綁定清單" || message === "LINE清單" || normalizedEnglish === "line list") {
-    return {type: "binding-list"};
+const PREFIX_COMMANDS = new Map([
+  ["綁定", "bind"],
+  ["狀態", "status"],
+  ["清單", "binding-list"],
+  ["未綁定", "unbound-list"],
+  ["解除", "unbind"],
+  ["同步", "sync"],
+  ["說明", "help"],
+]);
+
+const LEGACY_COMMANDS = new Map([
+  ["綁定", "bind"],
+  ["bind", "bind"],
+  ["綁定狀態", "status"],
+  ["綁定清單", "binding-list"],
+  ["LINE清單", "binding-list"],
+  ["line list", "binding-list"],
+  ["未綁定清單", "unbound-list"],
+  ["未綁定", "unbound-list"],
+  ["解除綁定", "unbind"],
+]);
+
+function commandResult(command, args, isLegacy) {
+  const result = {command, args, isLegacy};
+  if (command === "bind") {
+    result.auto = !args;
+    result.query = args || null;
   }
-  if (message === "未綁定清單" || message === "未綁定") return {type: "unbound-list"};
-  if (message === "綁定" || normalizedEnglish === "bind") return {type: "bind", auto: true, query: null};
-  const bindMatch = message.match(/^(?:綁定\s+|bind\s+)(.+)$/iu);
+  return result;
+}
+
+function parseBotCommand(text) {
+  const message = String(text || "").trim();
+  if (!message) return null;
+
+  if (message.startsWith("!")) {
+    const match = message.match(/^!(\S+)(?:\s+([\s\S]*))?$/u);
+    if (!match) return {command: "unknown", args: "", isLegacy: false, input: message};
+    const name = match[1];
+    const args = String(match[2] || "").trim();
+    const command = PREFIX_COMMANDS.get(name);
+    if (!command || (command !== "bind" && args)) {
+      return {command: "unknown", args, isLegacy: false, input: `!${name}`};
+    }
+    return commandResult(command, args, false);
+  }
+
+  const normalizedEnglish = message.replace(/\s+/g, " ").toLowerCase();
+  const exactCommand = LEGACY_COMMANDS.get(message) || LEGACY_COMMANDS.get(normalizedEnglish);
+  if (exactCommand) return commandResult(exactCommand, "", true);
+
+  const bindMatch = message.match(/^(?:綁定|bind)\s+([\s\S]+)$/iu);
   if (!bindMatch) return null;
-  const query = standardizeName(bindMatch[1]);
-  return query ? {type: "bind", auto: false, query} : null;
+  const query = String(bindMatch[1] || "").trim();
+  return query ? commandResult("bind", query, true) : null;
+}
+
+function extractBindingCommand(text) {
+  const parsed = parseBotCommand(text);
+  if (!parsed || parsed.command === "unknown" || parsed.command === "help" || parsed.command === "sync") {
+    return null;
+  }
+  const legacy = {type: parsed.command};
+  if (parsed.command === "bind") {
+    legacy.auto = parsed.auto;
+    legacy.query = parsed.query;
+  }
+  return legacy;
+}
+
+function buildBotHelpText() {
+  return [
+    "🐾 喵餅指令",
+    "",
+    "!綁定",
+    "依你的 LINE 名稱自動綁定遊戲帳號",
+    "",
+    "!綁定 <LINE名稱>",
+    "手動指定 LINE 名稱綁定",
+    "",
+    "!狀態",
+    "查看自己的綁定狀態",
+    "",
+    "!清單",
+    "查看公會綁定狀況",
+    "",
+    "!未綁定",
+    "查看尚未完成 LINE 綁定的公會成員",
+    "",
+    "!解除",
+    "解除自己的 LINE 綁定",
+    "",
+    "管理員：",
+    "!同步",
+    "自動比對群組成員並建立綁定",
+  ].join("\n");
 }
 
 function resolveBindingLineName(command, profileDisplayName) {
-  if (!command || command.type !== "bind") return "";
-  return standardizeName(command.auto ? profileDisplayName : command.query);
+  if (!command || (command.command || command.type) !== "bind") return "";
+  return String(command.auto ? profileDisplayName : command.query || "").trim();
 }
 
 function createBindingRecord({member, userId, displayName, groupId, now, boundAt}) {
@@ -222,7 +304,7 @@ function splitTextMessages(text, maxLength = 4500, maxMessages = 5) {
   if (chunks.length <= maxMessages) return chunks;
   return [
     ...chunks.slice(0, maxMessages - 1),
-    "⚠️ 綁定清單內容過長，已省略其餘項目。\n請使用「未綁定清單」查看尚未完成的玩家。",
+    "⚠️ 綁定清單內容過長，已省略其餘項目。\n請使用「!未綁定」查看尚未完成的玩家。",
   ];
 }
 
@@ -281,6 +363,18 @@ function isGroupMessageEvent(event) {
     event.source && event.source.type === "group" && event.source.groupId);
 }
 
+function isObservedGroupEvent(event) {
+  return Boolean(event && event.source && event.source.type === "group" &&
+    event.source.groupId && event.source.userId);
+}
+
+function planWebhookEvent(event) {
+  return {
+    observeMember: isObservedGroupEvent(event),
+    command: isGroupMessageEvent(event) ? parseBotCommand(event.message.text) : null,
+  };
+}
+
 function decideLineGroupAction(defaultGroupId, eventGroupId, commandType) {
   const currentGroupId = String(defaultGroupId || "").trim() || null;
   const candidateGroupId = String(eventGroupId || "").trim() || null;
@@ -311,6 +405,7 @@ function maskLineUserId(value) {
 
 module.exports = {
   bindingKey,
+  buildBotHelpText,
   buildBindingListText,
   buildDrawLineMessage,
   buildMemberBindingRows,
@@ -326,7 +421,9 @@ module.exports = {
   listBindingRecords,
   maskLineUserId,
   normalizeMemberName,
+  parseBotCommand,
   parseMemberName,
+  planWebhookEvent,
   resolveBindingLineName,
   splitTextMessages,
   standardizeName,

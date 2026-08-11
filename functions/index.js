@@ -10,21 +10,31 @@ const {assertAdminUid} = require("./lib/admin");
 const {
   bindingKey,
   buildBindingListText,
+  buildBotHelpText,
   buildDrawLineMessage,
   buildMemberBindingRows,
   buildUnboundListText,
   claimDefaultLineGroup,
   createBindingRecord,
   decideLineGroupAction,
-  extractBindingCommand,
   findMembersByLineName,
-  isGroupMessageEvent,
   listBindingRecords,
   maskLineUserId,
+  planWebhookEvent,
   resolveBindingLineName,
   splitTextMessages,
   verifyLineSignature,
 } = require("./lib/line");
+const {
+  buildMemberSyncPlan,
+  buildObservedMemberRecord,
+  buildSyncReply,
+  decideLineSyncAccess,
+  fetchAllGroupMemberIds,
+  isFirebaseSafeKey,
+  mapInBatches,
+  resolveSyncMemberSource,
+} = require("./lib/line-sync");
 
 initializeApp();
 
@@ -99,7 +109,9 @@ async function callLine(path, token, body, method = "POST") {
   if (!response.ok) {
     const detail = await response.text();
     logger.error("LINE Messaging API request failed", {path, status: response.status, detail});
-    throw new Error(`LINE Messaging API 回傳 ${response.status}。`);
+    const error = new Error(`LINE Messaging API 回傳 ${response.status}。`);
+    error.lineStatus = response.status;
+    throw error;
   }
   if (response.status === 204) return null;
   return response.json();
@@ -121,21 +133,111 @@ async function replyText(replyToken, text, token) {
   await replyTexts(replyToken, [text], token);
 }
 
+async function fetchGroupMemberProfile(groupId, userId, token) {
+  return callLine(
+    `/group/${encodeURIComponent(groupId)}/member/${encodeURIComponent(userId)}`,
+    token,
+    null,
+    "GET",
+  );
+}
+
 async function getGroupMemberProfile(groupId, userId, token) {
   try {
-    return await callLine(
-      `/group/${encodeURIComponent(groupId)}/member/${encodeURIComponent(userId)}`,
-      token,
-      null,
-      "GET",
-    );
+    return await fetchGroupMemberProfile(groupId, userId, token);
   } catch (error) {
     logger.warn("Could not load LINE group member profile", {groupId, userId, message: error.message});
     return null;
   }
 }
 
-async function handleBindingCommand(event, command, token) {
+async function rememberObservedMember(event, profile) {
+  const groupId = event.source.groupId;
+  const userId = event.source.userId;
+  if (!profile || !profile.displayName || !isFirebaseSafeKey(groupId) || !isFirebaseSafeKey(userId)) return;
+  const now = new Date().toISOString();
+  const ref = getDatabase().ref(`guildDraw/lineObservedMembers/${groupId}/${userId}`);
+  await ref.transaction((current) => buildObservedMemberRecord(current, {
+    lineUserId: userId,
+    displayName: profile.displayName,
+    groupId,
+    pictureUrl: profile.pictureUrl,
+  }, now));
+}
+
+async function getSyncMemberSource(groupId, token, observedMembers) {
+  return resolveSyncMemberSource(
+    () => fetchAllGroupMemberIds(async (start) => {
+      const query = start ? `?start=${encodeURIComponent(start)}` : "";
+      return callLine(
+        `/group/${encodeURIComponent(groupId)}/members/ids${query}`,
+        token,
+        null,
+        "GET",
+      );
+    }),
+    observedMembers,
+  );
+}
+
+async function loadSyncProfiles(source, groupId, token) {
+  return mapInBatches(source.memberIds, 10, async (userId) => {
+    const profile = await fetchGroupMemberProfile(groupId, userId, token);
+    return {
+      userId: profile.userId || userId,
+      displayName: profile.displayName || "",
+      pictureUrl: profile.pictureUrl || null,
+    };
+  });
+}
+
+function syncErrorMessage(error) {
+  if (error && error.lineStatus === 404) {
+    return "❌ 找不到目前群組，或 Bot 已不在這個群組中。";
+  }
+  if (error && error.lineStatus === 429) {
+    return "⚠️ LINE API 目前請求過多，請稍後再試。";
+  }
+  return "❌ LINE 成員同步暫時失敗，請稍後再試。";
+}
+
+async function handleSyncCommand({event, token, db, settings, bindings, bindingsRef, members}) {
+  const groupId = event.source.groupId;
+  const userId = event.source.userId;
+  const access = decideLineSyncAccess(
+    settings.defaultGroupId,
+    groupId,
+    settings.adminLineUserIds,
+    userId,
+  );
+  if (!access.allowed) {
+    const message = access.reason === "not-admin" ?
+      "❌ 你沒有執行 LINE 成員同步的管理員權限。" :
+      "❌ 只有目前正式公會群組可以執行同步。";
+    await replyText(event.replyToken, message, token);
+    return;
+  }
+
+  try {
+    const observedSnapshot = await db.ref(`guildDraw/lineObservedMembers/${groupId}`).get();
+    const source = await getSyncMemberSource(groupId, token, observedSnapshot.val() || {});
+    const profiles = await loadSyncProfiles(source, groupId, token);
+    const result = buildMemberSyncPlan({
+      memberNames: members,
+      bindings,
+      profiles,
+      groupId,
+      now: new Date().toISOString(),
+    });
+    if (Object.keys(result.updates).length) await bindingsRef.update(result.updates);
+    await replyText(event.replyToken, buildSyncReply(result, source.mode), token);
+  } catch (error) {
+    logger.warn("LINE member sync failed", {groupId, status: error.lineStatus, message: error.message});
+    await replyText(event.replyToken, syncErrorMessage(error), token);
+  }
+}
+
+async function handleBindingCommand(event, command, token, observedProfile) {
   const db = getDatabase();
   const userId = event.source.userId;
   const groupId = event.source.groupId;
@@ -145,8 +247,9 @@ async function handleBindingCommand(event, command, token) {
   }
   const settingsRef = db.ref("guildDraw/lineSettings");
   const defaultGroupRef = settingsRef.child("defaultGroupId");
-  const defaultGroupId = (await defaultGroupRef.get()).val();
-  const groupAction = decideLineGroupAction(defaultGroupId, groupId, command.type);
+  const settings = (await settingsRef.get()).val() || {};
+  const defaultGroupId = settings.defaultGroupId;
+  const groupAction = decideLineGroupAction(defaultGroupId, groupId, command.command);
   if (groupAction.action === "reject-other-group") {
     await replyText(event.replyToken, "❌ 此 Bot 已綁定其他公會群組，請由管理員處理群組設定。", token);
     return;
@@ -163,7 +266,7 @@ async function handleBindingCommand(event, command, token) {
   const ownBindings = bindingEntries.filter((binding) =>
     binding.lineUserId === userId && binding.lineGroupId === groupId);
 
-  if (command.type === "status") {
+  if (command.command === "status") {
     const members = (await db.ref("guildDraw/main/guildMembers").get()).val() || [];
     const ownRows = buildMemberBindingRows(members, bindings, groupId)
       .filter((row) => row.bound && row.lineUserId === userId);
@@ -178,12 +281,12 @@ async function handleBindingCommand(event, command, token) {
       "",
       `LINE：${lineNames.join("、")}`,
       "遊戲 ID：",
-      ...gameIds.map((gameId) => `- ${gameId}`),
+      ...gameIds.map((gameId) => `• ${gameId}`),
     ].join("\n"), token);
     return;
   }
 
-  if (command.type === "unbind") {
+  if (command.command === "unbind") {
     if (!ownBindings.length) {
       await replyText(event.replyToken, "ℹ️ 你目前沒有可解除的綁定。", token);
       return;
@@ -196,23 +299,28 @@ async function handleBindingCommand(event, command, token) {
   }
 
   const members = (await db.ref("guildDraw/main/guildMembers").get()).val() || [];
-  if (command.type === "binding-list") {
+  if (command.command === "binding-list") {
     const text = buildBindingListText(members, bindings, groupId);
     await replyTexts(event.replyToken, splitTextMessages(text), token);
     return;
   }
 
-  if (command.type === "unbound-list") {
+  if (command.command === "unbound-list") {
     const text = buildUnboundListText(members, bindings, groupId);
     await replyTexts(event.replyToken, splitTextMessages(text), token);
     return;
   }
 
-  let profile = null;
+  if (command.command === "sync") {
+    await handleSyncCommand({event, token, db, settings, bindings, bindingsRef, members});
+    return;
+  }
+
+  let profile = observedProfile || null;
   if (command.auto) {
-    profile = await getGroupMemberProfile(groupId, userId, token);
+    if (!profile) profile = await getGroupMemberProfile(groupId, userId, token);
     if (!profile || !profile.displayName) {
-      await replyText(event.replyToken, "❌ 無法取得你的 LINE 顯示名稱，請改用：\n綁定 <LINE名稱>", token);
+      await replyText(event.replyToken, "❌ 無法取得你的 LINE 顯示名稱，請改用：\n!綁定 <LINE名稱>", token);
       return;
     }
   }
@@ -220,7 +328,7 @@ async function handleBindingCommand(event, command, token) {
   const matches = findMembersByLineName(members, requestedLineName);
   if (!matches.length) {
     await replyText(event.replyToken, command.auto ?
-      `❌ 找不到與你的 LINE 名稱「${requestedLineName}」對應的玩家。\n請改用：\n綁定 <LINE名稱>` :
+      `❌ 找不到與你的 LINE 名稱「${requestedLineName}」對應的玩家。\n請改用：\n!綁定 <LINE名稱>` :
       `❌ 找不到 LINE 名稱「${requestedLineName}」對應的玩家，請確認名稱。`, token);
     return;
   }
@@ -233,7 +341,7 @@ async function handleBindingCommand(event, command, token) {
     await replyText(event.replyToken, [
       "ℹ️ 你的 LINE 帳號目前已綁定其他 LINE 名稱：",
       ...otherOwnLineNames.map((lineName) => `- ${lineName}`),
-      "如需更換，請先輸入「解除綁定」。",
+      "如需更換，請先輸入「!解除」。",
     ].join("\n"), token);
     return;
   }
@@ -308,9 +416,34 @@ exports.lineWebhook = onRequest({
   try {
     const events = Array.isArray(payload.events) ? payload.events : [];
     await Promise.all(events.map(async (event) => {
-      if (!isGroupMessageEvent(event)) return;
-      const command = extractBindingCommand(event.message.text);
-      if (command) await handleBindingCommand(event, command, LINE_CHANNEL_ACCESS_TOKEN.value());
+      const eventPlan = planWebhookEvent(event);
+      let profile = null;
+      if (eventPlan.observeMember) {
+        profile = await getGroupMemberProfile(
+          event.source.groupId,
+          event.source.userId,
+          LINE_CHANNEL_ACCESS_TOKEN.value(),
+        );
+        if (profile) await rememberObservedMember(event, profile);
+      }
+      if (!eventPlan.command) return;
+      if (eventPlan.command.command === "help") {
+        await replyText(event.replyToken, buildBotHelpText(), LINE_CHANNEL_ACCESS_TOKEN.value());
+        return;
+      }
+      if (eventPlan.command.command === "unknown") {
+        await replyText(event.replyToken, [
+          `找不到指令「${eventPlan.command.input}」`,
+          "輸入 !說明 查看可用指令。",
+        ].join("\n"), LINE_CHANNEL_ACCESS_TOKEN.value());
+        return;
+      }
+      await handleBindingCommand(
+        event,
+        eventPlan.command,
+        LINE_CHANNEL_ACCESS_TOKEN.value(),
+        profile,
+      );
     }));
     json(res, 200, {ok: true});
   } catch (error) {
@@ -440,4 +573,37 @@ exports.setDefaultLineGroup = onRequest({region: REGION}, async (req, res) =>
       updatedAt: ServerValue.TIMESTAMP,
     });
     json(res, 200, {ok: true, hasDefaultGroup: true});
+  }));
+
+exports.setLineBotAdmin = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["POST"], async () => {
+    const bindingId = req.body && typeof req.body.bindingId === "string" ? req.body.bindingId : "";
+    const enabled = req.body && req.body.enabled;
+    if (!/^p_[A-Za-z0-9_-]{20,100}$/.test(bindingId) || typeof enabled !== "boolean") {
+      json(res, 400, {ok: false, error: "bindingId 或 enabled 格式不正確。"});
+      return;
+    }
+
+    const db = getDatabase();
+    const [bindingSnapshot, settingsSnapshot] = await Promise.all([
+      db.ref(`guildDraw/lineBindings/${bindingId}`).get(),
+      db.ref("guildDraw/lineSettings").get(),
+    ]);
+    if (!bindingSnapshot.exists()) {
+      json(res, 404, {ok: false, error: "找不到這筆 LINE 綁定。"});
+      return;
+    }
+    const binding = bindingSnapshot.val();
+    const settings = settingsSnapshot.val() || {};
+    if (!binding.lineUserId || !isFirebaseSafeKey(binding.lineUserId) ||
+        (enabled && binding.lineGroupId !== settings.defaultGroupId)) {
+      json(res, 409, {ok: false, error: "只能設定目前正式群組中已綁定的 LINE 使用者。"});
+      return;
+    }
+
+    await db.ref("guildDraw/lineSettings").update({
+      [`adminLineUserIds/${binding.lineUserId}`]: enabled ? true : null,
+      updatedAt: ServerValue.TIMESTAMP,
+    });
+    json(res, 200, {ok: true, enabled});
   }));

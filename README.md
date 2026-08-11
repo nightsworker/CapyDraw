@@ -6,16 +6,18 @@
 
 Functions v2 部署在 `asia-southeast1`（新加坡），與目前 Realtime Database 位於同一區域：
 
-- `lineWebhook`：驗證 LINE 原始 request body 的 HMAC-SHA256 簽章，只允許第一次成功綁定 claim 正式群組，並處理綁定指令。
+- `lineWebhook`：驗證 LINE 原始 request body 的 HMAC-SHA256 簽章，記錄 Bot 已看過的群組成員，只允許第一次成功綁定 claim 正式群組，並處理 `!` 指令。
 - `sendDrawToLine`：驗證 Firebase ID Token 及 `ADMIN_UID`，依 `recordId` 從 RTDB 重讀抽籤紀錄，再用 LINE `textV2` 發送真正 mention。
 - `getLineBindings`：供管理者讀取遮罩後的綁定狀態。
 - `removeLineBinding`：供管理者解除指定綁定；前端不會直接寫入 `lineBindings`。
 - `setDefaultLineGroup`：供 `ADMIN_UID` 管理者明確更換正式 LINE 群組；沒有前端 UI。
+- `setLineBotAdmin`：供 `ADMIN_UID` 管理者以既有 binding 明確授予或移除 `!同步` 權限；沒有前端 UI。
 
 LINE 私有資料位於：
 
 - `guildDraw/lineSettings`
 - `guildDraw/lineBindings`
+- `guildDraw/lineObservedMembers`
 
 ## 安裝工具與依賴
 
@@ -83,7 +85,7 @@ firebase deploy --only database
 firebase deploy --only functions,database
 ```
 
-`database.rules.json` 為了相容既有網站，保留 `guildDraw/main` 的公開讀寫行為；`lineBindings` 與 `lineSettings` 對 browser SDK 完全拒絕，只有 Admin SDK 可存取。部署 rules 前仍建議先在 Firebase Console 的 Rules Playground 檢查。
+`database.rules.json` 為了相容既有網站，保留 `guildDraw/main` 的公開讀寫行為；`lineBindings`、`lineSettings` 與 `lineObservedMembers` 對 browser SDK 完全拒絕，只有 Admin SDK 可存取。部署 rules 前仍建議先在 Firebase Console 的 Rules Playground 檢查。
 
 Functions 部署後可確認：
 
@@ -104,7 +106,7 @@ firebase functions:list
 6. 啟用「Allow bot to join group chats」，把官方帳號加入公會群組。
 7. 建議關閉 LINE Official Account Manager 的自動回應訊息，避免和綁定回覆同時出現。
 
-`lineWebhook` 不使用 browser CORS。一般群組文字不會設定或覆蓋 `defaultGroupId`；只有在尚未設定正式群組時，第一次實際可建立 binding 的 `綁定/bind` 指令才會用 RTDB transaction claim 該群組。正式群組建立後，其他群組的綁定、綁定狀態與解除綁定指令都會被拒絕。
+`lineWebhook` 不使用 browser CORS。一般群組文字不會設定或覆蓋 `defaultGroupId`，也不會觸發 Bot 回覆；只有在尚未設定正式群組時，第一次實際可建立 binding 的 `!綁定` 指令才會用 RTDB transaction claim 該群組。正式群組建立後，其他群組的綁定、狀態與解除指令都會被拒絕。
 
 ### 管理員明確更換正式群組
 
@@ -136,14 +138,20 @@ LINE 名稱 - 遊戲 ID
 
 玩家可在正式公會群使用：
 
-- `綁定`：讀取本人 LINE group profile displayName，自動完全比對網站中的 LINE 名稱。
-- `綁定 Rain` 或 `bind Rain`：手動完全比對 LINE 名稱。
-- `綁定狀態`：顯示本人綁定的 LINE 名稱及所有遊戲 ID。
-- `解除綁定`：解除本人在目前正式群組下的全部遊戲帳號 binding。
-- `綁定清單`、`LINE清單`、`line list`：由後端列出完整綁定摘要。
-- `未綁定清單`、`未綁定`：由後端列出尚未綁定的 LINE 名稱與遊戲 ID。
+- `!綁定`：讀取本人 LINE group profile displayName，自動完全比對網站中的 LINE 名稱。
+- `!綁定 Rain`：手動指定 LINE 名稱並完全比對。
+- `!狀態`：顯示本人綁定的 LINE 名稱及所有遊戲 ID。
+- `!清單`：由後端列出完整綁定摘要。
+- `!未綁定`：由後端列出尚未綁定的 LINE 名稱與遊戲 ID。
+- `!解除`：只解除本人在目前正式群組下的全部遊戲帳號 binding。
+- `!同步`：由 LINE Bot 管理員同步目前正式群組的成員。
+- `!說明`：顯示以上正式指令。
 
-假設名單中有 `Rain - 流鬼`，Rain 可直接輸入 `綁定`，或輸入 `綁定 Rain`。成功回覆：
+`!` prefix 用來避免一般聊天誤觸 Bot。輸入前後可以有空白；沒有 prefix 的普通句子不會觸發新指令。舊版精確指令仍由 centralized parser 暫時相容，但文件與 `!說明` 只列新指令，不再新增無 prefix 指令。
+
+綁定採安全的 exact match：LINE profile 的 `displayName` 必須和 `parseMemberName(row).lineName` 完全相同，保留大小寫及 `@`。系統不做 fuzzy、contains、startsWith、大小寫轉換或自動忽略 `@`；例如 `@Hank` 不會配對 `Hank`，`Rain` 也不會配對 `rain`。
+
+假設名單中有 `Rain - 流鬼`，Rain 可直接輸入 `!綁定`，或輸入 `!綁定 Rain`。成功回覆：
 
 ```text
 ✅ LINE 綁定完成
@@ -152,9 +160,41 @@ Rain
 → 流鬼
 ```
 
-同一 LINE 名稱可對應多個遊戲 ID，例如 `Chia - 嘻嘻不嘻嘻` 與 `Chia - CC x CC`。一次 `綁定 Chia` 會用同一 LINE userId 建立兩個 canonical player binding。binding 的 Firebase key 仍由完整 `playerName` 產生，因此不會互相覆蓋。
+同一 LINE 名稱可對應多個遊戲 ID，例如 `Chia - 嘻嘻不嘻嘻` 與 `Chia - CC x CC`。一次 `!綁定 Chia` 會用同一 LINE userId 建立兩個 canonical player binding。binding 的 Firebase key 仍由完整 `playerName` 產生，因此不會互相覆蓋。
 
 舊 binding 不需 migration。後端會忽略舊 schema 中語意錯誤的 `alias/gameName`，每次都從 canonical `playerName` 重新解析 `lineName/gameId`。玩家重新綁定時，該筆資料會自然更新為新 schema。
+
+## 群組成員同步與 observed cache
+
+`!同步` 只能由目前 `defaultGroupId` 群組中的 LINE Bot 管理員執行。後端先呼叫 LINE 官方的 [`GET /v2/bot/group/{groupId}/members/ids`](https://developers.line.biz/en/reference/messaging-api/#get-group-member-user-ids)，依 response 的 `next` token 持續傳入 `start`，因此不會假設群組最多 100 人。取得 userId 後，再逐一以 group member profile API 取得最新 `displayName` 並做 exact match。非公會成員會略過，不視為錯誤。
+
+完整群組 member IDs API 只開放 verified 或 premium LINE Official Account。若此 API 回 403，後端只在此情況改用：
+
+```text
+guildDraw/lineObservedMembers/{groupId}/{lineUserId}
+```
+
+verified webhook 只要帶有 groupId 與 userId，Bot 就會嘗試取得 profile，保存 `lineUserId`、`displayName`、`groupId`、可選的 `pictureUrl`、`firstSeenAt` 與 `lastSeenAt`。不保存訊息本文，也不建立聊天紀錄。fallback 只能同步 Bot 加入後曾產生 webhook、且 profile 仍可取得的成員，所以回覆會明確提示名單可能不完整。404 會回報群組不存在或 Bot 不在群組；429 會要求稍後重試；5xx 或網路錯誤不會誤用 fallback。
+
+同步只會新增 exact match binding，或更新同一 LINE identity 的 metadata。它不會刪除 binding、清空 `lineBindings`，也不會覆蓋已綁到其他 lineUserId 的玩家；這些情況會列入 conflicts 供人工處理。
+
+### 設定 LINE Bot 管理員
+
+Firebase `ADMIN_UID` 與 LINE userId 是不同身份，不能互相比較。先讓目標 LINE 使用者在正式群組完成綁定，再由 `ADMIN_UID` allowlist 中已登入的網站管理員，使用 `getLineBindings` 回傳的 `bindingId` 呼叫：
+
+```js
+const idToken = await firebase.auth().currentUser.getIdToken();
+await fetch("https://asia-southeast1-capydraw-7f7de.cloudfunctions.net/setLineBotAdmin", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${idToken}`,
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({ bindingId: "p_綁定識別碼", enabled: true })
+});
+```
+
+後端會從 binding 取得 lineUserId，並只在 server-side 更新 `guildDraw/lineSettings/adminLineUserIds/{lineUserId}`；browser 不能直接寫 RTDB。移除權限時傳 `enabled: false`。不要把完整 lineUserId、Channel Access Token、Channel Secret 或 Authorization header 寫入 repo、前端或 log。
 
 ## 發送與真正 @mention 測試
 
