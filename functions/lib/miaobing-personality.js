@@ -5,10 +5,133 @@ const crypto = require("node:crypto");
 const AMBIENT_COOLDOWN_MS = 3 * 60 * 1000;
 const DIRECT_MENTION_COOLDOWN_MS = 4 * 1000;
 const AMBIENT_CONTEXTUAL_PROBABILITY = 0.2;
+const OWNER_ALIAS_PROBABILITY = 0.3;
+const OWNER_ALIAS_LONG_PROBABILITY = 0.1;
+const LEADER_ALIAS_PROBABILITY = 0.28;
+const JAPANESE_NAME_PROBABILITY = 0.08;
+const PLATE_MENTION_COOLDOWN_MS = 60 * 1000;
 const NIGHT_FLAVOR_PROBABILITY = 0.3;
 const COMMAND_FLAVOR_PROBABILITY = 0.8;
 
+const MIAOBING_LORE = Object.freeze({
+  owner: Object.freeze({
+    lineName: "Chia",
+    gameIds: Object.freeze(["嘻嘻不嘻嘻", "CC x CC"]),
+    aliases: Object.freeze(["嘻嘻", "嘻嘻不嘻嘻", "Chia", "CC"]),
+  }),
+  guildLeader: Object.freeze({lineName: "@Hank", gameId: "挖系小嗨"}),
+  plateTarget: Object.freeze({lineName: "貳零陸", gameId: "九章伏藏"}),
+});
+
+const SENDER_ROLES = Object.freeze({
+  OWNER: "OWNER",
+  GUILD_LEADER: "GUILD_LEADER",
+  MEMBER: "MEMBER",
+});
+
 const MIAOBING_RESPONSES = {
+  ownerIdentity: [
+    "主人？當然是 {target} 喵。\n……不要跟她說本喵有承認。",
+    "嘻嘻啊。\n她負責養本喵，本喵負責管這艘船。",
+    "Chia 是本喵真正的主人。\n……本喵才沒有很黏她。",
+  ],
+  ownerAlias: [
+    "你在叫主人喵？",
+    "嘻嘻？……她又跑去哪裡了。",
+    "Chia 是主人。這件事情有什麼好大驚小怪的喵。",
+    "本喵才沒有在等主人。",
+    "CC？你說主人其中一個遊戲帳號喵？",
+  ],
+  role: {
+    OWNER: {
+      direct: [
+        "……主人叫就沒辦法了喵。",
+        "本喵有聽到啦，主人。",
+        "才沒有特別快回你。",
+        "主人今天怎麼這麼閒，跑來找本喵？",
+        "嗯……本喵在。",
+        "主人要摸的話……只能一下。",
+      ],
+      commandSuccess: [
+        "主人都開口了，本喵當然會處理。",
+        "……這種事直接叫本喵就好了。",
+        "主人交代的，本喵弄好了。",
+        "好了喵。主人可以不要一直盯著本喵看。",
+      ],
+      sync: ["主人要點名？行啦，本喵來巡船。"],
+      lock: ["主人說鎖，那本喵就把名冊收起來。"],
+      adminBind: ["主人又要本喵抓人了喵。"],
+      cannedFood: ["……主人有帶給本喵嗎？"],
+      pet: ["……主人例外。只能一下喵。"],
+      hug: ["……只有主人可以。三秒。"],
+      compliment: ["主人也這樣覺得？\n……那本喵就勉強高興一下。"],
+    },
+    GUILD_LEADER: {
+      direct: [
+        "會長又怎麼了喵？",
+        "本喵正在監督你，別想偷懶。",
+        "嗯？會長有事？",
+        "先說好，本喵不一定聽會長的。",
+        "又有事情要本喵收拾了是不是。",
+      ],
+      commandSuccess: ["會長交代的，本喵處理好了。"],
+      sync: ["會長終於想到要點名了喵。\n行，本喵來巡一次。"],
+      lock: ["知道了會長。\n你管不住的人，本喵來管。"],
+      unlock: ["會長說開門，那就開喵。\n等等出事別怪本喵。"],
+      adminBind: ["會長又抓到漏網船員了喵？"],
+      adminUnbind: ["又有人要從名冊上拆下來了嗎？\n本喵處理。"],
+      pet: ["會長不要趁機摸本喵。"],
+      obedience: ["你是不是搞錯上下關係了喵？"],
+      goodCat: ["先管好你的船員再來管本喵。"],
+    },
+  },
+  plate: [
+    "盤子？你是說 {target} 嗎喵？",
+    "{target}，有人叫你小盤子喵。",
+    "本喵不評論，但 {target} 好像被點名了。",
+  ],
+  plateUnbound: [
+    "盤子本人還沒完成 LINE 綁定喵，\n本喵現在抓不到他。",
+  ],
+  leaderIdentity: [
+    "現任會長是 {target}，遊戲裡叫挖系小嗨喵。\n\n會長管人，本喵管會長。",
+  ],
+  leaderAlias: [
+    "會長？本喵有在盯著他喵。",
+    "挖系小嗨是會長。\n不過也是本喵的管理對象。",
+    "會長最近有沒有偷懶，本喵都看得到。",
+  ],
+  leaderSelf: [
+    "本喵知道。\n那又怎樣？會長也是本喵管的。",
+    "會長管人，本喵管會長。忘了喵？",
+    "嗯，你是會長。\n然後本喵是管會長的。",
+  ],
+  japaneseName: [
+    "べ、別にあんたのために話してるわけじゃないニャ。",
+    "勘違いしないでよね。たまたま日本語も話せるだけニャ。",
+    "呼んだ？べつに暇だったわけじゃないニャ。",
+    "ちゃんと聞いてるニャ。別に気にしてるわけじゃないけど。",
+    "べ、別に日本語が得意って自慢してるわけじゃないからね。",
+  ],
+  control: {
+    unauthorizedMute: [
+      "你叫本喵閉嘴，本喵就要閉嘴喵？\n想得美。",
+      "這種命令只有主人跟管理員說了算喵。",
+    ],
+    ownerMute: ["……主人都這樣說了。\n\n本喵去睡就是了喵。"],
+    adminMute: ["哼，管理員命令是吧。\n\n本喵去船艙睡覺就是了。"],
+    mute: [
+      "……好啦，真的閉嘴就是了喵。\n\n本喵去船艙睡覺。\n需要我的時候……再叫我。",
+    ],
+    wake: [
+      "……現在才想起本喵？",
+      "哼，本喵只是剛好睡醒。",
+      "回來了喵。\n才不是因為你說想本喵。",
+      "……本喵聽到了。\n再陪你們一下就是了喵。",
+    ],
+    ownerWake: ["……主人現在才想起本喵？\n\n哼。\n本喵回來了喵。"],
+    adminWake: ["……現在才想起本喵？\n\n行啦，本喵回來了。"],
+  },
   greeting: [
     "喵？",
     "本喵在。叫這麼大聲幹嘛。",
@@ -190,6 +313,15 @@ const MIAOBING_RESPONSES = {
 };
 
 const INTENT_RULES = [
+  {intent: "ownerIdentity", keywords: [
+    "主人是誰", "你的主人是誰", "喵餅主人是誰", "誰是你主人", "誰養你的", "你主人", "主人呢",
+  ]},
+  {intent: "leaderIdentity", keywords: [
+    "誰是會長", "會長是誰", "現在會長誰", "現任會長", "喵餅誰是會長",
+  ]},
+  {intent: "leaderClaim", keywords: ["我是會長", "我可是會長", "本會長"]},
+  {intent: "leaderObedience", keywords: ["喵餅聽話"]},
+  {intent: "leaderGoodCat", keywords: ["喵餅乖"]},
   {intent: "sad", keywords: ["難過", "心情不好", "心情很差", "很煩", "想哭", "今天很糟"]},
   {intent: "dogBetter", keywords: ["狗狗比較可愛", "狗比較可愛"]},
   {intent: "noisy", keywords: ["你好吵", "喵餅好吵", "閉嘴", "安靜"]},
@@ -197,7 +329,7 @@ const INTENT_RULES = [
   {intent: "churu", keywords: ["肉泥"]},
   {intent: "dog", keywords: ["汪"], match: "bark"},
   {intent: "identity", keywords: ["你是誰", "喵餅是誰", "你幹嘛的"]},
-  {intent: "love", keywords: ["愛你", "喜歡你", "最愛喵餅", "love you"]},
+  {intent: "love", keywords: ["愛你", "喜歡你", "最愛喵餅", "想你了", "想妳了", "love you"]},
   {intent: "compliment", keywords: ["好可愛", "可愛", "漂亮", "萌", "可愛い", "かわいい", "cute"]},
   {intent: "work", keywords: ["不想上班", "上班好累", "又要上班"]},
   {intent: "tired", keywords: ["好累", "累死", "累了", "想睡", "沒力"]},
@@ -219,6 +351,13 @@ const CONTEXTUAL_INTENTS = new Set([
   "tired", "work", "sad", "guildLeader", "ticket", "captain", "cat",
 ]);
 
+const OWNER_IDENTITY_INTENT = "ownerIdentity";
+const LEADER_IDENTITY_INTENT = "leaderIdentity";
+const SPECIAL_DIRECT_INTENTS = new Set([
+  OWNER_IDENTITY_INTENT, LEADER_IDENTITY_INTENT, "leaderClaim",
+  "leaderObedience", "leaderGoodCat",
+]);
+
 function pickRandom(items, rng = Math.random) {
   if (!Array.isArray(items) || !items.length) return "";
   const value = Number(rng());
@@ -230,6 +369,48 @@ function normalizeText(text) {
   return String(text || "").trim().toLowerCase();
 }
 
+function compactControlText(text) {
+  return String(text || "")
+    .replace(/[\s，,。.!！?？、~～…：:；;「」『』（）()]+/gu, "")
+    .toLowerCase();
+}
+
+function detectPersonalityControl(text) {
+  const compact = compactControlText(text);
+  if (compact === "喵餅真的閉嘴") return "mute";
+  if (compact === "喵餅我想你了" || compact === "喵餅我想妳了") return "wake";
+  return null;
+}
+
+function hasUnsafeAliasContext(text) {
+  return /(?:https?:\/\/|www\.|\S+@\S+|`|::|=>|\b(?:const|let|var|class|function)\s+)/iu.test(text);
+}
+
+function hasAsciiToken(text, token) {
+  if (hasUnsafeAliasContext(text)) return false;
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}($|[^\\p{L}\\p{N}_])`, "iu").test(text);
+}
+
+function isOwnerAliasCandidate(text) {
+  const value = String(text || "");
+  return MIAOBING_LORE.owner.aliases.some((alias) =>
+    /^[\x00-\x7F]+$/u.test(alias) ? hasAsciiToken(value, alias) : value.includes(alias));
+}
+
+function isPlateCandidate(text) {
+  const compact = String(text || "")
+    .replace(/[\s，,。.!！?？、~～…：:；;「」『』（）()]+/gu, "");
+  return /^(?:(?:誰是|叫))?小?盤子(?:在哪|出來|呢|是誰|本人)?$/u.test(compact);
+}
+
+function isJapaneseNameCandidate(text) {
+  const value = String(text || "").trim();
+  if (!value || [...value].length > 50) return false;
+  const tokens = value.match(/[ぁ-ゖァ-ヺー]+/gu) || [];
+  return tokens.some((token) => [...token].length >= 2);
+}
+
 function detectMiaobingIntent(text) {
   const normalized = normalizeText(text);
   const withoutBotName = normalized.replaceAll("@喵餅", "").replaceAll("喵餅", "").trim();
@@ -237,7 +418,20 @@ function detectMiaobingIntent(text) {
     if (item.match === "bark") return /^汪+[!！。?？~～\s]*$/u.test(withoutBotName);
     return item.keywords.some((keyword) => normalized.includes(keyword.toLowerCase()));
   });
-  const intent = rule ? rule.intent : "unknown";
+  if (rule) {
+    const intent = rule.intent;
+    const strength = SPECIAL_DIRECT_INTENTS.has(intent) ? "direct" :
+      STRONG_INTENTS.has(intent) ? "strong" :
+        CONTEXTUAL_INTENTS.has(intent) ? "contextual" : "none";
+    return {intent, strength};
+  }
+  if (isPlateCandidate(text)) return {intent: "plate", strength: "plate"};
+  if (String(text || "").includes(MIAOBING_LORE.guildLeader.gameId)) {
+    return {intent: "leaderAlias", strength: "leader-alias"};
+  }
+  if (isOwnerAliasCandidate(text)) return {intent: "ownerAlias", strength: "owner-alias"};
+  if (isJapaneseNameCandidate(text)) return {intent: "japaneseName", strength: "japanese"};
+  const intent = "unknown";
   const strength = STRONG_INTENTS.has(intent) ? "strong" :
     CONTEXTUAL_INTENTS.has(intent) ? "contextual" : "none";
   return {intent, strength};
@@ -274,9 +468,83 @@ function poolForIntent(intent) {
   return MIAOBING_RESPONSES[intent] || MIAOBING_RESPONSES.generalMention;
 }
 
-function generateDirectMentionReply({text, hourTaipei, rng = Math.random}) {
+function semanticReply(intent, text, rng) {
+  if (intent === "ownerIdentity") {
+    return {
+      intent,
+      text: pickRandom(MIAOBING_RESPONSES.ownerIdentity, rng),
+      mentionTarget: "owner",
+      fallbackName: MIAOBING_LORE.owner.lineName,
+    };
+  }
+  if (intent === "leaderIdentity") {
+    return {
+      intent,
+      text: pickRandom(MIAOBING_RESPONSES.leaderIdentity, rng),
+      mentionTarget: "guildLeader",
+      fallbackName: MIAOBING_LORE.guildLeader.gameId,
+    };
+  }
+  if (intent === "plate") {
+    return {
+      intent,
+      text: pickRandom(MIAOBING_RESPONSES.plate, rng),
+      mentionTarget: "plateTarget",
+      fallbackReplyText: pickRandom(MIAOBING_RESPONSES.plateUnbound, rng),
+    };
+  }
+  if (intent === "japaneseName") {
+    return {
+      intent,
+      text: `原來有日本成員，本喵也是會講日文的。\n${pickRandom(MIAOBING_RESPONSES.japaneseName, rng)}`,
+    };
+  }
+  return {intent, text: pickRandom(poolForIntent(intent), rng)};
+}
+
+function effectiveSenderRole(senderRole, isOwner, isLeader) {
+  if (senderRole === SENDER_ROLES.OWNER || isOwner) return SENDER_ROLES.OWNER;
+  if (senderRole === SENDER_ROLES.GUILD_LEADER || isLeader) return SENDER_ROLES.GUILD_LEADER;
+  return SENDER_ROLES.MEMBER;
+}
+
+function roleResponsePool(senderRole, intent) {
+  const rolePools = MIAOBING_RESPONSES.role[senderRole];
+  if (!rolePools) return null;
+  const keyMap = {
+    leaderObedience: "obedience",
+    leaderGoodCat: "goodCat",
+  };
+  return rolePools[keyMap[intent] || intent] || null;
+}
+
+function generateDirectMentionReply({text, hourTaipei, senderRole, isOwner = false, isLeader = false,
+  rng = Math.random}) {
   const detected = detectMiaobingIntent(text);
   const intent = detected.intent === "unknown" && mentionsMiaobingName(text) ? "calling" : detected.intent;
+  const role = effectiveSenderRole(senderRole, isOwner, isLeader);
+  const senderIsLeader = role === SENDER_ROLES.GUILD_LEADER;
+  if (intent === "leaderClaim" && !senderIsLeader) return {intent, silence: true, night: false};
+  if (intent === "leaderClaim") {
+    return {intent, text: pickRandom(MIAOBING_RESPONSES.leaderSelf, rng), night: false};
+  }
+  if (intent === "leaderObedience" || intent === "leaderGoodCat") {
+    const leaderPool = senderIsLeader ? roleResponsePool(role, intent) : null;
+    return {
+      intent: leaderPool ? intent : "calling",
+      text: pickRandom(leaderPool || MIAOBING_RESPONSES.calling, rng),
+      night: false,
+    };
+  }
+  if (["ownerIdentity", "leaderIdentity", "plate", "ownerAlias", "leaderAlias",
+    "japaneseName"].includes(intent)) {
+    return {...semanticReply(intent, text, rng), night: false};
+  }
+  const directRolePool = ["unknown", "calling", "greeting"].includes(intent) ?
+    roleResponsePool(role, "direct") : roleResponsePool(role, intent);
+  if (directRolePool) {
+    return {intent, text: pickRandom(directRolePool, rng), night: false, senderRole: role};
+  }
   if (intent !== "sad" && isNightHour(hourTaipei) && rng() < NIGHT_FLAVOR_PROBABILITY) {
     return {intent, text: pickRandom(MIAOBING_RESPONSES.night, rng), night: true};
   }
@@ -286,10 +554,47 @@ function generateDirectMentionReply({text, hourTaipei, rng = Math.random}) {
 function shouldAmbientReply({triggerStrength, rng = Math.random}) {
   if (triggerStrength === "strong") return true;
   if (triggerStrength === "contextual") return rng() < AMBIENT_CONTEXTUAL_PROBABILITY;
+  if (triggerStrength === "leader-alias") return rng() < LEADER_ALIAS_PROBABILITY;
+  if (triggerStrength === "japanese") return rng() < JAPANESE_NAME_PROBABILITY;
   return false;
 }
 
-function planMiaobingMessage({event, command, botUserId, hourTaipei, rng = Math.random}) {
+function isPersonalityEnabled(value) {
+  return value !== false;
+}
+
+function planPersonalityControl({text, personalityEnabled, isAdmin = false, isOwner = false,
+  rng = Math.random}) {
+  const control = detectPersonalityControl(text);
+  if (!control) return {control: null};
+  const authorized = isAdmin || isOwner;
+  if (!authorized) {
+    if (!isPersonalityEnabled(personalityEnabled) || control === "wake") {
+      return {control, authorized: false, shouldReply: false, stateChange: null};
+    }
+    return {
+      control,
+      authorized: false,
+      shouldReply: true,
+      replyText: pickRandom(MIAOBING_RESPONSES.control.unauthorizedMute, rng),
+      stateChange: null,
+    };
+  }
+  const role = isOwner ? "owner" : "admin";
+  const pool = control === "mute" ?
+    MIAOBING_RESPONSES.control[`${role}Mute`] || MIAOBING_RESPONSES.control.mute :
+    MIAOBING_RESPONSES.control[`${role}Wake`] || MIAOBING_RESPONSES.control.wake;
+  return {
+    control,
+    authorized: true,
+    shouldReply: true,
+    replyText: pickRandom(pool, rng),
+    stateChange: control === "wake",
+  };
+}
+
+function planMiaobingMessage({event, command, botUserId, hourTaipei, personalityEnabled,
+  senderRole, isOwner = false, isLeader = false, rng = Math.random}) {
   if (command || String(event && event.message && event.message.text || "").trim().startsWith("!")) {
     return {shouldReply: false, reason: "command"};
   }
@@ -297,38 +602,117 @@ function planMiaobingMessage({event, command, botUserId, hourTaipei, rng = Math.
       !event.source || event.source.type !== "group" || !event.source.groupId) {
     return {shouldReply: false, reason: "unsupported-event"};
   }
+  if (!isPersonalityEnabled(personalityEnabled)) {
+    return {shouldReply: false, reason: "personality-disabled"};
+  }
 
   const text = String(event.message.text || "");
+  const role = effectiveSenderRole(senderRole, isOwner, isLeader);
   const trueMention = isBotMentioned(event.message, {botUserId});
   const directName = mentionsMiaobingName(text);
   if (trueMention || directName) {
-    const generated = generateDirectMentionReply({text, hourTaipei, rng});
+    const generated = generateDirectMentionReply({
+      text, hourTaipei, senderRole: role, isOwner, isLeader, rng,
+    });
+    if (generated.silence) {
+      return {shouldReply: false, reason: "unverified-leader-claim", intent: generated.intent};
+    }
+    const kind = generated.intent === "plate" ? "plate" : "direct";
     return {
       shouldReply: true,
-      kind: "direct",
+      kind,
       reason: trueMention ? "true-mention" : "direct-name",
       intent: generated.intent,
       replyText: generated.text,
+      mentionTarget: generated.mentionTarget,
+      fallbackName: generated.fallbackName,
+      fallbackReplyText: generated.fallbackReplyText,
       night: generated.night,
-      cooldownMs: DIRECT_MENTION_COOLDOWN_MS,
+      cooldownMs: kind === "plate" ? PLATE_MENTION_COOLDOWN_MS : DIRECT_MENTION_COOLDOWN_MS,
     };
   }
 
   const detected = detectMiaobingIntent(text);
+  if (detected.intent === "leaderClaim") {
+    if (role !== SENDER_ROLES.GUILD_LEADER) {
+      return {shouldReply: false, reason: "unverified-leader-claim", intent: detected.intent};
+    }
+    return {
+      shouldReply: true,
+      kind: "direct",
+      reason: "verified-leader-claim",
+      intent: detected.intent,
+      replyText: pickRandom(MIAOBING_RESPONSES.leaderSelf, rng),
+      cooldownMs: DIRECT_MENTION_COOLDOWN_MS,
+    };
+  }
+  const senderPool = roleResponsePool(role, detected.intent);
+  if (senderPool) {
+    return {
+      shouldReply: true,
+      kind: "direct",
+      reason: "sender-role-trigger",
+      intent: detected.intent,
+      replyText: pickRandom(senderPool, rng),
+      senderRole: role,
+      cooldownMs: DIRECT_MENTION_COOLDOWN_MS,
+    };
+  }
+  if (detected.strength === "direct") {
+    const generated = semanticReply(detected.intent, text, rng);
+    return {
+      shouldReply: true,
+      kind: "direct",
+      reason: "lore-identity",
+      intent: detected.intent,
+      replyText: generated.text,
+      mentionTarget: generated.mentionTarget,
+      fallbackName: generated.fallbackName,
+      cooldownMs: DIRECT_MENTION_COOLDOWN_MS,
+    };
+  }
+  if (detected.strength === "plate") {
+    const generated = semanticReply(detected.intent, text, rng);
+    return {
+      shouldReply: true,
+      kind: "plate",
+      reason: "plate-trigger",
+      intent: detected.intent,
+      replyText: generated.text,
+      mentionTarget: generated.mentionTarget,
+      fallbackReplyText: generated.fallbackReplyText,
+      cooldownMs: PLATE_MENTION_COOLDOWN_MS,
+    };
+  }
   if (detected.strength === "contextual" && [...text].length > 40) {
     return {shouldReply: false, reason: "ambient-message-too-long", intent: detected.intent};
   }
-  if (!shouldAmbientReply({triggerStrength: detected.strength, rng})) {
+  if (detected.strength === "owner-alias") {
+    const probability = [...text].length <= 20 ? OWNER_ALIAS_PROBABILITY : OWNER_ALIAS_LONG_PROBABILITY;
+    if (rng() >= probability) {
+      return {shouldReply: false, reason: "ambient-not-selected", intent: detected.intent};
+    }
+  } else if (!shouldAmbientReply({triggerStrength: detected.strength, rng})) {
     return {shouldReply: false, reason: "ambient-not-selected", intent: detected.intent};
   }
-  const generated = generateDirectMentionReply({text, hourTaipei, rng});
+  const semanticIntents = new Set(["ownerAlias", "leaderAlias", "japaneseName"]);
+  const generated = semanticIntents.has(detected.intent) ?
+    semanticReply(detected.intent, text, rng) :
+    generateDirectMentionReply({text, hourTaipei, senderRole: role, isOwner, isLeader, rng});
+  const reasons = {
+    strong: "strong-trigger",
+    contextual: "contextual-trigger",
+    "owner-alias": "owner-alias-trigger",
+    "leader-alias": "leader-alias-trigger",
+    japanese: "japanese-trigger",
+  };
   return {
     shouldReply: true,
     kind: "ambient",
-    reason: detected.strength === "strong" ? "strong-trigger" : "contextual-trigger",
+    reason: reasons[detected.strength] || "ambient-trigger",
     intent: detected.intent,
     replyText: generated.text,
-    night: generated.night,
+    night: Boolean(generated.night),
     cooldownMs: AMBIENT_COOLDOWN_MS,
   };
 }
@@ -365,16 +749,26 @@ function commandPool(command, status) {
   return pools[command] || MIAOBING_RESPONSES.command.success;
 }
 
+function senderCommandPool(senderRole, command, status) {
+  if (status !== "success") return null;
+  const pools = MIAOBING_RESPONSES.role[senderRole];
+  if (!pools) return null;
+  const commandKeys = {"admin-bind": "adminBind", "admin-unbind": "adminUnbind"};
+  return pools[commandKeys[command] || command] || pools.commandSuccess || null;
+}
+
 function decorateCommandReply({
   command,
   status = "success",
   coreText,
+  senderRole = SENDER_ROLES.MEMBER,
   rng = Math.random,
   flavorProbability = COMMAND_FLAVOR_PROBABILITY,
 }) {
   const core = String(coreText || "").trim();
   if (!core || rng() >= flavorProbability) return core;
-  const opening = pickRandom(commandPool(command, status), rng);
+  const opening = pickRandom(senderCommandPool(senderRole, command, status) ||
+    commandPool(command, status), rng);
   const closingPool = status === "success" ? MIAOBING_RESPONSES.commandClosing[command] : null;
   const closing = closingPool && rng() < 0.35 ? pickRandom(closingPool, rng) : "";
   return [opening, core, closing].filter(Boolean).join("\n\n");
@@ -401,17 +795,30 @@ module.exports = {
   COMMAND_FLAVOR_PROBABILITY,
   DIRECT_MENTION_COOLDOWN_MS,
   INTENT_RULES,
+  JAPANESE_NAME_PROBABILITY,
+  LEADER_ALIAS_PROBABILITY,
+  MIAOBING_LORE,
   MIAOBING_RESPONSES,
+  OWNER_ALIAS_LONG_PROBABILITY,
+  OWNER_ALIAS_PROBABILITY,
+  PLATE_MENTION_COOLDOWN_MS,
+  SENDER_ROLES,
   decorateCommandReply,
   detectMiaobingIntent,
+  detectPersonalityControl,
   generateDirectMentionReply,
   getTaipeiHour,
   isBotMentioned,
   isCooldownElapsed,
+  isJapaneseNameCandidate,
+  isOwnerAliasCandidate,
+  isPersonalityEnabled,
+  isPlateCandidate,
   mentionsMiaobingName,
   personalityUserKey,
   pickRandom,
   planMiaobingMessage,
+  planPersonalityControl,
   responsePoolStats,
   shouldAmbientReply,
 };

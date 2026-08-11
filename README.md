@@ -215,24 +215,34 @@ Firebase `ADMIN_UID` 與 LINE userId 是不同身份，不能互相比較。先�
 
 喵餅是住在公會船上的「公會會貓」：嘴上嫌麻煩，實際會把名冊、綁定與管理工作處理好；核心台詞是「會長管人，本喵管會長」。人格內容集中在 `functions/lib/miaobing-personality.js`，`lineWebhook` 只負責依優先順序 routing，不會把 response pools 散落在 webhook。
 
-訊息處理順序固定為：正式 `!command`、真正 @喵餅、文字包含「喵餅」、strong easter egg、contextual ambient、保持安靜。Command 永遠只進既有 command handler，不會同時觸發聊天回覆；image、sticker、video、audio 與 file 第一版都不做人格回覆。未知 `!` 指令仍由 command handler 回覆並提示 `!說明`。
+訊息處理順序固定為：正式 `!command`、人格控制句、`enabled` 檢查、真正 @喵餅、主人／會長 identity、文字包含「喵餅」、strong easter egg、contextual ambient、保持安靜。Command 永遠只進既有 command handler，不會同時觸發聊天回覆；image、sticker、video、audio 與 file 都不做人格回覆。未知 `!` 指令仍由 command handler 回覆並提示 `!說明`。
 
 真正 mention 優先依 LINE webhook 的 `message.mention.mentionees[].isSelf === true` 判斷；若 payload 只有舊式 mention metadata，才以 webhook `destination` 與 mentionee userId 相符作 fallback，不硬編碼 Bot userId。非 true mention 的文字只要包含「喵餅」也視為直接對話。直接互動必定產生候選回覆，但同一使用者有 4 秒防洗版 cooldown，不受 ambient cooldown 影響。
 
-Ambient 不會對所有聊天隨機插嘴。`罐罐`、`肉泥`、`汪`、`狗狗比較可愛` 等 strong trigger 的候選機率為 100%；疲累、上班、情緒低落、會長、船票、船長與短句中的「貓」為 contextual trigger，候選機率為 20%。Contextual 訊息超過 40 個字元時不觸發。Strong 與 contextual 都共用每群 3 分鐘 ambient cooldown，因此 strong trigger 在 cooldown 內也保持安靜。
+世界觀集中在 `MIAOBING_LORE`：主人為 `Chia - 嘻嘻不嘻嘻 / CC x CC`，現任會長為 `@Hank - 挖系小嗨`，盤子彩蛋目標為 `貳零陸 - 九章伏藏`。特殊人物一律從目前群組的 canonical `lineBindings` 解析，不依 displayName 猜測，也不硬編 LINE userId；同一人物若解析到衝突的多個 userId，就不建立 mention。主人／會長／盤子的身份回答在 binding 可唯一解析時使用 LINE `textV2` true mention，否則只用安全文字或不 mention。
+
+每則已啟用的人格文字都會由 binding 判定 `OWNER`、`GUILD_LEADER` 或 `MEMBER` sender role。主人與會長有各自的 direct、部分 easter egg 與 command flavor pool，缺少特殊 variant 時 fallback 到一般 pool。這只是人格分層，不是授權：`OWNER` 與 `GUILD_LEADER` 不會自動取得 `!同步`、`!鎖定`、`!幫綁` 等權限，管理功能仍只看 `adminLineUserIds`。唯一額外能力是已驗證的主人可和 LINE Bot admin 一樣控制人格總開關。
+
+Ambient 不會對所有聊天隨機插嘴。`罐罐`、`肉泥`、`汪`、`狗狗比較可愛` 等 strong trigger 的候選機率為 100%；疲累、上班、情緒低落、會長、船票、船長與短句中的「貓」為 contextual trigger，候選機率為 20%。主人 alias 短訊息為 30%、長訊息為 10%，`挖系小嗨` 為 28%，含至少兩個平假名／片假名且不超過 50 字的 Japanese candidate 為 8%。Contextual 訊息超過 40 個字元時不觸發。一般 strong/contextual 與上述 ambient 都共用每群 3 分鐘 cooldown。
+
+`盤子`／`小盤子` 合理短句會解析 `貳零陸 - 九章伏藏` 並以真正 textV2 mention 通知；同群真正通知另有 60 秒 cooldown，binding 不存在時只回安全提示且不建立假 mention。`CC` 使用 standalone Unicode token boundary，URL、email、程式宣告與 `ACCC`／`CCCCC` 不會命中。
+
+人格總開關位於 `guildDraw/linePersonality/{groupId}/enabled`，欄位不存在時預設 `true`。只有現有 LINE Bot admin 或 binding 驗證為 Chia 的主人能以「喵餅真的閉嘴」關閉，或以「喵餅我想你了／妳了」喚醒；中間空白與常用標點可忽略。關閉後不執行一般 intent、RNG 或 ambient cooldown 寫入，所有聊天與彩蛋沉默，但正式 command 及其 command flavor 保持可用。未授權者不能改 state；人格已關閉時，未授權喚醒句也不回覆。
 
 Cooldown 只保存 server-side metadata：
 
 ```text
 guildDraw/linePersonality/{groupId}/lastAmbientReplyAt
 guildDraw/linePersonality/{groupId}/lastMentionReplyAt/{hashedUserKey}
+guildDraw/linePersonality/{groupId}/lastPlateMentionAt
+guildDraw/linePersonality/{groupId}/enabled
 ```
 
-兩者只存 timestamp；使用者 scope 是 LINE userId 的 SHA-256 截短 key，不保存原始 userId。系統不保存訊息全文、聊天記錄或觸發文字，production log 也只記錄 `kind` 與 `intent`，不記錄 message、groupId 或 userId。`database.rules.json` 禁止 browser 讀寫整個 `linePersonality` path。
+前三個 cooldown 欄位只存 timestamp；使用者 scope 是 LINE userId 的 SHA-256 截短 key，不保存原始 userId。系統不保存訊息全文、聊天記錄或觸發文字，production log 也只記錄 `kind`、`intent` 或 control 類型，不記錄 message、groupId 或 userId。`database.rules.json` 禁止 browser 讀寫整個 `linePersonality` path。
 
 第一版完全使用 ordered keyword rules、集中 response pools 與可注入 RNG，沒有串接 AI／LLM、沒有外部模型 dependency，也沒有新增 Secret。Intent 判定會先處理情緒低落、狗比貓可愛、被嫌吵等高優先規則，避免被較一般的「謝謝」或「可愛」誤判。Asia/Taipei 01:00–05:59 只有在原本已決定回覆後，才有 30% 機率採用夜間台詞，不會因時間到主動發訊息。
 
-Command 的原始結構化結果不變，再以 80% 機率加入簡短 opening，少數綁定成功訊息另有 closing。功能失敗、找不到、鎖定、同步與各管理指令使用不同 command flavor pools；測試可以注入固定 RNG，因此不依賴 `Math.random()` 的結果。
+Command 的原始結構化結果不變，再以 80% 機率加入簡短 opening，少數綁定成功訊息另有 closing。成功時先依 binding-based sender role 選主人／會長 command pool，再 fallback 一般 pool；錯誤仍使用原本的 failure/not-found/locked pool。人格 role 不參與 command authorization。測試可以注入固定 RNG，因此不依賴 `Math.random()` 的結果。
 
 要擴充人格時，在 `MIAOBING_RESPONSES` 增加集中管理的 phrase pool，並在 ordered `INTENT_RULES` 加入 intent/keyword；需要 ambient 的 intent 再加入 `STRONG_INTENTS` 或 `CONTEXTUAL_INTENTS`。Contextual 機率由 `AMBIENT_CONTEXTUAL_PROBABILITY` 調整，cooldown 由 `AMBIENT_COOLDOWN_MS` 與 `DIRECT_MENTION_COOLDOWN_MS` 調整。未來若改接 AI，可以保留 routing 與 cooldown，只替換 `generateDirectMentionReply(context)`。
 

@@ -47,12 +47,22 @@ const {
   selectAdminUnbindBindings,
 } = require("./lib/line-sync");
 const {
+  AMBIENT_COOLDOWN_MS,
   decorateCommandReply,
+  detectPersonalityControl,
   getTaipeiHour,
   isCooldownElapsed,
+  isPersonalityEnabled,
   personalityUserKey,
   planMiaobingMessage,
+  planPersonalityControl,
 } = require("./lib/miaobing-personality");
+const {
+  buildLoreReplyMessage,
+  isSenderLorePerson,
+  resolveLoreIdentity,
+  resolveSenderRole,
+} = require("./lib/miaobing-lore");
 
 initializeApp();
 
@@ -135,27 +145,31 @@ async function callLine(path, token, body, method = "POST") {
   return response.json();
 }
 
+async function replyMessages(replyToken, lineMessages, token) {
+  const messages = (Array.isArray(lineMessages) ? lineMessages : [lineMessages])
+    .filter((message) => message && typeof message === "object")
+    .slice(0, 5);
+  if (!replyToken || !messages.length) return;
+  await callLine("/message/reply", token, {replyToken, messages});
+}
+
 async function replyTexts(replyToken, texts, token) {
   const messages = (Array.isArray(texts) ? texts : [texts])
     .filter((text) => String(text || "").trim())
-    .slice(0, 5)
     .map((text) => ({type: "text", text: String(text)}));
-  if (!replyToken || !messages.length) return;
-  await callLine("/message/reply", token, {
-    replyToken,
-    messages,
-  });
+  await replyMessages(replyToken, messages, token);
 }
 
 async function replyText(replyToken, text, token) {
   await replyTexts(replyToken, [text], token);
 }
 
-function createCommandReplier(event, command, token) {
+function createCommandReplier(event, command, token, senderRole) {
   const decorate = (coreText, status) => decorateCommandReply({
     command: command.command,
     status,
     coreText,
+    senderRole,
   });
   return {
     text: (coreText, status = "success") =>
@@ -169,6 +183,13 @@ function createCommandReplier(event, command, token) {
   };
 }
 
+async function getEventSenderRole(event) {
+  if (!event || !event.source || event.source.type !== "group" ||
+      !event.source.groupId || !event.source.userId) return "MEMBER";
+  const bindings = (await getDatabase().ref("guildDraw/lineBindings").get()).val() || {};
+  return resolveSenderRole(bindings, event.source.groupId, event.source.userId).senderRole;
+}
+
 async function claimPersonalityCooldown(ref, now, cooldownMs) {
   const transaction = await ref.transaction((lastReplyAt) =>
     isCooldownElapsed(lastReplyAt, now, cooldownMs) ? now : undefined);
@@ -176,29 +197,91 @@ async function claimPersonalityCooldown(ref, now, cooldownMs) {
 }
 
 async function handleMiaobingPersonality({event, botUserId, token}) {
+  if (!event || event.type !== "message" || !event.message || event.message.type !== "text" ||
+      !event.source || event.source.type !== "group" || !event.source.groupId) return;
+  const groupId = event.source.groupId;
+  if (!isFirebaseSafeKey(groupId)) return;
+  const text = String(event.message.text || "");
+  const db = getDatabase();
+  const groupRef = db.ref(`guildDraw/linePersonality/${groupId}`);
+  const enabledValue = (await groupRef.child("enabled").get()).val();
+  const personalityEnabled = isPersonalityEnabled(enabledValue);
+  const control = detectPersonalityControl(text);
+
+  let bindings = null;
+  if (control) {
+    const [settingsSnapshot, bindingsSnapshot] = await Promise.all([
+      db.ref("guildDraw/lineSettings").get(),
+      db.ref("guildDraw/lineBindings").get(),
+    ]);
+    const settings = settingsSnapshot.val() || {};
+    bindings = bindingsSnapshot.val() || {};
+    const userId = event.source.userId;
+    const controlPlan = planPersonalityControl({
+      text,
+      personalityEnabled,
+      isAdmin: isLineBotAdmin(settings.adminLineUserIds, userId),
+      isOwner: isSenderLorePerson(bindings, groupId, "owner", userId),
+    });
+    if (controlPlan.authorized) {
+      if (controlPlan.stateChange === false) {
+        await replyText(event.replyToken, controlPlan.replyText, token);
+        await groupRef.child("enabled").set(false);
+      } else {
+        await groupRef.child("enabled").set(true);
+        await replyText(event.replyToken, controlPlan.replyText, token);
+      }
+      logger.info("Miaobing personality control", {control: controlPlan.control});
+      return;
+    }
+    if (controlPlan.shouldReply) {
+      await replyText(event.replyToken, controlPlan.replyText, token);
+      return;
+    }
+    if (!personalityEnabled) return;
+  }
+
+  if (!personalityEnabled) return;
+  if (!bindings) bindings = (await db.ref("guildDraw/lineBindings").get()).val() || {};
+  const senderId = event.source.userId;
+  const senderContext = resolveSenderRole(bindings || {}, groupId, senderId);
   const plan = planMiaobingMessage({
     event,
     botUserId,
     hourTaipei: getTaipeiHour(),
+    personalityEnabled,
+    senderRole: senderContext.senderRole,
+    isOwner: senderContext.isOwner,
+    isLeader: senderContext.isGuildLeader,
   });
   if (!plan.shouldReply) return;
 
-  const groupId = event.source.groupId;
-  if (!isFirebaseSafeKey(groupId)) return;
+  let identity = null;
+  if (plan.mentionTarget) {
+    if (!bindings) bindings = (await db.ref("guildDraw/lineBindings").get()).val() || {};
+    identity = resolveLoreIdentity(bindings, groupId, plan.mentionTarget);
+  }
+  const message = buildLoreReplyMessage(plan, identity);
+  if (!message) return;
   const now = Date.now();
-  const groupRef = getDatabase().ref(`guildDraw/linePersonality/${groupId}`);
   let cooldownRef;
-  if (plan.kind === "direct" && event.source.userId) {
-    const userKey = personalityUserKey(event.source.userId);
+  let cooldownMs = plan.cooldownMs;
+  if (plan.kind === "plate" && identity) {
+    cooldownRef = groupRef.child("lastPlateMentionAt");
+  } else if (plan.kind === "plate") {
+    cooldownRef = groupRef.child("lastAmbientReplyAt");
+    cooldownMs = AMBIENT_COOLDOWN_MS;
+  } else if (plan.kind === "direct" && senderId) {
+    const userKey = personalityUserKey(senderId);
     if (!userKey || !isFirebaseSafeKey(userKey)) return;
     cooldownRef = groupRef.child(`lastMentionReplyAt/${userKey}`);
   } else if (plan.kind === "ambient") {
     cooldownRef = groupRef.child("lastAmbientReplyAt");
   }
-  if (cooldownRef && !await claimPersonalityCooldown(cooldownRef, now, plan.cooldownMs)) return;
+  if (cooldownRef && !await claimPersonalityCooldown(cooldownRef, now, cooldownMs)) return;
 
   logger.info("Miaobing personality reply", {kind: plan.kind, intent: plan.intent});
-  await replyText(event.replyToken, plan.replyText, token);
+  await replyMessages(event.replyToken, [message], token);
 }
 
 async function fetchGroupMemberProfile(groupId, userId, token) {
@@ -305,9 +388,9 @@ async function handleSyncCommand({event, token, db, settings, bindings, bindings
   }
 }
 
-async function handleHelpCommand(event, token) {
+async function handleHelpCommand(event, token, senderRole) {
   const settings = (await getDatabase().ref("guildDraw/lineSettings").get()).val() || {};
-  const replier = createCommandReplier(event, {command: "help"}, token);
+  const replier = createCommandReplier(event, {command: "help"}, token, senderRole);
   await replier.text(buildBotHelpText({
     bindingLocked: isBindingLocked(settings.bindingLocked),
     isAdmin: isLineBotAdmin(settings.adminLineUserIds, event.source.userId),
@@ -440,11 +523,11 @@ async function handleAdminUnbindCommand({event, command, members, bindings, bind
   await replier.text(buildAdminUnbindSuccessText(selected.bindings));
 }
 
-async function handleBindingCommand(event, command, token, observedProfile) {
+async function handleBindingCommand(event, command, token, observedProfile, senderRole) {
   const db = getDatabase();
   const userId = event.source.userId;
   const groupId = event.source.groupId;
-  const replier = createCommandReplier(event, command, token);
+  const replier = createCommandReplier(event, command, token, senderRole);
   if (!userId) {
     await replier.text("❌ LINE 無法取得你的 userId，無法完成綁定。", "failure");
     return;
@@ -671,8 +754,9 @@ exports.lineWebhook = onRequest({
         });
         return;
       }
+      const senderRole = await getEventSenderRole(event);
       if (eventPlan.command.command === "help") {
-        await handleHelpCommand(event, LINE_CHANNEL_ACCESS_TOKEN.value());
+        await handleHelpCommand(event, LINE_CHANNEL_ACCESS_TOKEN.value(), senderRole);
         return;
       }
       if (eventPlan.command.command === "unknown") {
@@ -680,6 +764,7 @@ exports.lineWebhook = onRequest({
           event,
           eventPlan.command,
           LINE_CHANNEL_ACCESS_TOKEN.value(),
+          senderRole,
         );
         await replier.text([
           `找不到指令「${eventPlan.command.input}」`,
@@ -692,6 +777,7 @@ exports.lineWebhook = onRequest({
         eventPlan.command,
         LINE_CHANNEL_ACCESS_TOKEN.value(),
         profile,
+        senderRole,
       );
     }));
     json(res, 200, {ok: true});
