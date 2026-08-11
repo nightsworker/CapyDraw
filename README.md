@@ -55,8 +55,11 @@ CLI 會安全地提示輸入值，畫面不需要也不應把值貼進 `index.ht
 
 ```dotenv
 ALLOWED_ORIGIN=https://你的正式網站網域
-ADMIN_UID=Firebase_Authentication_中的管理者_UID
+ADMIN_UID=UID_A,UID_B
 ```
+
+`ADMIN_UID` 支援以逗號分隔多個 Firebase Authentication UID，例如
+`ADMIN_UID=UID_A,UID_B`。只有列在 `ADMIN_UID` allowlist 裡的 Google/Firebase 使用者可以執行 LINE 管理功能；只設定單一 UID 時的行為與原本相同。
 
 注意：
 

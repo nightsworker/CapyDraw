@@ -6,6 +6,7 @@ const logger = require("firebase-functions/logger");
 const {initializeApp} = require("firebase-admin/app");
 const {getAuth} = require("firebase-admin/auth");
 const {getDatabase, ServerValue} = require("firebase-admin/database");
+const {assertAdminUid} = require("./lib/admin");
 const {
   bindingKey,
   buildBindingListText,
@@ -58,10 +59,7 @@ async function requireAdmin(req) {
   const match = String(req.get("authorization") || "").match(/^Bearer\s+(.+)$/i);
   if (!match) throw Object.assign(new Error("缺少 Firebase ID Token。"), {status: 401});
   const decoded = await getAuth().verifyIdToken(match[1]);
-  const admins = new Set(ADMIN_UID.value().split(",").map((item) => item.trim()).filter(Boolean));
-  if (!admins.size || !admins.has(decoded.uid)) {
-    throw Object.assign(new Error("此 Firebase 帳號沒有 LINE 管理權限。"), {status: 403});
-  }
+  assertAdminUid(decoded.uid, ADMIN_UID.value());
   return decoded;
 }
 
