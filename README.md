@@ -147,6 +147,13 @@ LINE 名稱 - 遊戲 ID
 - `!同步`：由 LINE Bot 管理員同步目前正式群組的成員。
 - `!說明`：顯示以上正式指令。
 
+LINE Bot 管理員另外可使用：
+
+- `!鎖定`：停止一般會員自行使用 `!綁定`、`!解除`。
+- `!解除鎖定`：重新開放會員自行修改綁定。
+- `!幫綁 <LINE名稱>`：以 observed member identity 替指定 LINE 名稱建立綁定。
+- `!幫解除 <LINE名稱>`：只解除指定 LINE 名稱在正式群組中的 binding。
+
 `!` prefix 用來避免一般聊天誤觸 Bot。輸入前後可以有空白；沒有 prefix 的普通句子不會觸發新指令。舊版精確指令仍由 centralized parser 暫時相容，但文件與 `!說明` 只列新指令，不再新增無 prefix 指令。
 
 綁定採安全的 exact match：LINE profile 的 `displayName` 必須和 `parseMemberName(row).lineName` 完全相同，保留大小寫及 `@`。系統不做 fuzzy、contains、startsWith、大小寫轉換或自動忽略 `@`；例如 `@Hank` 不會配對 `Hank`，`Rain` 也不會配對 `rain`。
@@ -156,13 +163,32 @@ LINE 名稱 - 遊戲 ID
 ```text
 ✅ LINE 綁定完成
 
-Rain
-→ 流鬼
+LINE：Rain
+遊戲 ID：
+• 流鬼
 ```
 
 同一 LINE 名稱可對應多個遊戲 ID，例如 `Chia - 嘻嘻不嘻嘻` 與 `Chia - CC x CC`。一次 `!綁定 Chia` 會用同一 LINE userId 建立兩個 canonical player binding。binding 的 Firebase key 仍由完整 `playerName` 產生，因此不會互相覆蓋。
 
 舊 binding 不需 migration。後端會忽略舊 schema 中語意錯誤的 `alias/gameName`，每次都從 canonical `playerName` 重新解析 `lineName/gameId`。玩家重新綁定時，該筆資料會自然更新為新 schema。
+
+## 綁定鎖定與管理員代操作
+
+鎖定狀態位於：
+
+```text
+guildDraw/lineSettings/bindingLocked
+```
+
+只有值嚴格為 `true` 時才視為鎖定；欄位不存在時預設為 `false`，與舊資料相容。鎖定時另外保存 server-side 的 `bindingLockedAt` 與 `bindingLockedBy`，但不會透過管理 API 或 Bot 回覆公開完整 LINE userId。
+
+鎖定只限制一般會員的自助寫入操作。鎖定期間 `!綁定`、`!綁定 <LINE名稱>`、`!解除` 會被拒絕；`!狀態`、`!清單`、`!未綁定`、`!說明` 仍可使用。LINE Bot 管理員仍可執行 `!同步`、`!鎖定`、`!解除鎖定`、`!幫綁` 與 `!幫解除`。管理員自己的 `!綁定`、`!解除` 仍遵守相同鎖定規則，避免操作意圖不明。
+
+所有管理員修改指令都必須在 `defaultGroupId` 執行，並沿用 `guildDraw/lineSettings/adminLineUserIds`，不會拿 Firebase `ADMIN_UID` 和 LINE userId 比較。`!清單` 會顯示目前是「已鎖定」或「開放中」；`!說明` 會依鎖定狀態顯示提示，且只有 LINE Bot 管理員會看到管理員指令區塊。
+
+`!幫綁 <LINE名稱>` 會先 exact match `guildMembers` 的 `lineName`，再於目前群組的 `lineObservedMembers` 中尋找完全相同的 `displayName`。只有唯一 LINE userId 時才會建立或更新同一 identity 的 binding；找不到 identity 時會要求本人先在群組發言，若有兩個不同 userId 使用相同 displayName 則拒絕操作。若目標玩家已綁到其他 userId，也只回報 conflict，不會覆蓋。
+
+`!幫解除 <LINE名稱>` 同樣採 exact match，只刪除目前正式群組中該 `lineName` 的實際 binding，不會解除其他名稱。一般及管理員的綁定、解除成功訊息都會列出 LINE 名稱、每個遊戲 ID 及實際處理數量。
 
 ## 群組成員同步與 observed cache
 

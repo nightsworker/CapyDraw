@@ -82,8 +82,14 @@ const PREFIX_COMMANDS = new Map([
   ["未綁定", "unbound-list"],
   ["解除", "unbind"],
   ["同步", "sync"],
+  ["鎖定", "lock"],
+  ["解除鎖定", "unlock"],
+  ["幫綁", "admin-bind"],
+  ["幫解除", "admin-unbind"],
   ["說明", "help"],
 ]);
+
+const PREFIX_COMMANDS_WITH_ARGS = new Set(["bind", "admin-bind", "admin-unbind"]);
 
 const LEGACY_COMMANDS = new Map([
   ["綁定", "bind"],
@@ -116,7 +122,7 @@ function parseBotCommand(text) {
     const name = match[1];
     const args = String(match[2] || "").trim();
     const command = PREFIX_COMMANDS.get(name);
-    if (!command || (command !== "bind" && args)) {
+    if (!command || (!PREFIX_COMMANDS_WITH_ARGS.has(command) && args)) {
       return {command: "unknown", args, isLegacy: false, input: `!${name}`};
     }
     return commandResult(command, args, false);
@@ -145,10 +151,19 @@ function extractBindingCommand(text) {
   return legacy;
 }
 
-function buildBotHelpText() {
-  return [
+function buildBotHelpText({bindingLocked = false, isAdmin = false} = {}) {
+  const lines = [
     "🐾 喵餅指令",
     "",
+  ];
+  if (bindingLocked) {
+    lines.push(
+      "🔒 目前 LINE 綁定已鎖定",
+      "如需修改請聯絡管理員。",
+      "",
+    );
+  }
+  lines.push(
     "!綁定",
     "依你的 LINE 名稱自動綁定遊戲帳號",
     "",
@@ -166,11 +181,29 @@ function buildBotHelpText() {
     "",
     "!解除",
     "解除自己的 LINE 綁定",
-    "",
-    "管理員：",
-    "!同步",
-    "自動比對群組成員並建立綁定",
-  ].join("\n");
+  );
+  if (isAdmin) {
+    lines.push(
+      "",
+      "管理員指令：",
+      "",
+      "!同步",
+      "同步可取得的群組成員",
+      "",
+      "!鎖定",
+      "停止會員自行修改綁定",
+      "",
+      "!解除鎖定",
+      "重新開放會員自行修改綁定",
+      "",
+      "!幫綁 <LINE名稱>",
+      "替指定成員建立綁定",
+      "",
+      "!幫解除 <LINE名稱>",
+      "替指定成員解除綁定",
+    );
+  }
+  return lines.join("\n");
 }
 
 function resolveBindingLineName(command, profileDisplayName) {
@@ -253,11 +286,12 @@ function groupBindingRows(rows) {
   return [...groups.values()];
 }
 
-function buildBindingListText(memberNames, bindings, groupId) {
+function buildBindingListText(memberNames, bindings, groupId, bindingLocked = false) {
   const rows = buildMemberBindingRows(memberNames, bindings, groupId);
   const boundCount = rows.filter((row) => row.bound).length;
   const lines = [
     "📋 LINE 綁定清單",
+    bindingLocked ? "🔒 綁定狀態：已鎖定" : "🔓 綁定狀態：開放中",
     `已綁定：${boundCount} / ${rows.length}`,
     `未綁定：${rows.length - boundCount}`,
     "",
@@ -278,6 +312,51 @@ function buildUnboundListText(memberNames, bindings, groupId) {
   groups.forEach((group) => lines.push(`${group.lineName} → ${group.unbound.join("、")}`));
   lines.push("", `共 ${groups.length} 人 / ${unboundRows.length} 個遊戲帳號未綁定。`);
   return lines.join("\n");
+}
+
+function buildBindingResultText(title, entries, footer) {
+  const members = (Array.isArray(entries) ? entries : [])
+    .map((entry) => parseMemberName(typeof entry === "string" ?
+      entry : entry.fullName || entry.playerName || ""))
+    .filter((member) => member.fullName);
+  const lineNames = [...new Set(members.map((member) => member.lineName))];
+  const lines = [
+    title,
+    "",
+    `LINE：${lineNames.join("、")}`,
+    "遊戲 ID：",
+    ...members.map((member) => `• ${member.gameId}`),
+  ];
+  if (footer) lines.push("", footer);
+  return lines.join("\n");
+}
+
+function buildBindingSuccessText(members) {
+  return buildBindingResultText("✅ LINE 綁定完成", members);
+}
+
+function buildUnbindSuccessText(bindings) {
+  return buildBindingResultText(
+    "✅ 已解除 LINE 綁定",
+    bindings,
+    `共解除 ${bindings.length} 個遊戲帳號。`,
+  );
+}
+
+function buildAdminBindingSuccessText(members) {
+  return buildBindingResultText(
+    "✅ 管理員完成 LINE 綁定",
+    members,
+    `共綁定 ${members.length} 個遊戲帳號。`,
+  );
+}
+
+function buildAdminUnbindSuccessText(bindings) {
+  return buildBindingResultText(
+    "✅ 管理員已解除 LINE 綁定",
+    bindings,
+    `共解除 ${bindings.length} 個遊戲帳號。`,
+  );
 }
 
 function splitTextMessages(text, maxLength = 4500, maxMessages = 5) {
@@ -405,11 +484,15 @@ function maskLineUserId(value) {
 
 module.exports = {
   bindingKey,
+  buildAdminBindingSuccessText,
+  buildAdminUnbindSuccessText,
+  buildBindingSuccessText,
   buildBotHelpText,
   buildBindingListText,
   buildDrawLineMessage,
   buildMemberBindingRows,
   buildUnboundListText,
+  buildUnbindSuccessText,
   claimDefaultLineGroup,
   createBindingRecord,
   decideLineGroupAction,

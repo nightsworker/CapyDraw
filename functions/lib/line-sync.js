@@ -47,6 +47,41 @@ function decideLineSyncAccess(defaultGroupId, eventGroupId, adminLineUserIds, us
   return {allowed: true, reason: null};
 }
 
+const ADMIN_LINE_COMMANDS = new Set(["sync", "lock", "unlock", "admin-bind", "admin-unbind"]);
+
+function isBindingLocked(value) {
+  return value === true;
+}
+
+function decideLineCommandAccess({
+  command,
+  bindingLocked,
+  defaultGroupId,
+  eventGroupId,
+  adminLineUserIds,
+  userId,
+}) {
+  if (ADMIN_LINE_COMMANDS.has(command)) {
+    if (!defaultGroupId || defaultGroupId !== eventGroupId) {
+      return {allowed: false, reason: "other-group"};
+    }
+    if (!isLineBotAdmin(adminLineUserIds, userId)) {
+      return {allowed: false, reason: "not-admin"};
+    }
+    return {allowed: true, reason: null};
+  }
+  if (isBindingLocked(bindingLocked) && (command === "bind" || command === "unbind")) {
+    return {allowed: false, reason: "binding-locked"};
+  }
+  return {allowed: true, reason: null};
+}
+
+function getBindingLockTransition(currentValue, requestedValue) {
+  const current = isBindingLocked(currentValue);
+  const requested = requestedValue === true;
+  return {changed: current !== requested, bindingLocked: requested};
+}
+
 async function fetchAllGroupMemberIds(requestPage) {
   const memberIds = [];
   const seenIds = new Set();
@@ -203,6 +238,48 @@ function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
   };
 }
 
+function findObservedIdentities(observedMembers, lineName, groupId) {
+  const identities = listObservedMembers(observedMembers)
+    .filter((member) =>
+      member.displayName === lineName &&
+      member.groupId === groupId &&
+      isFirebaseSafeKey(member.lineUserId));
+  return [...new Map(identities.map((member) => [member.lineUserId, member])).values()];
+}
+
+function planAdminBinding({memberNames, bindings, observedMembers, lineName, groupId, now}) {
+  const members = findMembersByLineName(memberNames, lineName);
+  if (!members.length) return {status: "guild-member-not-found", members, updates: {}};
+  const identities = findObservedIdentities(observedMembers, members[0].lineName, groupId);
+  if (!identities.length) return {status: "line-identity-not-found", members, updates: {}};
+  if (identities.length > 1) return {status: "ambiguous-line-identity", members, updates: {}};
+
+  const identity = identities[0];
+  const syncPlan = buildMemberSyncPlan({
+    memberNames,
+    bindings,
+    profiles: [{userId: identity.lineUserId, displayName: identity.displayName}],
+    groupId,
+    now,
+  });
+  if (syncPlan.conflicts) {
+    return {status: "binding-conflict", members, identity, updates: {}};
+  }
+  return {status: "success", members, identity, updates: syncPlan.updates};
+}
+
+function selectAdminUnbindBindings({memberNames, bindings, lineName, groupId}) {
+  const members = findMembersByLineName(memberNames, lineName);
+  if (!members.length) return {status: "guild-member-not-found", members, bindings: []};
+  const selected = listBindingRecords(bindings).filter((binding) =>
+    binding.lineGroupId === groupId && binding.lineName === members[0].lineName);
+  return {
+    status: selected.length ? "success" : "binding-not-found",
+    members,
+    bindings: selected,
+  };
+}
+
 function buildSyncReply(result, mode) {
   const lines = ["🐾 喵餅同步完成", ""];
   if (mode === "observed") {
@@ -238,11 +315,16 @@ module.exports = {
   buildMemberSyncPlan,
   buildObservedMemberRecord,
   buildSyncReply,
+  decideLineCommandAccess,
   decideLineSyncAccess,
   fetchAllGroupMemberIds,
   isFirebaseSafeKey,
+  isBindingLocked,
   isLineBotAdmin,
   listObservedMembers,
   mapInBatches,
+  getBindingLockTransition,
+  planAdminBinding,
   resolveSyncMemberSource,
+  selectAdminUnbindBindings,
 };

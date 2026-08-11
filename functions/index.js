@@ -8,12 +8,16 @@ const {getAuth} = require("firebase-admin/auth");
 const {getDatabase, ServerValue} = require("firebase-admin/database");
 const {assertAdminUid} = require("./lib/admin");
 const {
+  buildAdminBindingSuccessText,
+  buildAdminUnbindSuccessText,
   bindingKey,
   buildBindingListText,
+  buildBindingSuccessText,
   buildBotHelpText,
   buildDrawLineMessage,
   buildMemberBindingRows,
   buildUnboundListText,
+  buildUnbindSuccessText,
   claimDefaultLineGroup,
   createBindingRecord,
   decideLineGroupAction,
@@ -29,11 +33,17 @@ const {
   buildMemberSyncPlan,
   buildObservedMemberRecord,
   buildSyncReply,
+  decideLineCommandAccess,
   decideLineSyncAccess,
   fetchAllGroupMemberIds,
   isFirebaseSafeKey,
+  getBindingLockTransition,
+  isBindingLocked,
+  isLineBotAdmin,
   mapInBatches,
+  planAdminBinding,
   resolveSyncMemberSource,
+  selectAdminUnbindBindings,
 } = require("./lib/line-sync");
 
 initializeApp();
@@ -237,6 +247,140 @@ async function handleSyncCommand({event, token, db, settings, bindings, bindings
   }
 }
 
+async function handleHelpCommand(event, token) {
+  const settings = (await getDatabase().ref("guildDraw/lineSettings").get()).val() || {};
+  await replyText(event.replyToken, buildBotHelpText({
+    bindingLocked: isBindingLocked(settings.bindingLocked),
+    isAdmin: isLineBotAdmin(settings.adminLineUserIds, event.source.userId),
+  }), token);
+}
+
+async function handleBindingLockCommand({event, command, settings, settingsRef, token}) {
+  const requestedLocked = command.command === "lock";
+  const transition = getBindingLockTransition(settings.bindingLocked, requestedLocked);
+  if (!transition.changed) {
+    await replyText(event.replyToken, requestedLocked ?
+      "🔒 LINE 綁定目前已經是鎖定狀態。" :
+      "🔓 LINE 綁定目前沒有鎖定。", token);
+    return;
+  }
+
+  await settingsRef.update(requestedLocked ? {
+    bindingLocked: true,
+    bindingLockedAt: ServerValue.TIMESTAMP,
+    bindingLockedBy: event.source.userId,
+    updatedAt: ServerValue.TIMESTAMP,
+  } : {
+    bindingLocked: false,
+    bindingLockedAt: null,
+    bindingLockedBy: null,
+    updatedAt: ServerValue.TIMESTAMP,
+  });
+  await replyText(event.replyToken, requestedLocked ? [
+    "🔒 LINE 綁定已鎖定",
+    "",
+    "一般會員目前無法自行：",
+    "• 綁定",
+    "• 解除綁定",
+    "",
+    "管理員仍可代為處理。",
+  ].join("\n") : [
+    "🔓 LINE 綁定已解除鎖定",
+    "",
+    "公會成員現在可以自行使用：",
+    "!綁定",
+    "!解除",
+  ].join("\n"), token);
+}
+
+async function handleAdminBindCommand({event, command, token, db, members, bindings, bindingsRef}) {
+  const lineName = String(command.args || "").trim();
+  if (!lineName) {
+    await replyText(event.replyToken, "請輸入：\n!幫綁 <LINE名稱>", token);
+    return;
+  }
+  const groupId = event.source.groupId;
+  const observedSnapshot = await db.ref(`guildDraw/lineObservedMembers/${groupId}`).get();
+  const plan = planAdminBinding({
+    memberNames: members,
+    bindings,
+    observedMembers: observedSnapshot.val() || {},
+    lineName,
+    groupId,
+    now: new Date().toISOString(),
+  });
+  if (plan.status === "guild-member-not-found") {
+    await replyText(event.replyToken, `❌ 找不到 LINE 名稱「${lineName}」對應的公會成員。`, token);
+    return;
+  }
+  if (plan.status === "line-identity-not-found") {
+    await replyText(event.replyToken, [
+      `⚠️ 找得到公會成員「${lineName}」，`,
+      "但目前還無法取得他的 LINE 身份。",
+      "",
+      `請讓 ${lineName} 在這個群組發任意一則訊息，`,
+      "再重新執行：",
+      "",
+      `!幫綁 ${lineName}`,
+    ].join("\n"), token);
+    return;
+  }
+  if (plan.status === "ambiguous-line-identity") {
+    await replyText(event.replyToken, [
+      `⚠️ 找到多個 LINE 使用者名稱皆為「${lineName}」`,
+      "",
+      "為避免綁錯帳號，本次沒有進行綁定。",
+      "",
+      "請讓本人使用：",
+      "",
+      "!綁定",
+      "",
+      "或使用其他安全方式確認身份。",
+    ].join("\n"), token);
+    return;
+  }
+  if (plan.status === "binding-conflict") {
+    await replyText(event.replyToken, [
+      "⚠️ 綁定衝突",
+      "",
+      `「${lineName}」目前已有其他 LINE 綁定。`,
+      "為避免綁錯，本次沒有修改。",
+      "",
+      "請先確認後使用管理員解除功能。",
+    ].join("\n"), token);
+    return;
+  }
+
+  if (Object.keys(plan.updates).length) await bindingsRef.update(plan.updates);
+  await replyText(event.replyToken, buildAdminBindingSuccessText(plan.members), token);
+}
+
+async function handleAdminUnbindCommand({event, command, token, members, bindings, bindingsRef}) {
+  const lineName = String(command.args || "").trim();
+  if (!lineName) {
+    await replyText(event.replyToken, "請輸入：\n!幫解除 <LINE名稱>", token);
+    return;
+  }
+  const selected = selectAdminUnbindBindings({
+    memberNames: members,
+    bindings,
+    lineName,
+    groupId: event.source.groupId,
+  });
+  if (selected.status === "guild-member-not-found") {
+    await replyText(event.replyToken, `❌ 找不到 LINE 名稱「${lineName}」對應的公會成員。`, token);
+    return;
+  }
+  if (selected.status === "binding-not-found") {
+    await replyText(event.replyToken, `ℹ️ LINE 名稱「${lineName}」目前沒有可解除的綁定。`, token);
+    return;
+  }
+  const updates = {};
+  selected.bindings.forEach((binding) => { updates[binding.id] = null; });
+  await bindingsRef.update(updates);
+  await replyText(event.replyToken, buildAdminUnbindSuccessText(selected.bindings), token);
+}
+
 async function handleBindingCommand(event, command, token, observedProfile) {
   const db = getDatabase();
   const userId = event.source.userId;
@@ -249,6 +393,29 @@ async function handleBindingCommand(event, command, token, observedProfile) {
   const defaultGroupRef = settingsRef.child("defaultGroupId");
   const settings = (await settingsRef.get()).val() || {};
   const defaultGroupId = settings.defaultGroupId;
+  const commandAccess = decideLineCommandAccess({
+    command: command.command,
+    bindingLocked: settings.bindingLocked,
+    defaultGroupId,
+    eventGroupId: groupId,
+    adminLineUserIds: settings.adminLineUserIds,
+    userId,
+  });
+  if (!commandAccess.allowed) {
+    if (commandAccess.reason === "binding-locked") {
+      await replyText(event.replyToken, [
+        "🔒 LINE 綁定目前已鎖定",
+        "",
+        "目前無法自行修改綁定。",
+        "如需處理，請聯絡管理員。",
+      ].join("\n"), token);
+    } else if (commandAccess.reason === "other-group") {
+      await replyText(event.replyToken, "❌ 此管理指令只能在目前正式 LINE 群組使用。", token);
+    } else {
+      await replyText(event.replyToken, "❌ 你沒有執行此 LINE 管理指令的權限。", token);
+    }
+    return;
+  }
   const groupAction = decideLineGroupAction(defaultGroupId, groupId, command.command);
   if (groupAction.action === "reject-other-group") {
     await replyText(event.replyToken, "❌ 此 Bot 已綁定其他公會群組，請由管理員處理群組設定。", token);
@@ -259,6 +426,11 @@ async function handleBindingCommand(event, command, token, observedProfile) {
     return;
   }
   if (!groupAction.canProcess) return;
+
+  if (command.command === "lock" || command.command === "unlock") {
+    await handleBindingLockCommand({event, command, settings, settingsRef, token});
+    return;
+  }
 
   const bindingsRef = db.ref("guildDraw/lineBindings");
   const bindings = (await bindingsRef.get()).val() || {};
@@ -294,13 +466,13 @@ async function handleBindingCommand(event, command, token, observedProfile) {
     const updates = {};
     ownBindings.forEach((binding) => { updates[binding.id] = null; });
     await bindingsRef.update(updates);
-    await replyText(event.replyToken, `✅ 已解除 LINE 綁定\n共解除 ${ownBindings.length} 個遊戲帳號。`, token);
+    await replyText(event.replyToken, buildUnbindSuccessText(ownBindings), token);
     return;
   }
 
   const members = (await db.ref("guildDraw/main/guildMembers").get()).val() || [];
   if (command.command === "binding-list") {
-    const text = buildBindingListText(members, bindings, groupId);
+    const text = buildBindingListText(members, bindings, groupId, isBindingLocked(settings.bindingLocked));
     await replyTexts(event.replyToken, splitTextMessages(text), token);
     return;
   }
@@ -313,6 +485,16 @@ async function handleBindingCommand(event, command, token, observedProfile) {
 
   if (command.command === "sync") {
     await handleSyncCommand({event, token, db, settings, bindings, bindingsRef, members});
+    return;
+  }
+
+  if (command.command === "admin-bind") {
+    await handleAdminBindCommand({event, command, token, db, members, bindings, bindingsRef});
+    return;
+  }
+
+  if (command.command === "admin-unbind") {
+    await handleAdminUnbindCommand({event, command, token, members, bindings, bindingsRef});
     return;
   }
 
@@ -381,12 +563,7 @@ async function handleBindingCommand(event, command, token, observedProfile) {
     });
   });
   await bindingsRef.update(updates);
-  await replyText(event.replyToken, [
-    "✅ LINE 綁定完成",
-    "",
-    canonicalLineName,
-    ...matches.map((member) => `→ ${member.gameId}`),
-  ].join("\n"), token);
+  await replyText(event.replyToken, buildBindingSuccessText(matches), token);
 }
 
 exports.lineWebhook = onRequest({
@@ -428,7 +605,7 @@ exports.lineWebhook = onRequest({
       }
       if (!eventPlan.command) return;
       if (eventPlan.command.command === "help") {
-        await replyText(event.replyToken, buildBotHelpText(), LINE_CHANNEL_ACCESS_TOKEN.value());
+        await handleHelpCommand(event, LINE_CHANNEL_ACCESS_TOKEN.value());
         return;
       }
       if (eventPlan.command.command === "unknown") {

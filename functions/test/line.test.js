@@ -5,11 +5,15 @@ const crypto = require("node:crypto");
 const test = require("node:test");
 const {
   bindingKey,
+  buildAdminBindingSuccessText,
+  buildAdminUnbindSuccessText,
   buildBindingListText,
+  buildBindingSuccessText,
   buildBotHelpText,
   buildDrawLineMessage,
   buildMemberBindingRows,
   buildUnboundListText,
+  buildUnbindSuccessText,
   claimDefaultLineGroup,
   createBindingRecord,
   decideLineGroupAction,
@@ -28,9 +32,14 @@ const {
   buildMemberSyncPlan,
   buildObservedMemberRecord,
   buildSyncReply,
+  decideLineCommandAccess,
   decideLineSyncAccess,
   fetchAllGroupMemberIds,
+  getBindingLockTransition,
+  isBindingLocked,
+  planAdminBinding,
   resolveSyncMemberSource,
+  selectAdminUnbindBindings,
 } = require("../lib/line-sync");
 
 const GROUP_ID = "C_GROUP_A";
@@ -334,6 +343,8 @@ test("all official prefixed commands are parsed centrally", () => {
     ["!未綁定", "unbound-list"],
     ["!解除", "unbind"],
     ["!同步", "sync"],
+    ["!鎖定", "lock"],
+    ["!解除鎖定", "unlock"],
     ["!說明", "help"],
   ]);
   commands.forEach((command, input) => {
@@ -510,13 +521,230 @@ test("member sync requires a LINE admin in the default group", () => {
   });
 });
 
-test("help documents only the new prefixed commands", () => {
+test("help documents member, lock, and admin command visibility", () => {
   const help = buildBotHelpText();
-  ["!綁定", "!狀態", "!清單", "!未綁定", "!解除", "!同步"].forEach((command) => {
+  ["!綁定", "!狀態", "!清單", "!未綁定", "!解除"].forEach((command) => {
     assert.match(help, new RegExp(command.replace("!", "\\!")));
+  });
+  assert.doesNotMatch(help, /管理員指令：|!同步|!幫綁/);
+  const lockedHelp = buildBotHelpText({bindingLocked: true});
+  assert.match(lockedHelp, /目前 LINE 綁定已鎖定/);
+  const adminHelp = buildBotHelpText({bindingLocked: true, isAdmin: true});
+  ["!同步", "!鎖定", "!解除鎖定", "!幫綁 <LINE名稱>", "!幫解除 <LINE名稱>"].forEach((command) => {
+    assert.match(adminHelp, new RegExp(command.replace("!", "\\!")));
   });
   const lines = help.split("\n");
   ["綁定狀態", "解除綁定", "line list"].forEach((legacyCommand) => {
     assert.equal(lines.includes(legacyCommand), false);
   });
+});
+
+test("binding success uses the same LINE and game ID format for one or many accounts", () => {
+  assert.equal(buildBindingSuccessText([parseMemberName("Rain - 流鬼")]), [
+    "✅ LINE 綁定完成",
+    "",
+    "LINE：Rain",
+    "遊戲 ID：",
+    "• 流鬼",
+  ].join("\n"));
+  assert.equal(buildBindingSuccessText([
+    parseMemberName("Chia - 嘻嘻不嘻嘻"),
+    parseMemberName("Chia - CC x CC"),
+  ]), [
+    "✅ LINE 綁定完成",
+    "",
+    "LINE：Chia",
+    "遊戲 ID：",
+    "• 嘻嘻不嘻嘻",
+    "• CC x CC",
+  ].join("\n"));
+});
+
+test("unbind success derives LINE names and game IDs from removed playerName values", () => {
+  assert.equal(buildUnbindSuccessText([{playerName: "Rain - 流鬼"}]), [
+    "✅ 已解除 LINE 綁定",
+    "",
+    "LINE：Rain",
+    "遊戲 ID：",
+    "• 流鬼",
+    "",
+    "共解除 1 個遊戲帳號。",
+  ].join("\n"));
+  const removedBindings = [
+    {playerName: "Chia - 嘻嘻不嘻嘻"},
+    {playerName: "Chia - CC x CC"},
+  ];
+  assert.equal(buildUnbindSuccessText(removedBindings), [
+    "✅ 已解除 LINE 綁定",
+    "",
+    "LINE：Chia",
+    "遊戲 ID：",
+    "• 嘻嘻不嘻嘻",
+    "• CC x CC",
+    "",
+    "共解除 2 個遊戲帳號。",
+  ].join("\n"));
+});
+
+test("bindingLocked defaults to false and lock transitions avoid redundant writes", () => {
+  assert.equal(isBindingLocked(undefined), false);
+  assert.deepEqual(getBindingLockTransition(undefined, true), {changed: true, bindingLocked: true});
+  assert.deepEqual(getBindingLockTransition(true, true), {changed: false, bindingLocked: true});
+  assert.deepEqual(getBindingLockTransition(true, false), {changed: true, bindingLocked: false});
+  assert.deepEqual(getBindingLockTransition(false, false), {changed: false, bindingLocked: false});
+});
+
+test("binding lock only blocks member self-service writes", () => {
+  const decide = (command, bindingLocked, userId = "U_MEMBER") => decideLineCommandAccess({
+    command,
+    bindingLocked,
+    defaultGroupId: GROUP_ID,
+    eventGroupId: GROUP_ID,
+    adminLineUserIds: {U_ADMIN: true},
+    userId,
+  });
+  assert.equal(decide("bind", false).allowed, true);
+  assert.equal(decide("bind", true).reason, "binding-locked");
+  assert.equal(decide("unbind", true).reason, "binding-locked");
+  ["status", "binding-list", "unbound-list", "help"].forEach((command) => {
+    assert.equal(decide(command, true).allowed, true);
+  });
+  assert.equal(decide("sync", true, "U_ADMIN").allowed, true);
+  assert.equal(decide("bind", true, "U_ADMIN").reason, "binding-locked");
+  assert.equal(decide("lock", false).reason, "not-admin");
+  assert.equal(decide("admin-bind", true).reason, "not-admin");
+  assert.equal(decide("admin-unbind", true, "U_ADMIN").allowed, true);
+});
+
+test("admin modifying commands are limited to the default group", () => {
+  const access = decideLineCommandAccess({
+    command: "lock",
+    bindingLocked: false,
+    defaultGroupId: GROUP_ID,
+    eventGroupId: "C_GROUP_B",
+    adminLineUserIds: {U_ADMIN: true},
+    userId: "U_ADMIN",
+  });
+  assert.deepEqual(access, {allowed: false, reason: "other-group"});
+});
+
+test("admin bind parser uses exact command tokens and arguments", () => {
+  assert.deepEqual(parseBotCommand("!幫綁 @Hank"), {
+    command: "admin-bind",
+    args: "@Hank",
+    isLegacy: false,
+  });
+  assert.deepEqual(parseBotCommand("!幫解除 @Hank"), {
+    command: "admin-unbind",
+    args: "@Hank",
+    isLegacy: false,
+  });
+  assert.equal(parseBotCommand("!解除鎖定").command, "unlock");
+  assert.notEqual(parseBotCommand("!解除鎖定").command, "unbind");
+  assert.notEqual(parseBotCommand("!幫解除 @Hank").command, "unbind");
+});
+
+test("admin bind requires exact guild and observed LINE names", () => {
+  const success = planAdminBinding({
+    memberNames: ["@Hank - 挖系小嗨"],
+    bindings: {},
+    observedMembers: {
+      U_HANK: {lineUserId: "U_HANK", displayName: "@Hank", groupId: GROUP_ID},
+    },
+    lineName: "@Hank",
+    groupId: GROUP_ID,
+    now: NOW,
+  });
+  assert.equal(success.status, "success");
+  assert.equal(Object.values(success.updates)[0].lineUserId, "U_HANK");
+  const missingAt = planAdminBinding({
+    memberNames: ["@Hank - 挖系小嗨"],
+    bindings: {},
+    observedMembers: {},
+    lineName: "Hank",
+    groupId: GROUP_ID,
+    now: NOW,
+  });
+  assert.equal(missingAt.status, "guild-member-not-found");
+});
+
+test("admin bind refuses missing and ambiguous observed identities", () => {
+  const base = {
+    memberNames: ["Rain - 流鬼"],
+    bindings: {},
+    lineName: "Rain",
+    groupId: GROUP_ID,
+    now: NOW,
+  };
+  assert.equal(planAdminBinding({...base, observedMembers: {}}).status, "line-identity-not-found");
+  const ambiguous = planAdminBinding({...base, observedMembers: {
+    U_RAIN_1: {lineUserId: "U_RAIN_1", displayName: "Rain", groupId: GROUP_ID},
+    U_RAIN_2: {lineUserId: "U_RAIN_2", displayName: "Rain", groupId: GROUP_ID},
+  }});
+  assert.equal(ambiguous.status, "ambiguous-line-identity");
+  assert.deepEqual(ambiguous.updates, {});
+});
+
+test("admin bind handles multiple game IDs and never overwrites conflicts", () => {
+  const memberNames = ["Chia - 嘻嘻不嘻嘻", "Chia - CC x CC"];
+  const observedMembers = {
+    U_CHIA: {lineUserId: "U_CHIA", displayName: "Chia", groupId: GROUP_ID},
+  };
+  const success = planAdminBinding({
+    memberNames,
+    bindings: {},
+    observedMembers,
+    lineName: "Chia",
+    groupId: GROUP_ID,
+    now: NOW,
+  });
+  assert.equal(success.members.length, 2);
+  assert.equal(Object.keys(success.updates).length, 2);
+  const conflictingKey = bindingKey(memberNames[0]);
+  const conflict = planAdminBinding({
+    memberNames,
+    bindings: {[conflictingKey]: makeBinding(memberNames[0], "U_OTHER")},
+    observedMembers,
+    lineName: "Chia",
+    groupId: GROUP_ID,
+    now: NOW,
+  });
+  assert.equal(conflict.status, "binding-conflict");
+  assert.deepEqual(conflict.updates, {});
+});
+
+test("admin unbind selects only the exact LINE name in the current group", () => {
+  const hankOne = "@Hank - 挖系小嗨";
+  const hankTwo = "@Hank - 第二帳號";
+  const rain = "Rain - 流鬼";
+  const bindings = {
+    hankOne: makeBinding(hankOne, "U_HANK"),
+    hankTwo: makeBinding(hankTwo, "U_HANK"),
+    rain: makeBinding(rain, "U_RAIN"),
+  };
+  const selected = selectAdminUnbindBindings({
+    memberNames: [hankOne, hankTwo, rain],
+    bindings,
+    lineName: "@Hank",
+    groupId: GROUP_ID,
+  });
+  assert.equal(selected.status, "success");
+  assert.deepEqual(selected.bindings.map((binding) => binding.gameId), ["挖系小嗨", "第二帳號"]);
+  assert.equal(selected.bindings.some((binding) => binding.lineName === "Rain"), false);
+});
+
+test("admin bind and unbind success replies use the unified detail format", () => {
+  const members = [parseMemberName("Chia - 嘻嘻不嘻嘻"), parseMemberName("Chia - CC x CC")];
+  const bindText = buildAdminBindingSuccessText(members);
+  assert.match(bindText, /^✅ 管理員完成 LINE 綁定/m);
+  assert.match(bindText, /LINE：Chia\n遊戲 ID：\n• 嘻嘻不嘻嘻\n• CC x CC/);
+  assert.match(bindText, /共綁定 2 個遊戲帳號。/);
+  const unbindText = buildAdminUnbindSuccessText(members.map((member) => ({playerName: member.fullName})));
+  assert.match(unbindText, /^✅ 管理員已解除 LINE 綁定/m);
+  assert.match(unbindText, /共解除 2 個遊戲帳號。/);
+});
+
+test("binding list displays whether self-service binding is locked", () => {
+  assert.match(buildBindingListText(["Rain - 流鬼"], {}, GROUP_ID), /🔓 綁定狀態：開放中/);
+  assert.match(buildBindingListText(["Rain - 流鬼"], {}, GROUP_ID, true), /🔒 綁定狀態：已鎖定/);
 });
