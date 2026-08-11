@@ -42,6 +42,14 @@ test("B: an unknown prefixed command stays in the command route", () => {
   assert.deepEqual(plan, {shouldReply: false, reason: "command"});
 });
 
+test("unprefixed former commands continue through personality routing", () => {
+  const command = parseBotCommand("綁定");
+  const plan = planMiaobingMessage({event: textEvent("綁定"), command, rng: () => 0});
+  assert.equal(command, null);
+  assert.equal(plan.shouldReply, false);
+  assert.equal(plan.reason, "ambient-not-selected");
+});
+
 test("C: a true LINE bot mention always plans a direct reply", () => {
   const event = textEvent("@喵餅 你好", {
     mention: {mentionees: [{type: "user", userId: "U_BOT", isSelf: true}]},

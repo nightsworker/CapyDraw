@@ -161,7 +161,7 @@ test("I: one LINE user can bind multiple game IDs and mention both", () => {
 });
 
 test("J: parameterless bind resolves the LINE profile displayName", () => {
-  const command = extractBindingCommand("綁定");
+  const command = extractBindingCommand("!綁定");
   assert.deepEqual(command, {type: "bind", auto: true, query: null});
   assert.equal(resolveBindingLineName(command, "@Hank"), "@Hank");
   assert.deepEqual(
@@ -171,7 +171,7 @@ test("J: parameterless bind resolves the LINE profile displayName", () => {
 });
 
 test("manual bind only matches exact LINE names and returns all matching rows", () => {
-  const command = extractBindingCommand("bind Chia");
+  const command = extractBindingCommand("!綁定 Chia");
   assert.deepEqual(command, {type: "bind", auto: false, query: "Chia"});
   const matches = findMembersByLineName([
     "Chia - 嘻嘻不嘻嘻",
@@ -251,12 +251,9 @@ test("new binding schema stores lineName/gameId and not ambiguous legacy fields"
   assert.equal("gameName" in binding, false);
 });
 
-test("server list command aliases are recognized", () => {
-  assert.equal(extractBindingCommand("綁定清單").type, "binding-list");
-  assert.equal(extractBindingCommand("LINE清單").type, "binding-list");
-  assert.equal(extractBindingCommand("line list").type, "binding-list");
-  assert.equal(extractBindingCommand("未綁定清單").type, "unbound-list");
-  assert.equal(extractBindingCommand("未綁定").type, "unbound-list");
+test("official prefixed list commands are recognized", () => {
+  assert.equal(extractBindingCommand("!清單").type, "binding-list");
+  assert.equal(extractBindingCommand("!未綁定").type, "unbound-list");
 });
 
 test("long reply text is safely split and capped at five LINE messages", () => {
@@ -322,7 +319,6 @@ test("prefixed bind command supports trim and an optional exact LINE name", () =
   assert.deepEqual(automatic, {
     command: "bind",
     args: "",
-    isLegacy: false,
     auto: true,
     query: null,
   });
@@ -330,7 +326,6 @@ test("prefixed bind command supports trim and an optional exact LINE name", () =
   assert.deepEqual(manual, {
     command: "bind",
     args: "@Hank",
-    isLegacy: false,
     auto: false,
     query: "@Hank",
   });
@@ -350,23 +345,30 @@ test("all official prefixed commands are parsed centrally", () => {
     ["!說明", "help"],
   ]);
   commands.forEach((command, input) => {
-    assert.deepEqual(parseBotCommand(input), {command, args: "", isLegacy: false});
+    assert.deepEqual(parseBotCommand(input), {command, args: ""});
   });
   assert.deepEqual(parseBotCommand("!abc"), {
     command: "unknown",
     args: "",
-    isLegacy: false,
     input: "!abc",
   });
 });
 
-test("legacy commands remain centralized and backward compatible", () => {
-  assert.equal(parseBotCommand("綁定").isLegacy, true);
-  assert.equal(parseBotCommand("綁定 @Hank").command, "bind");
-  assert.equal(parseBotCommand("bind @Hank").args, "@Hank");
-  assert.equal(parseBotCommand("綁定狀態").command, "status");
-  assert.equal(parseBotCommand("LINE清單").command, "binding-list");
-  assert.equal(parseBotCommand("解除綁定").command, "unbind");
+test("commands without an exclamation prefix remain ordinary conversation", () => {
+  [
+    "綁定",
+    "綁定 @Hank",
+    "bind @Hank",
+    "綁定狀態",
+    "綁定清單",
+    "LINE清單",
+    "line list",
+    "未綁定清單",
+    "未綁定",
+    "解除綁定",
+    "我等等再綁定",
+    "解除綁定好了嗎",
+  ].forEach((input) => assert.equal(parseBotCommand(input), null, input));
 });
 
 test("LINE name matching preserves @ and case exactly", () => {
@@ -634,12 +636,10 @@ test("admin bind parser uses exact command tokens and arguments", () => {
   assert.deepEqual(parseBotCommand("!幫綁 @Hank"), {
     command: "admin-bind",
     args: "@Hank",
-    isLegacy: false,
   });
   assert.deepEqual(parseBotCommand("!幫解除 @Hank"), {
     command: "admin-unbind",
     args: "@Hank",
-    isLegacy: false,
   });
   assert.equal(parseBotCommand("!解除鎖定").command, "unlock");
   assert.notEqual(parseBotCommand("!解除鎖定").command, "unbind");

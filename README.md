@@ -155,7 +155,7 @@ LINE Bot 管理員另外可使用：
 - `!幫綁 <LINE名稱>`：以 observed member identity 替指定 LINE 名稱建立綁定。
 - `!幫解除 <LINE名稱>`：只解除指定 LINE 名稱在正式群組中的 binding。
 
-`!` prefix 用來避免一般聊天誤觸 Bot。輸入前後可以有空白；沒有 prefix 的普通句子不會觸發新指令。舊版精確指令仍由 centralized parser 暫時相容，但文件與 `!說明` 只列新指令，不再新增無 prefix 指令。
+`!` prefix 用來避免一般聊天誤觸 Bot。輸入前後可以有空白；只有以上述 `!` 開頭的正式指令才會進入 command handler。`綁定`、`bind Rain`、`綁定狀態`、`line list`、`解除綁定` 等舊版無 prefix 指令都只視為一般聊天，再依人格、彩蛋與 ambient 規則決定回覆或保持沉默。
 
 綁定採安全的 exact match：LINE profile 的 `displayName` 必須和 `parseMemberName(row).lineName` 完全相同，保留大小寫及 `@`。系統不做 fuzzy、contains、startsWith、大小寫轉換或自動忽略 `@`；例如 `@Hank` 不會配對 `Hank`，`Rain` 也不會配對 `rain`。
 

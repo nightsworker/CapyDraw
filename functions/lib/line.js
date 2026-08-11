@@ -91,20 +91,8 @@ const PREFIX_COMMANDS = new Map([
 
 const PREFIX_COMMANDS_WITH_ARGS = new Set(["bind", "admin-bind", "admin-unbind"]);
 
-const LEGACY_COMMANDS = new Map([
-  ["綁定", "bind"],
-  ["bind", "bind"],
-  ["綁定狀態", "status"],
-  ["綁定清單", "binding-list"],
-  ["LINE清單", "binding-list"],
-  ["line list", "binding-list"],
-  ["未綁定清單", "unbound-list"],
-  ["未綁定", "unbound-list"],
-  ["解除綁定", "unbind"],
-]);
-
-function commandResult(command, args, isLegacy) {
-  const result = {command, args, isLegacy};
+function commandResult(command, args) {
+  const result = {command, args};
   if (command === "bind") {
     result.auto = !args;
     result.query = args || null;
@@ -115,27 +103,17 @@ function commandResult(command, args, isLegacy) {
 function parseBotCommand(text) {
   const message = String(text || "").trim();
   if (!message) return null;
+  if (!message.startsWith("!")) return null;
 
-  if (message.startsWith("!")) {
-    const match = message.match(/^!(\S+)(?:\s+([\s\S]*))?$/u);
-    if (!match) return {command: "unknown", args: "", isLegacy: false, input: message};
-    const name = match[1];
-    const args = String(match[2] || "").trim();
-    const command = PREFIX_COMMANDS.get(name);
-    if (!command || (!PREFIX_COMMANDS_WITH_ARGS.has(command) && args)) {
-      return {command: "unknown", args, isLegacy: false, input: `!${name}`};
-    }
-    return commandResult(command, args, false);
+  const match = message.match(/^!(\S+)(?:\s+([\s\S]*))?$/u);
+  if (!match) return {command: "unknown", args: "", input: message};
+  const name = match[1];
+  const args = String(match[2] || "").trim();
+  const command = PREFIX_COMMANDS.get(name);
+  if (!command || (!PREFIX_COMMANDS_WITH_ARGS.has(command) && args)) {
+    return {command: "unknown", args, input: `!${name}`};
   }
-
-  const normalizedEnglish = message.replace(/\s+/g, " ").toLowerCase();
-  const exactCommand = LEGACY_COMMANDS.get(message) || LEGACY_COMMANDS.get(normalizedEnglish);
-  if (exactCommand) return commandResult(exactCommand, "", true);
-
-  const bindMatch = message.match(/^(?:綁定|bind)\s+([\s\S]+)$/iu);
-  if (!bindMatch) return null;
-  const query = String(bindMatch[1] || "").trim();
-  return query ? commandResult("bind", query, true) : null;
+  return commandResult(command, args);
 }
 
 function extractBindingCommand(text) {
@@ -143,12 +121,12 @@ function extractBindingCommand(text) {
   if (!parsed || parsed.command === "unknown" || parsed.command === "help" || parsed.command === "sync") {
     return null;
   }
-  const legacy = {type: parsed.command};
+  const result = {type: parsed.command};
   if (parsed.command === "bind") {
-    legacy.auto = parsed.auto;
-    legacy.query = parsed.query;
+    result.auto = parsed.auto;
+    result.query = parsed.query;
   }
-  return legacy;
+  return result;
 }
 
 function buildBotHelpText({bindingLocked = false, isAdmin = false} = {}) {
