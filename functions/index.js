@@ -23,13 +23,13 @@ const {
   decideLineGroupAction,
   findMembersByLineName,
   listBindingRecords,
-  maskLineUserId,
   planWebhookEvent,
   resolveBindingLineName,
   splitTextMessages,
   verifyLineSignature,
 } = require("./lib/line");
 const {
+  buildLineBindingAdminRows,
   buildMemberSyncPlan,
   buildObservedMemberRecord,
   buildSyncReply,
@@ -42,6 +42,7 @@ const {
   isLineBotAdmin,
   mapInBatches,
   planAdminBinding,
+  planLineBotAdminChange,
   resolveSyncMemberSource,
   selectAdminUnbindBindings,
 } = require("./lib/line-sync");
@@ -702,22 +703,16 @@ exports.getLineBindings = onRequest({region: REGION}, async (req, res) =>
     const [membersSnapshot, bindingsSnapshot, settingsSnapshot] = await Promise.all([
       db.ref("guildDraw/main/guildMembers").get(),
       db.ref("guildDraw/lineBindings").get(),
-      db.ref("guildDraw/lineSettings/defaultGroupId").get(),
+      db.ref("guildDraw/lineSettings").get(),
     ]);
-    const groupId = settingsSnapshot.val();
-    const members = buildMemberBindingRows(
-      membersSnapshot.val() || [],
-      bindingsSnapshot.val() || {},
+    const settings = settingsSnapshot.val() || {};
+    const groupId = settings.defaultGroupId;
+    const members = buildLineBindingAdminRows({
+      memberNames: membersSnapshot.val() || [],
+      bindings: bindingsSnapshot.val() || {},
       groupId,
-    ).map((member) => ({
-      playerName: member.playerName,
-      lineName: member.lineName,
-      gameId: member.gameId,
-      bound: member.bound,
-      bindingId: member.bindingId,
-      lineDisplayName: member.lineDisplayName,
-      maskedLineUserId: maskLineUserId(member.lineUserId),
-    }));
+      adminLineUserIds: settings.adminLineUserIds,
+    });
     json(res, 200, {ok: true, hasDefaultGroup: Boolean(groupId), members});
   }));
 
@@ -772,14 +767,18 @@ exports.setLineBotAdmin = onRequest({region: REGION}, async (req, res) =>
     }
     const binding = bindingSnapshot.val();
     const settings = settingsSnapshot.val() || {};
-    if (!binding.lineUserId || !isFirebaseSafeKey(binding.lineUserId) ||
-        (enabled && binding.lineGroupId !== settings.defaultGroupId)) {
+    const change = planLineBotAdminChange({
+      binding,
+      defaultGroupId: settings.defaultGroupId,
+      enabled,
+    });
+    if (change.status !== "success") {
       json(res, 409, {ok: false, error: "只能設定目前正式群組中已綁定的 LINE 使用者。"});
       return;
     }
 
     await db.ref("guildDraw/lineSettings").update({
-      [`adminLineUserIds/${binding.lineUserId}`]: enabled ? true : null,
+      [`adminLineUserIds/${change.lineUserId}`]: change.value,
       updatedAt: ServerValue.TIMESTAMP,
     });
     json(res, 200, {ok: true, enabled});

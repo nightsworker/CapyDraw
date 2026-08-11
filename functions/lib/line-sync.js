@@ -6,6 +6,7 @@ const {
   createBindingRecord,
   findMembersByLineName,
   listBindingRecords,
+  maskLineUserId,
   normalizeMemberName,
 } = require("./line");
 
@@ -38,6 +39,32 @@ function isLineBotAdmin(adminLineUserIds, userId) {
   if (Array.isArray(adminLineUserIds)) return adminLineUserIds.includes(userId);
   return Boolean(adminLineUserIds && typeof adminLineUserIds === "object" &&
     adminLineUserIds[userId] === true);
+}
+
+function buildLineBindingAdminRows({memberNames, bindings, groupId, adminLineUserIds}) {
+  return buildMemberBindingRows(memberNames, bindings, groupId).map((member) => ({
+    playerName: member.playerName,
+    lineName: member.lineName,
+    gameId: member.gameId,
+    bound: member.bound,
+    bindingId: member.bindingId,
+    lineDisplayName: member.lineDisplayName,
+    maskedLineUserId: maskLineUserId(member.lineUserId),
+    isLineBotAdmin: Boolean(member.bound && isLineBotAdmin(adminLineUserIds, member.lineUserId)),
+  }));
+}
+
+function planLineBotAdminChange({binding, defaultGroupId, enabled}) {
+  if (!binding || typeof binding !== "object") return {status: "binding-not-found"};
+  if (!binding.lineUserId || !isFirebaseSafeKey(binding.lineUserId) ||
+      (enabled && binding.lineGroupId !== defaultGroupId)) {
+    return {status: "invalid-binding"};
+  }
+  return {
+    status: "success",
+    lineUserId: binding.lineUserId,
+    value: enabled ? true : null,
+  };
 }
 
 function decideLineSyncAccess(defaultGroupId, eventGroupId, adminLineUserIds, userId) {
@@ -312,6 +339,7 @@ function buildSyncReply(result, mode) {
 }
 
 module.exports = {
+  buildLineBindingAdminRows,
   buildMemberSyncPlan,
   buildObservedMemberRecord,
   buildSyncReply,
@@ -325,6 +353,7 @@ module.exports = {
   mapInBatches,
   getBindingLockTransition,
   planAdminBinding,
+  planLineBotAdminChange,
   resolveSyncMemberSource,
   selectAdminUnbindBindings,
 };

@@ -11,7 +11,7 @@ Functions v2 部署在 `asia-southeast1`（新加坡），與目前 Realtime Dat
 - `getLineBindings`：供管理者讀取遮罩後的綁定狀態。
 - `removeLineBinding`：供管理者解除指定綁定；前端不會直接寫入 `lineBindings`。
 - `setDefaultLineGroup`：供 `ADMIN_UID` 管理者明確更換正式 LINE 群組；沒有前端 UI。
-- `setLineBotAdmin`：供 `ADMIN_UID` 管理者以既有 binding 明確授予或移除 `!同步` 權限；沒有前端 UI。
+- `setLineBotAdmin`：供 `ADMIN_UID` 管理者在網站「LINE 設定」頁，以既有 binding 明確授予或移除 LINE Bot 管理權限。
 
 LINE 私有資料位於：
 
@@ -206,21 +206,9 @@ verified webhook 只要帶有 groupId 與 userId，Bot 就會嘗試取得 profil
 
 ### 設定 LINE Bot 管理員
 
-Firebase `ADMIN_UID` 與 LINE userId 是不同身份，不能互相比較。先讓目標 LINE 使用者在正式群組完成綁定，再由 `ADMIN_UID` allowlist 中已登入的網站管理員，使用 `getLineBindings` 回傳的 `bindingId` 呼叫：
+Firebase `ADMIN_UID` 與 LINE userId 是不同身份，不能互相比較。先讓目標 LINE 使用者在正式群組完成綁定，再以 `ADMIN_UID` allowlist 中的 Google/Firebase 帳號登入網站，開啟「LINE 設定」。已綁定列會顯示「Bot 管理員」狀態，可直接按「設為管理員」或「解除管理員」；操作前會再次確認，完成後重新讀取整份綁定狀態。同一 LINE userId 對應多個遊戲 ID 時，所有列會顯示相同管理員狀態。未綁定成員不會出現管理員操作按鈕。
 
-```js
-const idToken = await firebase.auth().currentUser.getIdToken();
-await fetch("https://asia-southeast1-capydraw-7f7de.cloudfunctions.net/setLineBotAdmin", {
-  method: "POST",
-  headers: {
-    "Authorization": `Bearer ${idToken}`,
-    "Content-Type": "application/json"
-  },
-  body: JSON.stringify({ bindingId: "p_綁定識別碼", enabled: true })
-});
-```
-
-後端會從 binding 取得 lineUserId，並只在 server-side 更新 `guildDraw/lineSettings/adminLineUserIds/{lineUserId}`；browser 不能直接寫 RTDB。移除權限時傳 `enabled: false`。不要把完整 lineUserId、Channel Access Token、Channel Secret 或 Authorization header 寫入 repo、前端或 log。
+前端只把 `getLineBindings` 回傳的 `bindingId` 與目標 `enabled` 狀態傳給既有 `setLineBotAdmin`。後端仍驗證 Firebase ID Token 與 `ADMIN_UID` allowlist，再從 binding 取得 lineUserId，並只在 server-side 更新 `guildDraw/lineSettings/adminLineUserIds/{lineUserId}`；browser 不能直接寫 RTDB。`getLineBindings` 只回傳 `isLineBotAdmin` 與遮罩後的 userId，不會公開完整 lineUserId。不要把完整 lineUserId、Channel Access Token、Channel Secret 或 Authorization header 寫入 repo、前端或 log。
 
 ## 發送與真正 @mention 測試
 

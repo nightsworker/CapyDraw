@@ -29,6 +29,7 @@ const {
   verifyLineSignature,
 } = require("../lib/line");
 const {
+  buildLineBindingAdminRows,
   buildMemberSyncPlan,
   buildObservedMemberRecord,
   buildSyncReply,
@@ -38,6 +39,7 @@ const {
   getBindingLockTransition,
   isBindingLocked,
   planAdminBinding,
+  planLineBotAdminChange,
   resolveSyncMemberSource,
   selectAdminUnbindBindings,
 } = require("../lib/line-sync");
@@ -747,4 +749,77 @@ test("admin bind and unbind success replies use the unified detail format", () =
 test("binding list displays whether self-service binding is locked", () => {
   assert.match(buildBindingListText(["Rain - 流鬼"], {}, GROUP_ID), /🔓 綁定狀態：開放中/);
   assert.match(buildBindingListText(["Rain - 流鬼"], {}, GROUP_ID, true), /🔒 綁定狀態：已鎖定/);
+});
+
+test("getLineBindings rows include the LINE Bot admin state without exposing lineUserId", () => {
+  const chiaOne = "Chia - 嘻嘻不嘻嘻";
+  const chiaTwo = "Chia - CC x CC";
+  const rain = "Rain - 流鬼";
+  const rows = buildLineBindingAdminRows({
+    memberNames: [chiaOne, chiaTwo, rain],
+    bindings: {
+      [bindingKey(chiaOne)]: makeBinding(chiaOne, "U_CHIA", "Chia"),
+      [bindingKey(chiaTwo)]: makeBinding(chiaTwo, "U_CHIA", "Chia"),
+      [bindingKey(rain)]: makeBinding(rain, "U_RAIN", "Rain"),
+    },
+    groupId: GROUP_ID,
+    adminLineUserIds: {U_CHIA: true},
+  });
+
+  assert.deepEqual(rows.map((row) => row.isLineBotAdmin), [true, true, false]);
+  assert.equal(rows.every((row) => !Object.hasOwn(row, "lineUserId")), true);
+  assert.equal(rows.every((row) => row.maskedLineUserId && !row.maskedLineUserId.includes("U_CHIA")), true);
+});
+
+test("the same LINE userId has one consistent admin state across multiple game IDs", () => {
+  const members = ["Chia - 嘻嘻不嘻嘻", "Chia - CC x CC"];
+  const bindings = Object.fromEntries(members.map((playerName) => [
+    bindingKey(playerName),
+    makeBinding(playerName, "U_CHIA", "Chia"),
+  ]));
+  const rows = buildLineBindingAdminRows({
+    memberNames: members,
+    bindings,
+    groupId: GROUP_ID,
+    adminLineUserIds: ["U_CHIA"],
+  });
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows.every((row) => row.isLineBotAdmin), true);
+});
+
+test("an unbound member cannot be offered LINE Bot admin access", () => {
+  const [row] = buildLineBindingAdminRows({
+    memberNames: ["Rain - 流鬼"],
+    bindings: {},
+    groupId: GROUP_ID,
+    adminLineUserIds: {U_RAIN: true},
+  });
+
+  assert.equal(row.bound, false);
+  assert.equal(row.bindingId, null);
+  assert.equal(row.isLineBotAdmin, false);
+  assert.deepEqual(planLineBotAdminChange({binding: null, defaultGroupId: GROUP_ID, enabled: true}), {
+    status: "binding-not-found",
+  });
+});
+
+test("setLineBotAdmin plans enabled true and false against the bound LINE identity", () => {
+  const binding = makeBinding("@Hank - 挖系小嗨", "U_HANK", "@Hank");
+
+  assert.deepEqual(planLineBotAdminChange({binding, defaultGroupId: GROUP_ID, enabled: true}), {
+    status: "success",
+    lineUserId: "U_HANK",
+    value: true,
+  });
+  assert.deepEqual(planLineBotAdminChange({binding, defaultGroupId: GROUP_ID, enabled: false}), {
+    status: "success",
+    lineUserId: "U_HANK",
+    value: null,
+  });
+  assert.equal(planLineBotAdminChange({
+    binding,
+    defaultGroupId: "C_GROUP_B",
+    enabled: true,
+  }).status, "invalid-binding");
 });

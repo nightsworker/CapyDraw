@@ -21,6 +21,13 @@ test("UID_C outside the admin allowlist is rejected with 403", () => {
   );
 });
 
+test("setLineBotAdmin authorization rejects a non-admin Firebase user with 403", () => {
+  assert.throws(
+    () => assertAdminUid("UID_MEMBER", "UID_ADMIN_A,UID_ADMIN_B"),
+    (error) => error.status === 403,
+  );
+});
+
 test("spaces around comma-separated admin UIDs are ignored", () => {
   const adminUids = getAdminUids("UID_A, UID_B");
   assert.deepEqual([...adminUids], ["UID_A", "UID_B"]);
