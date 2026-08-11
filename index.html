@@ -1058,7 +1058,7 @@
               <td>${escapeHtml(member.gameId)}</td>
               <td>${member.bound ? "✅ 已綁定" : "❌ 未綁定"}</td>
               <td>${member.bound ? `${escapeHtml(member.lineDisplayName || "-")}<div class="line-id">${escapeHtml(member.maskedLineUserId || "-")}</div>` : "-"}</td>
-              <td>${member.bound ? `<span class="line-admin-badge${member.isLineBotAdmin ? " active" : ""}">${member.isLineBotAdmin ? "✅ Bot 管理員" : "一般成員"}</span>` : "-"}</td>
+              <td>${member.bound ? `<span class="line-admin-badge${member.isLineBotAdmin ? " active" : ""}">${member.isLineBotAdmin ? "🛡️ Bot 管理員" : "一般成員"}</span>` : "— 尚未完成 LINE 綁定"}</td>
               <td>${member.bound ? `<div class="line-actions">
                 <button class="btn ${member.isLineBotAdmin ? "danger" : "secondary"} small requires-line-admin" data-line-admin-binding="${escapeHtml(member.bindingId)}" data-line-admin-enabled="${member.isLineBotAdmin ? "false" : "true"}" data-line-name="${escapeHtml(member.lineName)}">${member.isLineBotAdmin ? "解除管理員" : "設為管理員"}</button>
                 <button class="btn danger small requires-line-admin" data-remove-binding="${escapeHtml(member.bindingId)}" data-player-name="${escapeHtml(member.playerName)}">解除綁定</button>
@@ -1106,7 +1106,7 @@
 
     async function setLineBotAdmin(bindingId, lineName, enabled) {
       const question = enabled ?
-        `確定要讓「${lineName}」可以使用 LINE Bot 管理指令嗎？` :
+        `確定要讓「${lineName}」可以使用 LINE Bot 管理指令嗎？\n\n管理指令包含：\n!同步\n!鎖定\n!解除鎖定\n!幫綁\n!幫解除` :
         `確定要移除「${lineName}」的 LINE Bot 管理員權限嗎？`;
       if (!confirm(question)) return;
       lineAdminSaving = true;
@@ -1115,8 +1115,8 @@
         await callLineAdminFunction("setLineBotAdmin", { body: { bindingId, enabled } });
         await loadLineBindings();
         setMessage("lineSettingsMessage", enabled ?
-          `✅ 已將 ${lineName} 設為 LINE Bot 管理員` :
-          `✅ 已移除 ${lineName} 的 LINE Bot 管理員權限`, "ok");
+          `✅ 已將「${lineName}」設為 LINE Bot 管理員` :
+          `✅ 已移除「${lineName}」的 LINE Bot 管理員權限`, "ok");
       } catch (error) {
         setMessage("lineSettingsMessage", `LINE Bot 管理員設定失敗：${error.message}`, "danger");
       } finally {
