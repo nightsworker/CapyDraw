@@ -205,7 +205,7 @@
       <div class="grid-2">
         <div class="card">
           <h2>表單 1：公會成員列表</h2>
-          <p class="hint">一行一個名字。船長與船艙 4 都會從這份名單建立各自獨立池子。名稱會自動標準化成「名字 - 暱稱」。</p>
+          <p class="hint">一行一個名字，格式為「LINE 名稱 - 遊戲 ID」。船長與船艙 4 都會從這份名單建立各自獨立池子。</p>
           <textarea id="guildMembersInput"></textarea>
         </div>
         <div class="card">
@@ -322,7 +322,7 @@
     <section id="linePanel" class="tab-panel">
       <div class="card">
         <h2>LINE 設定</h2>
-        <p class="hint">玩家需在公會 LINE 群組輸入「綁定 暱稱」。綁定資料與完整 LINE userId 只由後端讀取；管理操作需要 Google 登入及管理員 UID。</p>
+        <p class="hint">名單格式為「LINE 名稱 - 遊戲 ID」。玩家可在公會群組輸入「綁定」自動配對 LINE 顯示名稱，或輸入「綁定 LINE名稱」。完整 LINE userId 只由後端讀取。</p>
         <div class="actions">
           <button class="btn secondary requires-line-admin" id="refreshLineBindingsBtn">重新整理</button>
           <span class="message" id="lineSettingsMessage"></span>
@@ -1040,14 +1040,14 @@
       }
       $("lineBindingsTableWrap").innerHTML = `
         <table>
-          <thead><tr><th>玩家</th><th>LINE</th><th>userId</th><th>狀態</th><th>操作</th></tr></thead>
+          <thead><tr><th>LINE 名稱</th><th>遊戲 ID</th><th>LINE 綁定狀態</th><th>LINE Profile</th><th>操作</th></tr></thead>
           <tbody>${lineBindingsCache.map(member => `
             <tr>
-              <td><strong>${escapeHtml(member.playerName)}</strong></td>
-              <td>${escapeHtml(member.lineDisplayName || "-")}</td>
-              <td><span class="line-id">${escapeHtml(member.maskedLineUserId || "-")}</span></td>
+              <td><strong>${escapeHtml(member.lineName)}</strong></td>
+              <td>${escapeHtml(member.gameId)}</td>
               <td>${member.bound ? "✅ 已綁定" : "❌ 未綁定"}</td>
-              <td>${member.bound ? `<button class="btn danger small requires-line-admin" data-remove-binding="${escapeHtml(member.bindingId)}" data-player-name="${escapeHtml(member.playerName)}">解除綁定</button>` : "-"}</td>
+              <td>${member.bound ? `${escapeHtml(member.lineDisplayName || "-")}<div class="line-id">${escapeHtml(member.maskedLineUserId || "-")}</div>` : "-"}</td>
+              <td>${member.bound ? `<button class="btn danger small requires-line-admin" data-remove-binding="${escapeHtml(member.bindingId)}" data-player-name="${escapeHtml(member.playerName)}">解除</button>` : "-"}</td>
             </tr>`).join("")}</tbody>
         </table>`;
       document.querySelectorAll("[data-remove-binding]").forEach(btn => {

@@ -123,21 +123,35 @@ await fetch("https://asia-southeast1-capydraw-7f7de.cloudfunctions.net/setDefaul
 
 ## 玩家綁定測試
 
-假設 `guildDraw/main/guildMembers` 中有 `流鬼 - Rain`：
+`guildDraw/main/guildMembers` 的名稱格式是：
 
-1. Rain 本人在已加入 Bot 的公會群輸入 `綁定 Rain`（也支援 `bind Rain`）。
-2. Bot 應回覆：
+```text
+LINE 名稱 - 遊戲 ID
+```
 
-   ```text
-   ✅ LINE 綁定完成
-   Rain → 流鬼
-   ```
+例如 `Rain - 流鬼` 表示 LINE 名稱是 `Rain`、遊戲 ID 是 `流鬼`。系統只切第一個 ` - `，因此 `台東小米那裡民宿 - 林秉亮 - 大象騎士` 的遊戲 ID 是完整的 `林秉亮 - 大象騎士`。沒有分隔符的舊資料則將整個名稱同時視為 LINE 名稱及遊戲 ID。
 
-3. 輸入 `綁定狀態`，應顯示目前綁定的完整玩家名稱。
-4. 輸入 `解除綁定`，只會解除訊息發送者自己的 LINE userId 綁定。
-5. 網站登入管理帳號後，到「LINE 設定」按重新整理，可看到顯示名稱、遮罩 userId 與狀態。
+玩家可在正式公會群使用：
 
-若暱稱重複，Bot 只列候選完整名稱，不會模糊猜測；玩家再用完整名稱綁定即可。
+- `綁定`：讀取本人 LINE group profile displayName，自動完全比對網站中的 LINE 名稱。
+- `綁定 Rain` 或 `bind Rain`：手動完全比對 LINE 名稱。
+- `綁定狀態`：顯示本人綁定的 LINE 名稱及所有遊戲 ID。
+- `解除綁定`：解除本人在目前正式群組下的全部遊戲帳號 binding。
+- `綁定清單`、`LINE清單`、`line list`：由後端列出完整綁定摘要。
+- `未綁定清單`、`未綁定`：由後端列出尚未綁定的 LINE 名稱與遊戲 ID。
+
+假設名單中有 `Rain - 流鬼`，Rain 可直接輸入 `綁定`，或輸入 `綁定 Rain`。成功回覆：
+
+```text
+✅ LINE 綁定完成
+
+Rain
+→ 流鬼
+```
+
+同一 LINE 名稱可對應多個遊戲 ID，例如 `Chia - 嘻嘻不嘻嘻` 與 `Chia - CC x CC`。一次 `綁定 Chia` 會用同一 LINE userId 建立兩個 canonical player binding。binding 的 Firebase key 仍由完整 `playerName` 產生，因此不會互相覆蓋。
+
+舊 binding 不需 migration。後端會忽略舊 schema 中語意錯誤的 `alias/gameName`，每次都從 canonical `playerName` 重新解析 `lineName/gameId`。玩家重新綁定時，該筆資料會自然更新為新 schema。
 
 ## 發送與真正 @mention 測試
 
@@ -147,6 +161,6 @@ await fetch("https://asia-southeast1-capydraw-7f7de.cloudfunctions.net/setDefaul
 4. 按「發送到 LINE」。前端只傳 `recordId`；後端會重讀真正的 history record。
 5. 在 LINE 中點擊被標記的名字，應出現該群組成員的 profile，這才是 `textV2` substitution mention，不是普通 `@名字`。
 
-未綁定玩家會以普通 `@暱稱` 顯示，但不會阻止整則訊息發送；網站同時列出 `unboundMembers`。成功後 record 會新增 `lineSentAt`、`lineSendCount` 與 `lastLineSendStatus`。再次發送同一筆紀錄時，前端會先要求確認，但允許補發。
+船長與守護天使會顯示「遊戲 ID + 真正 mention」，第四船艙只顯示真正 mention。未綁定玩家會以普通 `@LINE名稱` 顯示，但不會阻止整則訊息發送；網站同時列出 `unboundMembers`。成功後 record 會新增 `lineSentAt`、`lineSendCount` 與 `lastLineSendStatus`。再次發送同一筆紀錄時，前端會先要求確認，但允許補發。
 
 LINE 的真正 mention 要求官方帳號、接收者與所有被 mention 的使用者都在同一群組；單一訊息最多 20 個 mention。本專案每次最多建立 7 個。

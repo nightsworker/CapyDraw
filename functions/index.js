@@ -8,17 +8,20 @@ const {getAuth} = require("firebase-admin/auth");
 const {getDatabase, ServerValue} = require("firebase-admin/database");
 const {
   bindingKey,
+  buildBindingListText,
   buildDrawLineMessage,
+  buildMemberBindingRows,
+  buildUnboundListText,
   claimDefaultLineGroup,
   createBindingRecord,
   decideLineGroupAction,
   extractBindingCommand,
-  findMemberMatches,
+  findMembersByLineName,
   isGroupMessageEvent,
   listBindingRecords,
   maskLineUserId,
-  normalizeMemberName,
-  parseMemberName,
+  resolveBindingLineName,
+  splitTextMessages,
   verifyLineSignature,
 } = require("./lib/line");
 
@@ -104,12 +107,20 @@ async function callLine(path, token, body, method = "POST") {
   return response.json();
 }
 
-async function replyText(replyToken, text, token) {
-  if (!replyToken) return;
+async function replyTexts(replyToken, texts, token) {
+  const messages = (Array.isArray(texts) ? texts : [texts])
+    .filter((text) => String(text || "").trim())
+    .slice(0, 5)
+    .map((text) => ({type: "text", text: String(text)}));
+  if (!replyToken || !messages.length) return;
   await callLine("/message/reply", token, {
     replyToken,
-    messages: [{type: "text", text}],
+    messages,
   });
+}
+
+async function replyText(replyToken, text, token) {
+  await replyTexts(replyToken, [text], token);
 }
 
 async function getGroupMemberProfile(groupId, userId, token) {
@@ -151,15 +162,26 @@ async function handleBindingCommand(event, command, token) {
   const bindingsRef = db.ref("guildDraw/lineBindings");
   const bindings = (await bindingsRef.get()).val() || {};
   const bindingEntries = listBindingRecords(bindings);
-  const ownBindings = bindingEntries.filter((binding) => binding.lineUserId === userId);
+  const ownBindings = bindingEntries.filter((binding) =>
+    binding.lineUserId === userId && binding.lineGroupId === groupId);
 
   if (command.type === "status") {
-    if (!ownBindings.length) {
+    const members = (await db.ref("guildDraw/main/guildMembers").get()).val() || [];
+    const ownRows = buildMemberBindingRows(members, bindings, groupId)
+      .filter((row) => row.bound && row.lineUserId === userId);
+    if (!ownRows.length) {
       await replyText(event.replyToken, "ℹ️ 你目前尚未綁定玩家。", token);
       return;
     }
-    const member = parseMemberName(ownBindings[0].playerName);
-    await replyText(event.replyToken, `你目前綁定：\n${member.fullName}`, token);
+    const lineNames = [...new Set(ownRows.map((row) => row.lineName))];
+    const gameIds = [...new Set(ownRows.map((row) => row.gameId))];
+    await replyText(event.replyToken, [
+      "✅ 你的 LINE 綁定",
+      "",
+      `LINE：${lineNames.join("、")}`,
+      "遊戲 ID：",
+      ...gameIds.map((gameId) => `- ${gameId}`),
+    ].join("\n"), token);
     return;
   }
 
@@ -171,47 +193,63 @@ async function handleBindingCommand(event, command, token) {
     const updates = {};
     ownBindings.forEach((binding) => { updates[binding.id] = null; });
     await bindingsRef.update(updates);
-    await replyText(event.replyToken, "✅ 已解除你的 LINE 玩家綁定。", token);
+    await replyText(event.replyToken, `✅ 已解除 LINE 綁定\n共解除 ${ownBindings.length} 個遊戲帳號。`, token);
     return;
   }
 
   const members = (await db.ref("guildDraw/main/guildMembers").get()).val() || [];
-  const {matches} = findMemberMatches(members, command.query);
+  if (command.type === "binding-list") {
+    const text = buildBindingListText(members, bindings, groupId);
+    await replyTexts(event.replyToken, splitTextMessages(text), token);
+    return;
+  }
+
+  if (command.type === "unbound-list") {
+    const text = buildUnboundListText(members, bindings, groupId);
+    await replyTexts(event.replyToken, splitTextMessages(text), token);
+    return;
+  }
+
+  let profile = null;
+  if (command.auto) {
+    profile = await getGroupMemberProfile(groupId, userId, token);
+    if (!profile || !profile.displayName) {
+      await replyText(event.replyToken, "❌ 無法取得你的 LINE 顯示名稱，請改用：\n綁定 <LINE名稱>", token);
+      return;
+    }
+  }
+  const requestedLineName = resolveBindingLineName(command, profile && profile.displayName);
+  const matches = findMembersByLineName(members, requestedLineName);
   if (!matches.length) {
-    await replyText(event.replyToken, `❌ 找不到玩家「${command.query}」，請確認名稱。`, token);
-    return;
-  }
-  if (matches.length > 1) {
-    await replyText(event.replyToken, `⚠️ 找到多個候選，請改用完整名稱：\n${matches.map((item) => `・${item.fullName}`).join("\n")}`, token);
-    return;
-  }
-
-  const member = matches[0];
-  if (ownBindings.length) {
-    const current = parseMemberName(ownBindings[0].playerName);
-    const same = normalizeMemberName(current.fullName) === normalizeMemberName(member.fullName);
-    await replyText(event.replyToken, same ?
-      `ℹ️ 你目前已綁定\n${current.alias} → ${current.gameName}` :
-      `ℹ️ 你目前已綁定\n${current.alias} → ${current.gameName}\n如需更換，請先輸入「解除綁定」。`, token);
+    await replyText(event.replyToken, command.auto ?
+      `❌ 找不到與你的 LINE 名稱「${requestedLineName}」對應的玩家。\n請改用：\n綁定 <LINE名稱>` :
+      `❌ 找不到 LINE 名稱「${requestedLineName}」對應的玩家，請確認名稱。`, token);
     return;
   }
 
-  const playerBinding = bindingEntries.find((binding) =>
-    binding.normalizedPlayerName === normalizeMemberName(member.fullName));
-  if (playerBinding) {
-    await replyText(event.replyToken, `❌ 玩家「${member.fullName}」已由其他 LINE 帳號綁定。`, token);
+  const canonicalLineName = matches[0].lineName;
+  const otherOwnLineNames = [...new Set(ownBindings
+    .filter((binding) => binding.lineName !== canonicalLineName)
+    .map((binding) => binding.lineName))];
+  if (otherOwnLineNames.length) {
+    await replyText(event.replyToken, [
+      "ℹ️ 你的 LINE 帳號目前已綁定其他 LINE 名稱：",
+      ...otherOwnLineNames.map((lineName) => `- ${lineName}`),
+      "如需更換，請先輸入「解除綁定」。",
+    ].join("\n"), token);
+    return;
+  }
+  const conflictingBindings = bindingEntries.filter((binding) =>
+    binding.lineGroupId === groupId &&
+    binding.lineName === canonicalLineName &&
+    binding.lineUserId !== userId);
+  if (conflictingBindings.length) {
+    await replyText(event.replyToken, `❌ LINE 名稱「${requestedLineName}」已由其他 LINE 帳號綁定。`, token);
     return;
   }
 
-  const profile = await getGroupMemberProfile(groupId, userId, token);
+  if (!profile) profile = await getGroupMemberProfile(groupId, userId, token);
   const now = new Date().toISOString();
-  const binding = createBindingRecord({
-    member,
-    userId,
-    displayName: profile && profile.displayName,
-    groupId,
-    now,
-  });
   if (groupAction.canClaim) {
     const claimResult = await defaultGroupRef.transaction((current) =>
       claimDefaultLineGroup(current, groupId));
@@ -221,8 +259,28 @@ async function handleBindingCommand(event, command, token) {
     }
     await settingsRef.child("updatedAt").set(ServerValue.TIMESTAMP);
   }
-  await bindingsRef.child(bindingKey(member.fullName)).set(binding);
-  await replyText(event.replyToken, `✅ LINE 綁定完成\n${member.alias} → ${member.gameName}`, token);
+
+  const updates = {};
+  matches.forEach((member) => {
+    const key = bindingKey(member.fullName);
+    const existing = bindingEntries.find((binding) =>
+      binding.id === key && binding.lineUserId === userId && binding.lineGroupId === groupId);
+    updates[key] = createBindingRecord({
+      member,
+      userId,
+      displayName: profile && profile.displayName,
+      groupId,
+      now,
+      boundAt: existing && existing.boundAt,
+    });
+  });
+  await bindingsRef.update(updates);
+  await replyText(event.replyToken, [
+    "✅ LINE 綁定完成",
+    "",
+    canonicalLineName,
+    ...matches.map((member) => `→ ${member.gameId}`),
+  ].join("\n"), token);
 }
 
 exports.lineWebhook = onRequest({
@@ -338,21 +396,21 @@ exports.getLineBindings = onRequest({region: REGION}, async (req, res) =>
       db.ref("guildDraw/lineBindings").get(),
       db.ref("guildDraw/lineSettings/defaultGroupId").get(),
     ]);
-    const bindings = listBindingRecords(bindingsSnapshot.val() || {});
-    const members = (membersSnapshot.val() || []).map((playerName) => {
-      const parsed = parseMemberName(playerName);
-      const normalized = normalizeMemberName(parsed.fullName);
-      const binding = bindings.find((item) => item.normalizedPlayerName === normalized);
-      return {
-        playerName: parsed.fullName,
-        alias: parsed.alias,
-        bound: Boolean(binding),
-        bindingId: binding ? binding.id : null,
-        lineDisplayName: binding ? binding.lineDisplayName : null,
-        maskedLineUserId: binding ? maskLineUserId(binding.lineUserId) : null,
-      };
-    });
-    json(res, 200, {ok: true, hasDefaultGroup: settingsSnapshot.exists(), members});
+    const groupId = settingsSnapshot.val();
+    const members = buildMemberBindingRows(
+      membersSnapshot.val() || [],
+      bindingsSnapshot.val() || {},
+      groupId,
+    ).map((member) => ({
+      playerName: member.playerName,
+      lineName: member.lineName,
+      gameId: member.gameId,
+      bound: member.bound,
+      bindingId: member.bindingId,
+      lineDisplayName: member.lineDisplayName,
+      maskedLineUserId: maskLineUserId(member.lineUserId),
+    }));
+    json(res, 200, {ok: true, hasDefaultGroup: Boolean(groupId), members});
   }));
 
 exports.removeLineBinding = onRequest({region: REGION}, async (req, res) =>
