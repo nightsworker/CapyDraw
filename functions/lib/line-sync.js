@@ -276,25 +276,86 @@ function findObservedIdentities(observedMembers, lineName, groupId) {
   return [...new Map(identities.map((member) => [member.lineUserId, member])).values()];
 }
 
-function planAdminBinding({memberNames, bindings, observedMembers, lineName, groupId, now}) {
-  const members = findMembersByLineName(memberNames, lineName);
+function findAdminBindIdentities({observedMembers, sourceProfiles, sourceLineName, groupId}) {
+  const identitiesByUserId = new Map(findObservedIdentities(observedMembers, sourceLineName, groupId)
+    .map((identity) => [identity.lineUserId, identity]));
+  (Array.isArray(sourceProfiles) ? sourceProfiles : []).forEach((profile) => {
+    const lineUserId = String(profile && (profile.userId || profile.lineUserId) || "").trim();
+    const displayName = String(profile && profile.displayName || "").trim();
+    if (!isFirebaseSafeKey(lineUserId) || !displayName) return;
+    identitiesByUserId.set(lineUserId, {lineUserId, displayName, groupId});
+  });
+  return [...identitiesByUserId.values()].filter((identity) =>
+    identity.displayName === sourceLineName);
+}
+
+function planAdminBinding({
+  memberNames,
+  bindings,
+  observedMembers,
+  sourceProfiles,
+  sourceIdentity,
+  sourceLineName,
+  targetGuildLineName,
+  lineName,
+  groupId,
+  now,
+}) {
+  const resolvedSourceLineName = String(sourceLineName || lineName || "").trim();
+  const resolvedTargetGuildLineName = String(targetGuildLineName || lineName || "").trim();
+  const members = findMembersByLineName(memberNames, resolvedTargetGuildLineName);
   if (!members.length) return {status: "guild-member-not-found", members, updates: {}};
-  const identities = findObservedIdentities(observedMembers, members[0].lineName, groupId);
+  let identities;
+  if (sourceIdentity) {
+    const lineUserId = String(sourceIdentity.userId || sourceIdentity.lineUserId || "").trim();
+    const displayName = String(sourceIdentity.displayName || "").trim();
+    const identityGroupId = String(sourceIdentity.groupId || groupId);
+    identities = isFirebaseSafeKey(lineUserId) && displayName && identityGroupId === groupId ?
+      [{lineUserId, displayName, groupId}] : [];
+  } else {
+    identities = findAdminBindIdentities({
+      observedMembers,
+      sourceProfiles,
+      sourceLineName: resolvedSourceLineName,
+      groupId,
+    });
+  }
   if (!identities.length) return {status: "line-identity-not-found", members, updates: {}};
   if (identities.length > 1) return {status: "ambiguous-line-identity", members, updates: {}};
 
   const identity = identities[0];
-  const syncPlan = buildMemberSyncPlan({
-    memberNames,
-    bindings,
-    profiles: [{userId: identity.lineUserId, displayName: identity.displayName}],
-    groupId,
-    now,
-  });
-  if (syncPlan.conflicts) {
+  const records = listBindingRecords(bindings);
+  const hasConflict = records.some((binding) =>
+    binding.lineGroupId === groupId &&
+    binding.lineName === members[0].lineName &&
+    binding.lineUserId !== identity.lineUserId);
+  if (hasConflict) {
     return {status: "binding-conflict", members, identity, updates: {}};
   }
-  return {status: "success", members, identity, updates: syncPlan.updates};
+
+  const updates = {};
+  members.forEach((member) => {
+    const existing = records.find((binding) =>
+      binding.lineGroupId === groupId &&
+      binding.normalizedPlayerName === normalizeMemberName(member.fullName));
+    const id = existing ? existing.id : bindingKeyForGroup(member.fullName, groupId);
+    updates[id] = createBindingRecord({
+      member,
+      userId: identity.lineUserId,
+      displayName: identity.displayName,
+      groupId,
+      now,
+      boundAt: existing && existing.boundAt,
+    });
+  });
+  return {
+    status: "success",
+    members,
+    identity,
+    sourceLineName: identity.displayName,
+    targetGuildLineName: members[0].lineName,
+    updates,
+  };
 }
 
 function selectAdminUnbindBindings({memberNames, bindings, lineName, groupId}) {

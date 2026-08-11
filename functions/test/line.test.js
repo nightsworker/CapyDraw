@@ -22,6 +22,7 @@ const {
   findBindingForMember,
   findMembersByLineName,
   isGroupMessageEvent,
+  parseAdminBindArguments,
   parseBotCommand,
   parseMemberName,
   planWebhookEvent,
@@ -554,8 +555,8 @@ test("help documents member, lock, and admin command visibility", () => {
   const lockedHelp = buildBotHelpText({bindingLocked: true});
   assert.match(lockedHelp, /目前 LINE 綁定已鎖定/);
   const adminHelp = buildBotHelpText({bindingLocked: true, isAdmin: true});
-  ["!同步", "!鎖定", "!解除鎖定", "!幫綁 <LINE名稱>", "!幫解除 <LINE名稱>"].forEach((command) => {
-    assert.match(adminHelp, new RegExp(command.replace("!", "\\!")));
+  ["!同步", "!鎖定", "!解除鎖定", "!幫綁 <LINE名稱> [名單名稱]", "!幫解除 <LINE名稱>"].forEach((command) => {
+    assert.equal(adminHelp.includes(command), true);
   });
   const lines = help.split("\n");
   ["綁定狀態", "解除綁定", "line list"].forEach((legacyCommand) => {
@@ -666,6 +667,66 @@ test("admin bind parser uses exact command tokens and arguments", () => {
   assert.notEqual(parseBotCommand("!幫解除 @Hank").command, "unbind");
 });
 
+test("A/B: admin bind arguments preserve one-name syntax and support a separate target", () => {
+  assert.deepEqual(parseAdminBindArguments("Rain"), {
+    status: "success",
+    sourceLineName: "Rain",
+    targetGuildLineName: "Rain",
+    mentionedUserId: null,
+    usedMention: false,
+  });
+  assert.deepEqual(parseAdminBindArguments("Rain Rian"), {
+    status: "success",
+    sourceLineName: "Rain",
+    targetGuildLineName: "Rian",
+    mentionedUserId: null,
+    usedMention: false,
+  });
+  assert.deepEqual(parseAdminBindArguments("Rain Chen", null, {
+    memberNames: ["Rain Chen - 流鬼"],
+  }), {
+    status: "success",
+    sourceLineName: "Rain Chen",
+    targetGuildLineName: "Rain Chen",
+    mentionedUserId: null,
+    usedMention: false,
+  });
+});
+
+test("C: true mention metadata supplies the LINE userId and keeps the explicit target", () => {
+  const text = "!幫綁 @Rain Rian";
+  const parsed = parseAdminBindArguments("@Rain Rian", {
+    type: "text",
+    text,
+    mention: {mentionees: [{
+      type: "user",
+      userId: "U_RAIN",
+      index: text.indexOf("@Rain"),
+      length: "@Rain".length,
+    }]},
+  });
+  assert.deepEqual(parsed, {
+    status: "success",
+    sourceLineName: "@Rain",
+    targetGuildLineName: "Rian",
+    mentionedUserId: "U_RAIN",
+    usedMention: true,
+  });
+  assert.equal(parseAdminBindArguments("@Rain Rian").usedMention, false);
+});
+
+test("admin bind refuses multiple true user mentions", () => {
+  const parsed = parseAdminBindArguments("@Rain @Rian Chia", {
+    type: "text",
+    text: "!幫綁 @Rain @Rian Chia",
+    mention: {mentionees: [
+      {type: "user", userId: "U_RAIN"},
+      {type: "user", userId: "U_RIAN"},
+    ]},
+  });
+  assert.equal(parsed.status, "ambiguous-mention");
+});
+
 test("admin bind requires exact guild and observed LINE names", () => {
   const success = planAdminBinding({
     memberNames: ["@Hank - 挖系小嗨"],
@@ -707,6 +768,68 @@ test("admin bind refuses missing and ambiguous observed identities", () => {
   assert.deepEqual(ambiguous.updates, {});
 });
 
+test("B-F: admin bind separates exact source identity from exact guild target", () => {
+  const base = {
+    memberNames: ["Rian - 流鬼"],
+    bindings: {},
+    observedMembers: {},
+    sourceLineName: "Rain",
+    targetGuildLineName: "Rian",
+    groupId: GROUP_ID,
+    now: NOW,
+  };
+  const success = planAdminBinding({
+    ...base,
+    sourceProfiles: [{userId: "U_RAIN", displayName: "Rain"}],
+  });
+  assert.equal(success.status, "success");
+  assert.equal(success.identity.lineUserId, "U_RAIN");
+  assert.equal(success.members[0].lineName, "Rian");
+  assert.deepEqual(Object.values(success.updates).map((binding) => ({
+    lineUserId: binding.lineUserId,
+    lineName: binding.lineName,
+    lineDisplayName: binding.lineDisplayName,
+    gameId: binding.gameId,
+  })), [{
+    lineUserId: "U_RAIN",
+    lineName: "Rian",
+    lineDisplayName: "Rain",
+    gameId: "流鬼",
+  }]);
+
+  assert.equal(planAdminBinding({...base, sourceProfiles: []}).status, "line-identity-not-found");
+  assert.equal(planAdminBinding({
+    ...base,
+    sourceProfiles: [
+      {userId: "U_RAIN_1", displayName: "Rain"},
+      {userId: "U_RAIN_2", displayName: "Rain"},
+    ],
+  }).status, "ambiguous-line-identity");
+  assert.equal(planAdminBinding({
+    ...base,
+    targetGuildLineName: "rain",
+    sourceProfiles: [{userId: "U_RAIN", displayName: "Rain"}],
+  }).status, "guild-member-not-found");
+});
+
+test("C: true mention identity overrides display-name lookup", () => {
+  const plan = planAdminBinding({
+    memberNames: ["Rian - 流鬼"],
+    bindings: {},
+    observedMembers: {
+      U_OTHER: {lineUserId: "U_OTHER", displayName: "Rain", groupId: GROUP_ID},
+    },
+    sourceLineName: "@Rain",
+    targetGuildLineName: "Rian",
+    sourceIdentity: {userId: "U_RAIN", displayName: "Rain", groupId: GROUP_ID},
+    groupId: GROUP_ID,
+    now: NOW,
+  });
+  assert.equal(plan.status, "success");
+  assert.equal(plan.identity.lineUserId, "U_RAIN");
+  assert.equal(Object.values(plan.updates)[0].lineUserId, "U_RAIN");
+});
+
 test("admin bind handles multiple game IDs and never overwrites conflicts", () => {
   const memberNames = ["Chia - 嘻嘻不嘻嘻", "Chia - CC x CC"];
   const observedMembers = {
@@ -735,6 +858,21 @@ test("admin bind handles multiple game IDs and never overwrites conflicts", () =
   assert.deepEqual(conflict.updates, {});
 });
 
+test("I-K: admin bind requires an admin/default group but remains allowed while locked", () => {
+  const decide = ({userId = "U_ADMIN", eventGroupId = GROUP_ID, bindingLocked = true} = {}) =>
+    decideLineCommandAccess({
+      command: "admin-bind",
+      bindingLocked,
+      defaultGroupId: GROUP_ID,
+      eventGroupId,
+      adminLineUserIds: {U_ADMIN: true},
+      userId,
+    });
+  assert.deepEqual(decide(), {allowed: true, reason: null});
+  assert.equal(decide({userId: "U_MEMBER"}).reason, "not-admin");
+  assert.equal(decide({eventGroupId: "C_GROUP_B"}).reason, "other-group");
+});
+
 test("admin unbind selects only the exact LINE name in the current group", () => {
   const hankOne = "@Hank - 挖系小嗨";
   const hankTwo = "@Hank - 第二帳號";
@@ -757,10 +895,11 @@ test("admin unbind selects only the exact LINE name in the current group", () =>
 
 test("admin bind and unbind success replies use the unified detail format", () => {
   const members = [parseMemberName("Chia - 嘻嘻不嘻嘻"), parseMemberName("Chia - CC x CC")];
-  const bindText = buildAdminBindingSuccessText(members);
-  assert.match(bindText, /^✅ 管理員完成 LINE 綁定/m);
-  assert.match(bindText, /LINE：Chia\n遊戲 ID：\n• 嘻嘻不嘻嘻\n• CC x CC/);
-  assert.match(bindText, /共綁定 2 個遊戲帳號。/);
+  const bindText = buildAdminBindingSuccessText(members, "Actual Chia");
+  assert.match(bindText, /^✅ 管理員綁定完成/m);
+  assert.match(bindText, /LINE：\nActual Chia\n\n公會名單：\nChia/);
+  assert.match(bindText, /遊戲 ID：\n• 嘻嘻不嘻嘻\n• CC x CC/);
+  assert.match(bindText, /LINE 名稱與公會登記名稱不同/);
   const unbindText = buildAdminUnbindSuccessText(members.map((member) => ({playerName: member.fullName})));
   assert.match(unbindText, /^✅ 管理員已解除 LINE 綁定/m);
   assert.match(unbindText, /共解除 2 個遊戲帳號。/);

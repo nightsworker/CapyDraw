@@ -24,6 +24,7 @@ const {
   findMembersByLineName,
   listBindingRecords,
   normalizeMemberName,
+  parseAdminBindArguments,
   planWebhookEvent,
   resolveBindingLineName,
   splitTextMessages,
@@ -490,66 +491,124 @@ async function handleBindingLockCommand({event, command, settings, settingsRef, 
   ].join("\n"));
 }
 
-async function handleAdminBindCommand({event, command, db, members, bindings, bindingsRef, replier}) {
-  const lineName = String(command.args || "").trim();
-  if (!lineName) {
-    await replier.text("請輸入：\n!幫綁 <LINE名稱>", "failure");
+async function loadAdminBindSourceProfiles(groupId, token, observedMembers) {
+  try {
+    const source = await getSyncMemberSource(groupId, token, observedMembers);
+    if (source.mode === "full") return loadSyncProfiles(source, groupId, token);
+    return source.observedMembers.map((member) => ({
+      userId: member.lineUserId,
+      displayName: member.displayName,
+    }));
+  } catch (error) {
+    logger.warn("Could not load full LINE identities for admin bind", {
+      status: error.lineStatus,
+      message: error.message,
+    });
+    return Object.values(observedMembers && typeof observedMembers === "object" ? observedMembers : {})
+      .filter((member) => member && member.lineUserId && member.displayName)
+      .map((member) => ({userId: member.lineUserId, displayName: member.displayName}));
+  }
+}
+
+async function handleAdminBindCommand({
+  event, command, token, db, members, bindings, bindingsRef, replier,
+}) {
+  const parsed = parseAdminBindArguments(command.args, event.message, {memberNames: members});
+  if (parsed.status === "missing-arguments") {
+    await replier.text("請輸入：\n!幫綁 <LINE名稱> [名單名稱]", "failure");
+    return;
+  }
+  if (parsed.status !== "success") {
+    await replier.text([
+      "⚠️ 請只真正 @一位要綁定的成員，",
+      "並將 @對方 放在第一個參數：",
+      "",
+      "!幫綁 @對方 名單名稱",
+    ].join("\n"), "failure");
     return;
   }
   const groupId = event.source.groupId;
   const observedSnapshot = await db.ref(`guildDraw/lineObservedMembers/${groupId}`).get();
+  const observedMembers = observedSnapshot.val() || {};
+  let sourceIdentity = null;
+  let sourceProfiles = [];
+  let targetGuildLineName = parsed.targetGuildLineName;
+
+  if (parsed.usedMention) {
+    const profile = await getGroupMemberProfile(groupId, parsed.mentionedUserId, token);
+    if (!profile || !profile.displayName) {
+      await replier.text([
+        "⚠️ 無法讀取被 @成員的 LINE 身份。",
+        "請確認對方仍在目前正式群組後再試一次。",
+      ].join("\n"), "not-found");
+      return;
+    }
+    sourceIdentity = {
+      userId: parsed.mentionedUserId,
+      displayName: profile.displayName,
+      groupId,
+    };
+    targetGuildLineName = targetGuildLineName || profile.displayName;
+  }
+
+  const targetMembers = findMembersByLineName(members, targetGuildLineName);
+  if (!targetMembers.length) {
+    await replier.text(
+      `❌ 找不到公會名單 LINE 名稱「${targetGuildLineName}」。`,
+      "not-found",
+    );
+    return;
+  }
+  if (!parsed.usedMention) {
+    sourceProfiles = await loadAdminBindSourceProfiles(groupId, token, observedMembers);
+  }
+
   const plan = planAdminBinding({
     memberNames: members,
     bindings,
-    observedMembers: observedSnapshot.val() || {},
-    lineName,
+    observedMembers,
+    sourceProfiles,
+    sourceIdentity,
+    sourceLineName: parsed.sourceLineName,
+    targetGuildLineName,
     groupId,
     now: new Date().toISOString(),
   });
-  if (plan.status === "guild-member-not-found") {
-    await replier.text(`❌ 找不到 LINE 名稱「${lineName}」對應的公會成員。`, "not-found");
-    return;
-  }
   if (plan.status === "line-identity-not-found") {
     await replier.text([
-      `⚠️ 找得到公會成員「${lineName}」，`,
-      "但目前還無法取得他的 LINE 身份。",
+      `⚠️ 找不到 LINE 名稱為「${parsed.sourceLineName}」的成員。`,
+      "請直接 @要綁定的本人：",
       "",
-      `請讓 ${lineName} 在這個群組發任意一則訊息，`,
-      "再重新執行：",
-      "",
-      `!幫綁 ${lineName}`,
+      `!幫綁 @對方 ${targetGuildLineName}`,
     ].join("\n"), "not-found");
     return;
   }
   if (plan.status === "ambiguous-line-identity") {
     await replier.text([
-      `⚠️ 找到多個 LINE 使用者名稱皆為「${lineName}」`,
+      `⚠️ 找到多個 LINE 名稱為「${parsed.sourceLineName}」的成員。`,
+      "請直接 @要綁定的本人：",
       "",
-      "為避免綁錯帳號，本次沒有進行綁定。",
-      "",
-      "請讓本人使用：",
-      "",
-      "!綁定",
-      "",
-      "或使用其他安全方式確認身份。",
+      `!幫綁 @對方 ${targetGuildLineName}`,
     ].join("\n"), "failure");
     return;
   }
   if (plan.status === "binding-conflict") {
     await replier.text([
-      "⚠️ 綁定衝突",
+      `⚠️「${targetGuildLineName}」目前已經綁定其他 LINE 帳號。`,
       "",
-      `「${lineName}」目前已有其他 LINE 綁定。`,
-      "為避免綁錯，本次沒有修改。",
+      "如需重新指定，請先：",
       "",
-      "請先確認後使用管理員解除功能。",
+      `!幫解除 ${targetGuildLineName}`,
+      "",
+      "再重新：",
+      "",
+      "!幫綁 ...",
     ].join("\n"), "failure");
     return;
   }
 
   if (Object.keys(plan.updates).length) await bindingsRef.update(plan.updates);
-  await replier.text(buildAdminBindingSuccessText(plan.members));
+  await replier.text(buildAdminBindingSuccessText(plan.members, plan.identity.displayName));
 }
 
 async function handleAdminUnbindCommand({event, command, members, bindings, bindingsRef, replier}) {
@@ -687,7 +746,7 @@ async function handleBindingCommand(event, command, token, observedProfile, send
   }
 
   if (command.command === "admin-bind") {
-    await handleAdminBindCommand({event, command, db, members, bindings, bindingsRef, replier});
+    await handleAdminBindCommand({event, command, token, db, members, bindings, bindingsRef, replier});
     return;
   }
 

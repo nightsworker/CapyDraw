@@ -125,6 +125,68 @@ function parseBotCommand(text) {
   return commandResult(command, args);
 }
 
+function parseAdminBindArguments(args, message, {memberNames} = {}) {
+  const input = String(args || "").trim();
+  if (!input) return {status: "missing-arguments"};
+
+  const mentionees = message && message.mention && Array.isArray(message.mention.mentionees) ?
+    message.mention.mentionees : [];
+  const userMentions = mentionees.filter((mentionee) =>
+    mentionee && mentionee.type === "user" && mentionee.isSelf !== true &&
+    typeof mentionee.userId === "string" && mentionee.userId.trim());
+  if (userMentions.length > 1) return {status: "ambiguous-mention"};
+
+  if (userMentions.length === 1) {
+    const mentionee = userMentions[0];
+    const text = String(message && message.text || "");
+    const commandPrefix = text.match(/^\s*!幫綁(?:\s+|$)/u);
+    const hasPosition = Number.isInteger(mentionee.index) && Number.isInteger(mentionee.length) &&
+      mentionee.index >= 0 && mentionee.length > 0;
+    let sourceLineName;
+    let targetGuildLineName;
+
+    if (commandPrefix && hasPosition) {
+      if (mentionee.index !== commandPrefix[0].length) {
+        return {status: "invalid-mention-position"};
+      }
+      sourceLineName = text.slice(mentionee.index, mentionee.index + mentionee.length).trim();
+      targetGuildLineName = text.slice(mentionee.index + mentionee.length).trim() || null;
+    } else {
+      const parts = input.split(/\s+/u);
+      sourceLineName = parts.shift() || "";
+      targetGuildLineName = parts.join(" ").trim() || null;
+    }
+
+    return {
+      status: "success",
+      sourceLineName,
+      targetGuildLineName,
+      mentionedUserId: mentionee.userId.trim(),
+      usedMention: true,
+    };
+  }
+
+  if (findMembersByLineName(memberNames, input).length) {
+    return {
+      status: "success",
+      sourceLineName: input,
+      targetGuildLineName: input,
+      mentionedUserId: null,
+      usedMention: false,
+    };
+  }
+
+  const parts = input.split(/\s+/u);
+  const sourceLineName = parts.shift() || "";
+  return {
+    status: "success",
+    sourceLineName,
+    targetGuildLineName: parts.join(" ").trim() || sourceLineName,
+    mentionedUserId: null,
+    usedMention: false,
+  };
+}
+
 function extractBindingCommand(text) {
   const parsed = parseBotCommand(text);
   if (!parsed || parsed.command === "unknown" || parsed.command === "help" || parsed.command === "sync") {
@@ -183,8 +245,9 @@ function buildBotHelpText({bindingLocked = false, isAdmin = false} = {}) {
       "!解除鎖定",
       "重新開放會員自行修改綁定",
       "",
-      "!幫綁 <LINE名稱>",
-      "替指定成員建立綁定",
+      "!幫綁 <LINE名稱> [名單名稱]",
+      "代替成員完成綁定",
+      "名稱不同時可使用：!幫綁 @對方 名單名稱",
       "",
       "!幫解除 <LINE名稱>",
       "替指定成員解除綁定",
@@ -330,12 +393,28 @@ function buildUnbindSuccessText(bindings) {
   );
 }
 
-function buildAdminBindingSuccessText(members) {
-  return buildBindingResultText(
-    "✅ 管理員完成 LINE 綁定",
-    members,
-    `共綁定 ${members.length} 個遊戲帳號。`,
-  );
+function buildAdminBindingSuccessText(members, sourceLineName) {
+  const parsedMembers = (Array.isArray(members) ? members : [])
+    .map((member) => parseMemberName(typeof member === "string" ? member : member.fullName || ""))
+    .filter((member) => member.fullName);
+  const targetGuildLineName = parsedMembers[0] ? parsedMembers[0].lineName : "";
+  const actualLineName = String(sourceLineName || targetGuildLineName).trim();
+  const lines = [
+    "✅ 管理員綁定完成",
+    "",
+    "LINE：",
+    actualLineName,
+    "",
+    "公會名單：",
+    targetGuildLineName,
+    "",
+    "遊戲 ID：",
+    ...parsedMembers.map((member) => `• ${member.gameId}`),
+  ];
+  if (actualLineName !== targetGuildLineName) {
+    lines.push("", "ℹ️ LINE 名稱與公會登記名稱不同。");
+  }
+  return lines.join("\n");
 }
 
 function buildAdminUnbindSuccessText(bindings) {
@@ -499,6 +578,7 @@ module.exports = {
   listBindingRecords,
   maskLineUserId,
   normalizeMemberName,
+  parseAdminBindArguments,
   parseBotCommand,
   parseMemberName,
   planWebhookEvent,
