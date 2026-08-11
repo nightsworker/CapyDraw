@@ -71,6 +71,20 @@ test("bot destination is a safe fallback when older mention metadata lacks isSel
   assert.equal(isBotMentioned(message, {botUserId: "U_OTHER"}), false);
 });
 
+test("plain @喵餅 text is direct-name conversation, not a true LINE mention", () => {
+  const event = textEvent("@喵餅 你好");
+  assert.equal(isBotMentioned(event.message, {botUserId: "U_BOT"}), false);
+  const plan = planMiaobingMessage({event, botUserId: "U_BOT", hourTaipei: 12, rng: () => 0});
+  assert.equal(plan.shouldReply, true);
+  assert.equal(plan.reason, "direct-name");
+});
+
+test("喵餅你好 remains a direct-name personality trigger", () => {
+  const plan = planMiaobingMessage({event: textEvent("喵餅你好"), hourTaipei: 12, rng: () => 0});
+  assert.equal(plan.shouldReply, true);
+  assert.equal(plan.reason, "direct-name");
+});
+
 test("D: text that directly contains 喵餅 plans a reply", () => {
   const plan = planMiaobingMessage({event: textEvent("喵餅在嗎"), hourTaipei: 12, rng: () => 0});
   assert.equal(plan.shouldReply, true);

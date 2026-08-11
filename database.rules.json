@@ -19,6 +19,10 @@
         ".read": false,
         ".write": false
       },
+      "lineGroups": {
+        ".read": false,
+        ".write": false
+      },
       "linePersonality": {
         ".read": false,
         ".write": false

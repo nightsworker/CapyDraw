@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  bindingKey,
+  bindingKeyForGroup,
   buildMemberBindingRows,
   createBindingRecord,
   findMembersByLineName,
@@ -206,9 +206,10 @@ function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
 
     matches.forEach((member) => {
       const normalized = normalizeMemberName(member.fullName);
-      const existing = records.find((binding) => binding.normalizedPlayerName === normalized);
+      const existing = records.find((binding) =>
+        binding.normalizedPlayerName === normalized && binding.lineGroupId === groupId);
       if (existing) {
-        if (existing.lineGroupId !== groupId || existing.lineUserId !== profile.userId) {
+        if (existing.lineUserId !== profile.userId) {
           conflicts += 1;
           return;
         }
@@ -226,13 +227,14 @@ function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
         return;
       }
 
-      const related = records.filter((binding) => binding.lineName === member.lineName);
+      const related = records.filter((binding) =>
+        binding.lineGroupId === groupId && binding.lineName === member.lineName);
       if (related.some((binding) =>
-        binding.lineGroupId !== groupId || binding.lineUserId !== profile.userId)) {
+        binding.lineUserId !== profile.userId)) {
         conflicts += 1;
         return;
       }
-      const id = bindingKey(member.fullName);
+      const id = bindingKeyForGroup(member.fullName, groupId);
       const created = createBindingRecord({
         member,
         userId: profile.userId,

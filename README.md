@@ -6,11 +6,12 @@
 
 Functions v2 部署在 `asia-southeast1`（新加坡），與目前 Realtime Database 位於同一區域：
 
-- `lineWebhook`：驗證 LINE 原始 request body 的 HMAC-SHA256 簽章，記錄 Bot 已看過的群組成員，只允許第一次成功綁定 claim 正式群組，並依優先順序處理 `!` 指令與喵餅人格互動。
+- `lineWebhook`：驗證 LINE 原始 request body 的 HMAC-SHA256 簽章；join event 會登記 Bot 已知群組並回覆自我介紹，一般群組事件只更新該群的 `lastSeenAt`，再依優先順序處理 `!` 指令與喵餅人格互動。
 - `sendDrawToLine`：驗證 Firebase ID Token 及 `ADMIN_UID`，依 `recordId` 從 RTDB 重讀抽籤紀錄，再用 LINE `textV2` 發送真正 mention。
 - `getLineBindings`：供管理者讀取遮罩後的綁定狀態。
 - `removeLineBinding`：供管理者解除指定綁定；前端不會直接寫入 `lineBindings`。
-- `setDefaultLineGroup`：供 `ADMIN_UID` 管理者明確更換正式 LINE 群組；沒有前端 UI。
+- `getLineGroups`：供 `ADMIN_UID` 管理者讀取 Bot 已知群組，只回傳 opaque group key 與遮罩後的 groupId。
+- `setDefaultLineGroup`：供 `ADMIN_UID` 管理者從網站明確更換正式 LINE 群組，並安全嘗試搬移可在新群驗證的既有 binding。
 - `setLineBotAdmin`：供 `ADMIN_UID` 管理者在網站「LINE 設定」頁，以既有 binding 明確授予或移除 LINE Bot 管理權限。
 
 LINE 私有資料位於：
@@ -18,6 +19,7 @@ LINE 私有資料位於：
 - `guildDraw/lineSettings`
 - `guildDraw/lineBindings`
 - `guildDraw/lineObservedMembers`
+- `guildDraw/lineGroups`
 - `guildDraw/linePersonality`
 
 ## 安裝工具與依賴
@@ -86,7 +88,7 @@ firebase deploy --only database
 firebase deploy --only functions,database
 ```
 
-`database.rules.json` 為了相容既有網站，保留 `guildDraw/main` 的公開讀寫行為；`lineBindings`、`lineSettings`、`lineObservedMembers` 與 `linePersonality` 對 browser SDK 完全拒絕，只有 Admin SDK 可存取。部署 rules 前仍建議先在 Firebase Console 的 Rules Playground 檢查。
+`database.rules.json` 為了相容既有網站，保留 `guildDraw/main` 的公開讀寫行為；`lineBindings`、`lineSettings`、`lineObservedMembers`、`lineGroups` 與 `linePersonality` 對 browser SDK 完全拒絕，只有 Admin SDK 可存取。部署 rules 前仍建議先在 Firebase Console 的 Rules Playground 檢查。
 
 Functions 部署後可確認：
 
@@ -107,25 +109,19 @@ firebase functions:list
 6. 啟用「Allow bot to join group chats」，把官方帳號加入公會群組。
 7. 建議關閉 LINE Official Account Manager 的自動回應訊息，避免和綁定回覆同時出現。
 
-`lineWebhook` 不使用 browser CORS。一般群組文字不會設定或覆蓋 `defaultGroupId`，也不會觸發 Bot 回覆；只有在尚未設定正式群組時，第一次實際可建立 binding 的 `!綁定` 指令才會用 RTDB transaction claim 該群組。正式群組建立後，其他群組的綁定、狀態與解除指令都會被拒絕。
+`lineWebhook` 不使用 browser CORS。Bot 收到 group join event 時會呼叫 LINE group summary API，將 `groupId`、`groupName`、`pictureUrl`、`joinedAt`、`lastSeenAt` 寫入 server-side `guildDraw/lineGroups/{hashedGroupKey}`；summary 失敗時使用「LINE 群組」作為安全名稱並繼續自我介紹。join 絕不修改 `defaultGroupId`。一般群組 webhook 只更新該群的 `lastSeenAt`，不會每則訊息重新呼叫 summary API。
+
+一般群組文字不會設定或覆蓋 `defaultGroupId`。只有在完全尚未設定正式群組時，第一次實際可建立 binding 的 `!綁定` 指令仍可用 RTDB transaction claim 該群組；正式換群則應使用網站「LINE 設定 → LINE 群組管理」。正式群組建立後，其他群組的 binding/admin 指令都會被拒絕，但既有人格仍維持每群獨立運作。
 
 ### 管理員明確更換正式群組
 
-若未來需要換群，先取得新群組的 LINE `groupId`，再由列在 `ADMIN_UID` 的已登入帳號呼叫：
+先將 Bot 邀請進候選群組。join webhook 登記成功後，以 `ADMIN_UID` allowlist 中的 Google/Firebase 帳號登入網站，開啟「LINE 設定 → LINE 群組管理」，按「設為正式公會群」。前端只將 `getLineGroups` 回傳的 opaque `groupKey` 傳給既有 `setDefaultLineGroup`，不要求管理員複製或輸入 raw groupId。
 
-```js
-const idToken = await firebase.auth().currentUser.getIdToken();
-await fetch("https://asia-southeast1-capydraw-7f7de.cloudfunctions.net/setDefaultLineGroup", {
-  method: "POST",
-  headers: {
-    "Authorization": `Bearer ${idToken}`,
-    "Content-Type": "application/json"
-  },
-  body: JSON.stringify({ groupId: "C0123456789abcdef0123456789abcdef" })
-});
-```
+兩個 endpoint 都限制 `ALLOWED_ORIGIN`，並驗證 Firebase ID Token 與 `ADMIN_UID`。切換時保存前一個正式群、切換時間與 Firebase 管理員 UID，但不清除舊群資料、binding、observed members、personality state 或 `adminLineUserIds`。
 
-此 endpoint 同樣限制 `ALLOWED_ORIGIN` 並驗證 Firebase ID Token 與 `ADMIN_UID`。回應只包含 `hasDefaultGroup`，`getLineBindings` 也只回傳是否已有正式群組，兩者都不會向前端公開完整 groupId。換群後，舊群組建立的玩家 binding 不會用於新群組 mention；請在「LINE 設定」解除舊 binding，再讓玩家於新群重新綁定。
+系統會以舊群 binding 的真正 lineUserId 呼叫新群 member profile API。只有新群確實存在該 userId、displayName 與 canonical LINE 名稱完全相同、guild member 仍存在且新群沒有 conflict 時，才以 group-scoped key 新增新群 binding。系統不做 fuzzy、contains、case-insensitive 或移除 `@` 後猜測，也不覆蓋 conflict；舊 binding 永遠保留。
+
+`lineObservedMembers` 與 `linePersonality` 不會從測試群複製。新群 observed members 重新累積；personality `enabled` 未設定時預設為 `true`，cooldown 也使用新群自己的 path。成功搬移 canonical binding 後，LINE Bot admin user-level 權限保持不變，OWNER／GUILD_LEADER 則由新群 binding 自動恢復。
 
 ## 玩家綁定測試
 

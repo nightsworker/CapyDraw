@@ -140,6 +140,8 @@
     .line-id { color: var(--muted); font-family: var(--mono); font-size: 12px; }
     .line-admin-badge { display: inline-flex; padding: 4px 8px; border-radius: 999px; color: var(--muted); background: rgba(156, 183, 193, 0.12); font-size: 12px; font-weight: 800; white-space: nowrap; }
     .line-admin-badge.active { color: var(--ok); background: rgba(126, 231, 135, 0.12); border: 1px solid rgba(126, 231, 135, 0.28); }
+    .line-group-name { display: flex; align-items: center; gap: 10px; min-width: 180px; }
+    .line-group-picture { width: 40px; height: 40px; border-radius: 12px; object-fit: cover; background: rgba(156, 183, 193, 0.12); }
     .line-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     @media (max-width: 920px) {
       .hero, .grid-2, .pool-grid, .history-tools, .compare-grid { grid-template-columns: 1fr; }
@@ -330,6 +332,11 @@
           <button class="btn secondary requires-line-login" id="refreshLineBindingsBtn">重新整理</button>
           <span class="message" id="lineSettingsMessage"></span>
         </div>
+        <h3>LINE 群組管理</h3>
+        <p class="hint">Bot 加入過的群組會顯示在這裡。正式公會群只能由 Firebase 網站管理員明確切換；完整 groupId 不會顯示於前端。</p>
+        <div id="lineGroupsTableWrap"><p class="empty">登入 LINE 管理帳號後可查看 Bot 已知群組。</p></div>
+        <span class="message" id="lineGroupsMessage"></span>
+        <h3>LINE 綁定管理</h3>
         <div id="lineBindingsTableWrap"><p class="empty">登入 LINE 管理帳號後可查看綁定狀態。</p></div>
       </div>
     </section>
@@ -431,6 +438,7 @@
     let currentRecordId = null;
     let lineSending = false;
     let lineBindingsCache = [];
+    let lineGroupsCache = [];
     let lineAdminAuthorized = false;
     let lineAdminSaving = false;
 
@@ -1036,6 +1044,90 @@
       return payload;
     }
 
+    function renderLineGroups() {
+      if (!firebaseUser) {
+        $("lineGroupsTableWrap").innerHTML = `<p class="empty">登入 LINE 管理帳號後可查看 Bot 已知群組。</p>`;
+        return;
+      }
+      if (!lineAdminAuthorized) {
+        $("lineGroupsTableWrap").innerHTML = `<p class="empty">正在確認 Firebase LINE 管理權限。</p>`;
+        return;
+      }
+      if (!lineGroupsCache.length) {
+        $("lineGroupsTableWrap").innerHTML = `<p class="empty">Bot 尚未登記任何 LINE 群組。請先將 Bot 邀請進群組。</p>`;
+        return;
+      }
+      $("lineGroupsTableWrap").innerHTML = `
+        <table>
+          <thead><tr><th>LINE 群組</th><th>識別碼</th><th>加入時間</th><th>最後看見</th><th>狀態</th><th>操作</th></tr></thead>
+          <tbody>${lineGroupsCache.map(group => `
+            <tr>
+              <td><div class="line-group-name">${group.pictureUrl ? `<img class="line-group-picture" src="${escapeHtml(group.pictureUrl)}" alt="" />` : `<span class="line-group-picture"></span>`}<strong>${escapeHtml(group.groupName)}</strong></div></td>
+              <td><span class="line-id">${escapeHtml(group.maskedGroupId || "-")}</span></td>
+              <td>${escapeHtml(formatDateTime(group.joinedAt) || "-")}</td>
+              <td>${escapeHtml(formatDateTime(group.lastSeenAt) || "-")}</td>
+              <td>${group.isDefault ? `<span class="line-admin-badge active">✅ 目前正式群</span>` : `<span class="line-admin-badge">候選群組</span>`}</td>
+              <td>${group.isDefault ? `<button class="btn secondary small" disabled>目前使用中</button>` : `<button class="btn secondary small requires-line-admin" data-default-group-key="${escapeHtml(group.groupKey)}" data-group-name="${escapeHtml(group.groupName)}">設為正式公會群</button>`}</td>
+            </tr>`).join("")}</tbody>
+        </table>`;
+      document.querySelectorAll("[data-default-group-key]").forEach(btn => {
+        btn.addEventListener("click", () => setDefaultLineGroup(
+          btn.dataset.defaultGroupKey,
+          btn.dataset.groupName,
+        ));
+      });
+      updateAccessUi();
+    }
+
+    async function loadLineGroups() {
+      if (!firebaseUser) {
+        lineGroupsCache = [];
+        renderLineGroups();
+        setMessage("lineGroupsMessage", "請先使用 Google 登入。", "warn");
+        return;
+      }
+      setMessage("lineGroupsMessage", "正在讀取 Bot 已知群組...", "warn");
+      try {
+        const result = await callLineAdminFunction("getLineGroups", { method: "GET" });
+        lineAdminAuthorized = true;
+        lineGroupsCache = Array.isArray(result.groups) ? result.groups : [];
+        renderLineGroups();
+        setMessage("lineGroupsMessage", "已取得 LINE 群組狀態。", "ok");
+      } catch (error) {
+        lineAdminAuthorized = false;
+        lineGroupsCache = [];
+        renderLineGroups();
+        updateAccessUi();
+        setMessage("lineGroupsMessage", `讀取群組失敗：${error.message}`, "danger");
+      }
+    }
+
+    async function setDefaultLineGroup(groupKey, groupName) {
+      const question = `確定要將：\n\n「${groupName}」\n\n設為正式公會群嗎？\n\n切換後：\n• !同步 / !鎖定 / !幫綁 等 LINE 管理指令只會在新群生效\n• 測試群資料不會刪除\n• 系統會嘗試安全搬移可驗證的既有 LINE 綁定\n• 尚未成功搬移的人可以之後再處理`;
+      if (!confirm(question)) return;
+      lineAdminSaving = true;
+      updateAccessUi();
+      setMessage("lineGroupsMessage", "正在切換正式公會群並驗證既有綁定...", "warn");
+      try {
+        const result = await callLineAdminFunction("setDefaultLineGroup", {body: {groupKey}});
+        await Promise.all([loadLineGroups(), loadLineBindings()]);
+        setMessage("lineGroupsMessage", [
+          "✅ 已切換正式公會群",
+          "",
+          `正式群：${result.groupName || groupName}`,
+          "",
+          `成功搬移既有綁定：${Number(result.migratedBindings) || 0}`,
+          `未搬移：${Number(result.skippedBindings) || 0}`,
+          `衝突：${Number(result.conflicts) || 0}`,
+        ].join("\n"), "ok");
+      } catch (error) {
+        setMessage("lineGroupsMessage", `切換正式公會群失敗：${error.message}`, "danger");
+      } finally {
+        lineAdminSaving = false;
+        updateAccessUi();
+      }
+    }
+
     function renderLineBindings() {
       if (!firebaseUser) {
         $("lineBindingsTableWrap").innerHTML = `<p class="empty">登入 LINE 管理帳號後可查看綁定狀態。</p>`;
@@ -1618,7 +1710,7 @@
           document.querySelectorAll(".tab-panel").forEach(x => x.classList.remove("active"));
           btn.classList.add("active");
           $(btn.dataset.tab).classList.add("active");
-          if (btn.dataset.tab === "linePanel") loadLineBindings();
+          if (btn.dataset.tab === "linePanel") Promise.all([loadLineGroups(), loadLineBindings()]);
         });
       });
 
@@ -1636,7 +1728,8 @@
         catch (error) { setMessage("lineAuthStatus", `登出失敗：${error.message}`, "danger"); }
       });
       $("sendLineBtn").addEventListener("click", sendCurrentRecordToLine);
-      $("refreshLineBindingsBtn").addEventListener("click", loadLineBindings);
+      $("refreshLineBindingsBtn").addEventListener("click", () =>
+        Promise.all([loadLineGroups(), loadLineBindings()]));
 
       $("unlockBtn").addEventListener("click", () => {
         if ($("authPassword").value === AUTH_PASSWORD) {
@@ -1867,9 +1960,11 @@
           firebaseUser = user || null;
           lineAdminAuthorized = false;
           lineBindingsCache = [];
+          lineGroupsCache = [];
           renderLineBindings();
+          renderLineGroups();
           updateAccessUi();
-          if (firebaseUser) loadLineBindings();
+          if (firebaseUser) Promise.all([loadLineGroups(), loadLineBindings()]);
         });
         dbRef = firebase.database().ref(DB_ROOT);
         cloudReady = true;

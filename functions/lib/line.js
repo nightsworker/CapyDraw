@@ -75,6 +75,15 @@ function bindingKey(playerName) {
   return `p_${digest}`;
 }
 
+function bindingKeyForGroup(playerName, groupId) {
+  const groupDigest = crypto
+    .createHash("sha256")
+    .update(String(groupId || "").trim(), "utf8")
+    .digest("base64url")
+    .slice(0, 16);
+  return `${bindingKey(playerName)}_${groupDigest}`;
+}
+
 const PREFIX_COMMANDS = new Map([
   ["綁定", "bind"],
   ["狀態", "status"],
@@ -420,6 +429,11 @@ function isGroupMessageEvent(event) {
     event.source && event.source.type === "group" && event.source.groupId);
 }
 
+function isGroupJoinEvent(event) {
+  return Boolean(event && event.type === "join" && event.source &&
+    event.source.type === "group" && event.source.groupId);
+}
+
 function isObservedGroupEvent(event) {
   return Boolean(event && event.source && event.source.type === "group" &&
     event.source.groupId && event.source.userId);
@@ -427,6 +441,7 @@ function isObservedGroupEvent(event) {
 
 function planWebhookEvent(event) {
   return {
+    joinGroup: isGroupJoinEvent(event),
     observeMember: isObservedGroupEvent(event),
     command: isGroupMessageEvent(event) ? parseBotCommand(event.message.text) : null,
   };
@@ -462,6 +477,7 @@ function maskLineUserId(value) {
 
 module.exports = {
   bindingKey,
+  bindingKeyForGroup,
   buildAdminBindingSuccessText,
   buildAdminUnbindSuccessText,
   buildBindingSuccessText,
@@ -479,6 +495,7 @@ module.exports = {
   findMembersByLineName,
   formatDrawDate,
   isGroupMessageEvent,
+  isGroupJoinEvent,
   listBindingRecords,
   maskLineUserId,
   normalizeMemberName,

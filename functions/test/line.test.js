@@ -5,6 +5,7 @@ const crypto = require("node:crypto");
 const test = require("node:test");
 const {
   bindingKey,
+  bindingKeyForGroup,
   buildAdminBindingSuccessText,
   buildAdminUnbindSuccessText,
   buildBindingListText,
@@ -507,6 +508,25 @@ test("member sync reports a conflicting userId without overwriting", () => {
   assert.equal(result.added, 0);
   assert.deepEqual(result.updates, {});
   assert.equal(existing.lineUserId, "U_RAIN_A");
+});
+
+test("member sync can add a group-scoped binding while preserving the old group binding", () => {
+  const playerName = "Rain - 流鬼";
+  const oldKey = bindingKey(playerName);
+  const oldBinding = makeBinding(playerName, "U_RAIN");
+  const result = buildMemberSyncPlan({
+    memberNames: [playerName],
+    bindings: {[oldKey]: oldBinding},
+    profiles: [{userId: "U_RAIN", displayName: "Rain"}],
+    groupId: "C_GROUP_B",
+    now: "2026-08-12T00:00:00.000Z",
+  });
+  const newKey = bindingKeyForGroup(playerName, "C_GROUP_B");
+  assert.equal(result.added, 1);
+  assert.equal(result.conflicts, 0);
+  assert.ok(result.updates[newKey]);
+  assert.equal(result.updates[newKey].lineGroupId, "C_GROUP_B");
+  assert.equal(oldBinding.lineGroupId, GROUP_ID);
 });
 
 test("member sync requires a LINE admin in the default group", () => {

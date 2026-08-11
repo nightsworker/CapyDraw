@@ -10,7 +10,7 @@ const {assertAdminUid} = require("./lib/admin");
 const {
   buildAdminBindingSuccessText,
   buildAdminUnbindSuccessText,
-  bindingKey,
+  bindingKeyForGroup,
   buildBindingListText,
   buildBindingSuccessText,
   buildBotHelpText,
@@ -23,6 +23,7 @@ const {
   decideLineGroupAction,
   findMembersByLineName,
   listBindingRecords,
+  normalizeMemberName,
   planWebhookEvent,
   resolveBindingLineName,
   splitTextMessages,
@@ -46,6 +47,15 @@ const {
   resolveSyncMemberSource,
   selectAdminUnbindBindings,
 } = require("./lib/line-sync");
+const {
+  buildKnownLineGroupRecord,
+  buildLineBindingMigrationPlan,
+  buildLineGroupAdminRows,
+  buildLineGroupSwitchUpdates,
+  lineGroupKey,
+  normalizeLineGroupSummary,
+  planLineGroupJoin,
+} = require("./lib/line-groups");
 const {
   AMBIENT_COOLDOWN_MS,
   decorateCommandReply,
@@ -300,6 +310,51 @@ async function getGroupMemberProfile(groupId, userId, token) {
     logger.warn("Could not load LINE group member profile", {groupId, userId, message: error.message});
     return null;
   }
+}
+
+async function getLineGroupSummary(groupId, token) {
+  try {
+    return await callLine(
+      `/group/${encodeURIComponent(groupId)}/summary`,
+      token,
+      null,
+      "GET",
+    );
+  } catch (error) {
+    logger.warn("Could not load LINE group summary", {groupId, message: error.message});
+    return null;
+  }
+}
+
+async function rememberKnownLineGroup(groupId, summary, now = new Date().toISOString()) {
+  if (!isFirebaseSafeKey(groupId)) return null;
+  const normalized = normalizeLineGroupSummary(summary);
+  const key = lineGroupKey(groupId);
+  const ref = getDatabase().ref(`guildDraw/lineGroups/${key}`);
+  const transaction = await ref.transaction((current) => buildKnownLineGroupRecord(current, {
+    groupId,
+    ...normalized,
+    now,
+  }));
+  return transaction.snapshot.val();
+}
+
+async function handleLineGroupJoin(event, token) {
+  const groupId = event && event.source && event.source.groupId;
+  if (!groupId || !isFirebaseSafeKey(groupId)) return;
+  const [summary, settingsSnapshot] = await Promise.all([
+    getLineGroupSummary(groupId, token),
+    getDatabase().ref("guildDraw/lineSettings").get(),
+  ]);
+  const now = new Date().toISOString();
+  const plan = planLineGroupJoin({
+    groupId,
+    summary,
+    defaultGroupId: settingsSnapshot.child("defaultGroupId").val(),
+    now,
+  });
+  await rememberKnownLineGroup(groupId, summary, now);
+  await replyText(event.replyToken, plan.replyText, token);
 }
 
 async function rememberObservedMember(event, profile) {
@@ -693,9 +748,10 @@ async function handleBindingCommand(event, command, token, observedProfile, send
 
   const updates = {};
   matches.forEach((member) => {
-    const key = bindingKey(member.fullName);
     const existing = bindingEntries.find((binding) =>
-      binding.id === key && binding.lineUserId === userId && binding.lineGroupId === groupId);
+      binding.normalizedPlayerName === normalizeMemberName(member.fullName) &&
+      binding.lineUserId === userId && binding.lineGroupId === groupId);
+    const key = existing ? existing.id : bindingKeyForGroup(member.fullName, groupId);
     updates[key] = createBindingRecord({
       member,
       userId,
@@ -737,6 +793,13 @@ exports.lineWebhook = onRequest({
     const events = Array.isArray(payload.events) ? payload.events : [];
     await Promise.all(events.map(async (event) => {
       const eventPlan = planWebhookEvent(event);
+      if (eventPlan.joinGroup) {
+        await handleLineGroupJoin(event, LINE_CHANNEL_ACCESS_TOKEN.value());
+        return;
+      }
+      if (event && event.source && event.source.type === "group" && event.source.groupId) {
+        await rememberKnownLineGroup(event.source.groupId, null);
+      }
       let profile = null;
       if (eventPlan.observeMember) {
         profile = await getGroupMemberProfile(
@@ -890,18 +953,97 @@ exports.removeLineBinding = onRequest({region: REGION}, async (req, res) =>
     json(res, 200, {ok: true});
   }));
 
-exports.setDefaultLineGroup = onRequest({region: REGION}, async (req, res) =>
-  withAdminRequest(req, res, ["POST"], async () => {
-    const groupId = req.body && typeof req.body.groupId === "string" ? req.body.groupId.trim() : "";
-    if (!/^C[A-Za-z0-9_-]{20,100}$/.test(groupId)) {
-      json(res, 400, {ok: false, error: "groupId 格式不正確。"});
+exports.getLineGroups = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["GET"], async () => {
+    const db = getDatabase();
+    const [groupsSnapshot, settingsSnapshot] = await Promise.all([
+      db.ref("guildDraw/lineGroups").get(),
+      db.ref("guildDraw/lineSettings").get(),
+    ]);
+    const groups = buildLineGroupAdminRows(
+      groupsSnapshot.val() || {},
+      settingsSnapshot.child("defaultGroupId").val(),
+    );
+    json(res, 200, {ok: true, groups});
+  }));
+
+exports.setDefaultLineGroup = onRequest({
+  region: REGION,
+  secrets: [LINE_CHANNEL_ACCESS_TOKEN],
+  timeoutSeconds: 120,
+}, async (req, res) =>
+  withAdminRequest(req, res, ["POST"], async (adminUser) => {
+    const requestedKey = req.body && typeof req.body.groupKey === "string" ?
+      req.body.groupKey.trim() : "";
+    const legacyGroupId = req.body && typeof req.body.groupId === "string" ?
+      req.body.groupId.trim() : "";
+    if (!requestedKey && !legacyGroupId) {
+      json(res, 400, {ok: false, error: "請選擇 Bot 已知的 LINE 群組。"});
       return;
     }
-    await getDatabase().ref("guildDraw/lineSettings").update({
-      defaultGroupId: groupId,
-      updatedAt: ServerValue.TIMESTAMP,
+
+    const db = getDatabase();
+    const [groupsSnapshot, settingsSnapshot, membersSnapshot, bindingsSnapshot] = await Promise.all([
+      db.ref("guildDraw/lineGroups").get(),
+      db.ref("guildDraw/lineSettings").get(),
+      db.ref("guildDraw/main/guildMembers").get(),
+      db.ref("guildDraw/lineBindings").get(),
+    ]);
+    const knownGroups = Object.values(groupsSnapshot.val() || {});
+    const selectedGroup = requestedKey ?
+      knownGroups.find((group) => group && lineGroupKey(group.groupId) === requestedKey) :
+      knownGroups.find((group) => group && group.groupId === legacyGroupId);
+    const newGroupId = selectedGroup && selectedGroup.groupId;
+    if (!selectedGroup || !/^C[A-Za-z0-9_-]{20,100}$/.test(newGroupId)) {
+      json(res, 404, {ok: false, error: "找不到 Bot 已登記的 LINE 群組，請讓 Bot 重新加入該群。"});
+      return;
+    }
+
+    const settings = settingsSnapshot.val() || {};
+    const oldGroupId = settings.defaultGroupId || null;
+    const bindings = bindingsSnapshot.val() || {};
+    let migration = {updates: {}, migratedBindings: 0, skippedBindings: 0, conflicts: 0};
+    if (oldGroupId && oldGroupId !== newGroupId) {
+      const userIds = [...new Set(listBindingRecords(bindings)
+        .filter((binding) => binding.lineGroupId === oldGroupId && binding.lineUserId)
+        .map((binding) => binding.lineUserId))];
+      const profiles = (await mapInBatches(userIds, 10, async (userId) => {
+        const profile = await getGroupMemberProfile(
+          newGroupId,
+          userId,
+          LINE_CHANNEL_ACCESS_TOKEN.value(),
+        );
+        return profile ? {
+          userId: profile.userId || userId,
+          displayName: profile.displayName || "",
+        } : null;
+      })).filter(Boolean);
+      migration = buildLineBindingMigrationPlan({
+        memberNames: membersSnapshot.val() || [],
+        bindings,
+        oldGroupId,
+        newGroupId,
+        profiles,
+        now: new Date().toISOString(),
+      });
+    }
+
+    const changedAt = ServerValue.TIMESTAMP;
+    const updates = buildLineGroupSwitchUpdates({
+      oldGroupId,
+      newGroupId,
+      firebaseUid: adminUser.uid,
+      changedAt,
+      migrationUpdates: migration.updates,
     });
-    json(res, 200, {ok: true, hasDefaultGroup: true});
+    await db.ref("guildDraw").update(updates);
+    json(res, 200, {
+      ok: true,
+      groupName: selectedGroup.groupName || "LINE 群組",
+      migratedBindings: migration.migratedBindings,
+      skippedBindings: migration.skippedBindings,
+      conflicts: migration.conflicts,
+    });
   }));
 
 exports.setLineBotAdmin = onRequest({region: REGION}, async (req, res) =>
