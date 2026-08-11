@@ -18,6 +18,10 @@
       "lineObservedMembers": {
         ".read": false,
         ".write": false
+      },
+      "linePersonality": {
+        ".read": false,
+        ".write": false
       }
     }
   }

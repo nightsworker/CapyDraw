@@ -6,7 +6,7 @@
 
 Functions v2 部署在 `asia-southeast1`（新加坡），與目前 Realtime Database 位於同一區域：
 
-- `lineWebhook`：驗證 LINE 原始 request body 的 HMAC-SHA256 簽章，記錄 Bot 已看過的群組成員，只允許第一次成功綁定 claim 正式群組，並處理 `!` 指令。
+- `lineWebhook`：驗證 LINE 原始 request body 的 HMAC-SHA256 簽章，記錄 Bot 已看過的群組成員，只允許第一次成功綁定 claim 正式群組，並依優先順序處理 `!` 指令與喵餅人格互動。
 - `sendDrawToLine`：驗證 Firebase ID Token 及 `ADMIN_UID`，依 `recordId` 從 RTDB 重讀抽籤紀錄，再用 LINE `textV2` 發送真正 mention。
 - `getLineBindings`：供管理者讀取遮罩後的綁定狀態。
 - `removeLineBinding`：供管理者解除指定綁定；前端不會直接寫入 `lineBindings`。
@@ -18,6 +18,7 @@ LINE 私有資料位於：
 - `guildDraw/lineSettings`
 - `guildDraw/lineBindings`
 - `guildDraw/lineObservedMembers`
+- `guildDraw/linePersonality`
 
 ## 安裝工具與依賴
 
@@ -85,7 +86,7 @@ firebase deploy --only database
 firebase deploy --only functions,database
 ```
 
-`database.rules.json` 為了相容既有網站，保留 `guildDraw/main` 的公開讀寫行為；`lineBindings`、`lineSettings` 與 `lineObservedMembers` 對 browser SDK 完全拒絕，只有 Admin SDK 可存取。部署 rules 前仍建議先在 Firebase Console 的 Rules Playground 檢查。
+`database.rules.json` 為了相容既有網站，保留 `guildDraw/main` 的公開讀寫行為；`lineBindings`、`lineSettings`、`lineObservedMembers` 與 `linePersonality` 對 browser SDK 完全拒絕，只有 Admin SDK 可存取。部署 rules 前仍建議先在 Firebase Console 的 Rules Playground 檢查。
 
 Functions 部署後可確認：
 
@@ -209,6 +210,31 @@ verified webhook 只要帶有 groupId 與 userId，Bot 就會嘗試取得 profil
 Firebase `ADMIN_UID` 與 LINE userId 是不同身份，不能互相比較。先讓目標 LINE 使用者在正式群組完成綁定，再以 `ADMIN_UID` allowlist 中的 Google/Firebase 帳號登入網站，開啟「LINE 設定」。已綁定列會顯示「Bot 管理員」狀態，可直接按「設為管理員」或「解除管理員」；操作前會再次確認，完成後重新讀取整份綁定狀態。同一 LINE userId 對應多個遊戲 ID 時，所有列會顯示相同管理員狀態。未綁定成員不會出現管理員操作按鈕。
 
 前端只把 `getLineBindings` 回傳的 `bindingId` 與目標 `enabled` 狀態傳給既有 `setLineBotAdmin`。後端仍驗證 Firebase ID Token 與 `ADMIN_UID` allowlist，再從 binding 取得 lineUserId，並只在 server-side 更新 `guildDraw/lineSettings/adminLineUserIds/{lineUserId}`；browser 不能直接寫 RTDB。`getLineBindings` 只回傳 `isLineBotAdmin` 與遮罩後的 userId，不會公開完整 lineUserId。不要把完整 lineUserId、Channel Access Token、Channel Secret 或 Authorization header 寫入 repo、前端或 log。
+
+## 喵餅人格系統
+
+喵餅是住在公會船上的「公會會貓」：嘴上嫌麻煩，實際會把名冊、綁定與管理工作處理好；核心台詞是「會長管人，本喵管會長」。人格內容集中在 `functions/lib/miaobing-personality.js`，`lineWebhook` 只負責依優先順序 routing，不會把 response pools 散落在 webhook。
+
+訊息處理順序固定為：正式 `!command`、真正 @喵餅、文字包含「喵餅」、strong easter egg、contextual ambient、保持安靜。Command 永遠只進既有 command handler，不會同時觸發聊天回覆；image、sticker、video、audio 與 file 第一版都不做人格回覆。未知 `!` 指令仍由 command handler 回覆並提示 `!說明`。
+
+真正 mention 優先依 LINE webhook 的 `message.mention.mentionees[].isSelf === true` 判斷；若 payload 只有舊式 mention metadata，才以 webhook `destination` 與 mentionee userId 相符作 fallback，不硬編碼 Bot userId。非 true mention 的文字只要包含「喵餅」也視為直接對話。直接互動必定產生候選回覆，但同一使用者有 4 秒防洗版 cooldown，不受 ambient cooldown 影響。
+
+Ambient 不會對所有聊天隨機插嘴。`罐罐`、`肉泥`、`汪`、`狗狗比較可愛` 等 strong trigger 的候選機率為 100%；疲累、上班、情緒低落、會長、船票、船長與短句中的「貓」為 contextual trigger，候選機率為 20%。Contextual 訊息超過 40 個字元時不觸發。Strong 與 contextual 都共用每群 3 分鐘 ambient cooldown，因此 strong trigger 在 cooldown 內也保持安靜。
+
+Cooldown 只保存 server-side metadata：
+
+```text
+guildDraw/linePersonality/{groupId}/lastAmbientReplyAt
+guildDraw/linePersonality/{groupId}/lastMentionReplyAt/{hashedUserKey}
+```
+
+兩者只存 timestamp；使用者 scope 是 LINE userId 的 SHA-256 截短 key，不保存原始 userId。系統不保存訊息全文、聊天記錄或觸發文字，production log 也只記錄 `kind` 與 `intent`，不記錄 message、groupId 或 userId。`database.rules.json` 禁止 browser 讀寫整個 `linePersonality` path。
+
+第一版完全使用 ordered keyword rules、集中 response pools 與可注入 RNG，沒有串接 AI／LLM、沒有外部模型 dependency，也沒有新增 Secret。Intent 判定會先處理情緒低落、狗比貓可愛、被嫌吵等高優先規則，避免被較一般的「謝謝」或「可愛」誤判。Asia/Taipei 01:00–05:59 只有在原本已決定回覆後，才有 30% 機率採用夜間台詞，不會因時間到主動發訊息。
+
+Command 的原始結構化結果不變，再以 80% 機率加入簡短 opening，少數綁定成功訊息另有 closing。功能失敗、找不到、鎖定、同步與各管理指令使用不同 command flavor pools；測試可以注入固定 RNG，因此不依賴 `Math.random()` 的結果。
+
+要擴充人格時，在 `MIAOBING_RESPONSES` 增加集中管理的 phrase pool，並在 ordered `INTENT_RULES` 加入 intent/keyword；需要 ambient 的 intent 再加入 `STRONG_INTENTS` 或 `CONTEXTUAL_INTENTS`。Contextual 機率由 `AMBIENT_CONTEXTUAL_PROBABILITY` 調整，cooldown 由 `AMBIENT_COOLDOWN_MS` 與 `DIRECT_MENTION_COOLDOWN_MS` 調整。未來若改接 AI，可以保留 routing 與 cooldown，只替換 `generateDirectMentionReply(context)`。
 
 ## 發送與真正 @mention 測試
 
