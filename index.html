@@ -124,6 +124,8 @@
     th { color: var(--accent2); background: rgba(0, 172, 199, 0.08); font-size: 13px; letter-spacing: 0.04em; }
     tr:last-child td { border-bottom: 0; }
     .history-tools { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 10px; margin-bottom: 14px; align-items: end; }
+    #historyTableWrap { overflow-x: auto; }
+    #historyTableWrap table { min-width: 1180px; }
     .pool-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
     .pool-box { background: rgba(4, 12, 18, 0.45); border: 1px solid rgba(156, 183, 193, 0.14); border-radius: 16px; padding: 16px; min-height: 180px; }
     .pool-box h3 { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
@@ -140,6 +142,7 @@
     .line-id { color: var(--muted); font-family: var(--mono); font-size: 12px; }
     .line-admin-badge { display: inline-flex; padding: 4px 8px; border-radius: 999px; color: var(--muted); background: rgba(156, 183, 193, 0.12); font-size: 12px; font-weight: 800; white-space: nowrap; }
     .line-admin-badge.active { color: var(--ok); background: rgba(126, 231, 135, 0.12); border: 1px solid rgba(126, 231, 135, 0.28); }
+    .line-publication-badge.missing { color: var(--warning); background: rgba(255, 209, 102, 0.1); border: 1px solid rgba(255, 209, 102, 0.24); }
     .line-group-name { display: flex; align-items: center; gap: 10px; min-width: 180px; }
     .line-group-picture { width: 40px; height: 40px; border-radius: 12px; object-fit: cover; background: rgba(156, 183, 193, 0.12); }
     .line-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -381,6 +384,7 @@
     </div>
   </div>
 
+  <script src="history-publication-ui.js"></script>
   <script>
     window.addEventListener("error", function (event) {
       const el = document.getElementById("cloudStatus");
@@ -414,6 +418,10 @@
     const FUNCTIONS_BASE = "https://asia-southeast1-capydraw-7f7de.cloudfunctions.net";
     const AUTH_PASSWORD = "ALZMsk12#$";
     const AUTH_KEY = "capydraw-unlocked-v2";
+    const {
+      buildLinePublicationBackfillRequest,
+      getLinePublicationView
+    } = window.CapyDrawHistoryPublicationUi;
 
     const defaultState = {
       guildMembers: [],
@@ -874,22 +882,30 @@
       }
       $("historyTableWrap").innerHTML = `
         <table>
-          <thead><tr><th>勾選</th><th>日期</th><th class="history-time-cell">建立時間 / 詳情</th><th class="type-cell">類型</th><th>船長</th><th>守護天使</th><th>船艙 4</th><th>操作</th></tr></thead>
+          <thead><tr><th>勾選</th><th>日期</th><th class="history-time-cell">建立時間 / 詳情</th><th class="type-cell">類型</th><th>船長</th><th>守護天使</th><th>船艙 4</th><th>LINE 發布</th><th>操作</th></tr></thead>
           <tbody>
-            ${list.map(record => `
-              <tr>
-                <td><input type="checkbox" class="history-check" data-id="${escapeHtml(record.id)}" ${selectedHistoryIds.has(record.id) ? "checked" : ""}></td>
-                <td>${escapeHtml(record.date)}</td>
-                <td class="history-time-cell"><button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></td>
-                <td class="type-cell">${record.specialDay ? `<span class="pill special">特別日</span>` : `<span class="pill">一般日</span>`}</td>
-                <td><strong>${escapeHtml(record.captain)}</strong></td>
-                <td>${escapeHtml(record.guardian)}</td>
-                <td>${(record.cabin4 || []).map(escapeHtml).join("、")}</td>
-                <td><button class="btn secondary small" data-show-record="${escapeHtml(record.id)}">查看</button></td>
-              </tr>`).join("")}
+            ${list.map(record => {
+              const publication = getLinePublicationView(record, {isAdmin: lineAdminAuthorized});
+              return `
+                <tr>
+                  <td><input type="checkbox" class="history-check" data-id="${escapeHtml(record.id)}" ${selectedHistoryIds.has(record.id) ? "checked" : ""}></td>
+                  <td>${escapeHtml(record.date)}</td>
+                  <td class="history-time-cell"><button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></td>
+                  <td class="type-cell">${record.specialDay ? `<span class="pill special">特別日</span>` : `<span class="pill">一般日</span>`}</td>
+                  <td><strong>${escapeHtml(record.captain)}</strong></td>
+                  <td>${escapeHtml(record.guardian)}</td>
+                  <td>${(record.cabin4 || []).map(escapeHtml).join("、")}</td>
+                  <td><span class="line-admin-badge line-publication-badge${publication.published ? " active" : " missing"}">${publication.statusText}</span></td>
+                  <td><div class="line-actions">
+                    <button class="btn secondary small" data-show-record="${escapeHtml(record.id)}">查看</button>
+                    ${publication.showBackfillAction ? `<button class="btn warning small requires-line-admin" data-backfill-line-record="${escapeHtml(record.id)}">✅ 我確認已發布到 LINE</button>` : ""}
+                  </div></td>
+                </tr>`;
+            }).join("")}
           </tbody>
         </table>`;
       bindHistoryEvents();
+      updateAccessUi();
     }
 
     function bindHistoryEvents() {
@@ -908,6 +924,9 @@
           setMessage("drawMessage", `已顯示 ${record.date} 的歷史結果。`, "ok");
           window.scrollTo({ top: 0, behavior: "smooth" });
         });
+      });
+      document.querySelectorAll("[data-backfill-line-record]").forEach(btn => {
+        btn.addEventListener("click", () => backfillLegacyLinePublication(btn.dataset.backfillLineRecord));
       });
       bindDetailButtons();
     }
@@ -1044,6 +1063,48 @@
       return payload;
     }
 
+    async function backfillLegacyLinePublication(recordId) {
+      const record = state.history.find(item => item.id === recordId);
+      if (!record) {
+        setMessage("historyMessage", "找不到這筆歷史紀錄，請重新整理後再試。", "danger");
+        return;
+      }
+      const publication = getLinePublicationView(record, {isAdmin: lineAdminAuthorized});
+      if (!publication.showBackfillAction) {
+        setMessage("historyMessage", publication.published ?
+          "這筆紀錄已經具有 LINE 發布紀錄。" : "目前登入帳號沒有補登權限。", publication.published ? "ok" : "danger");
+        return;
+      }
+      const question = [
+        "確定這筆抽籤過去真的已經發布到正式 LINE 群組嗎？",
+        "",
+        "此操作不會重新發送 LINE，",
+        "只會補登發布紀錄，讓喵餅 AI 可以查詢。",
+        "",
+        "尚未真正發布的抽籤絕對不要標記。"
+      ].join("\n");
+      if (!confirm(question)) return;
+
+      lineAdminSaving = true;
+      updateAccessUi();
+      setMessage("historyMessage", "正在補登 LINE 發布紀錄...", "warn");
+      try {
+        const request = buildLinePublicationBackfillRequest(record);
+        await callLineAdminFunction(request.endpoint, {body: request.body});
+        await refreshFromCloud();
+        renderHistory();
+        if (currentRecordId === record.id) {
+          setCurrentRecord(state.history.find(item => item.id === record.id) || record);
+        }
+        setMessage("historyMessage", "已補登 LINE 發布紀錄，不會重新發送 LINE。", "ok");
+      } catch (error) {
+        setMessage("historyMessage", `補登失敗：${error.message}`, "danger");
+      } finally {
+        lineAdminSaving = false;
+        updateAccessUi();
+      }
+    }
+
     function renderLineGroups() {
       if (!firebaseUser) {
         $("lineGroupsTableWrap").innerHTML = `<p class="empty">登入 LINE 管理帳號後可查看 Bot 已知群組。</p>`;
@@ -1175,6 +1236,7 @@
         lineAdminAuthorized = false;
         lineBindingsCache = [];
         renderLineBindings();
+        renderHistory();
         setMessage("lineSettingsMessage", "請先使用 Google 登入。", "warn");
         return;
       }
@@ -1184,6 +1246,7 @@
         lineAdminAuthorized = true;
         lineBindingsCache = Array.isArray(result.members) ? result.members : [];
         renderLineBindings();
+        renderHistory();
         setMessage("lineSettingsMessage", result.hasDefaultGroup ?
           "已取得綁定狀態；LINE 群組已登記。" :
           "已取得綁定狀態；尚未登記 LINE 群組，請先在正式群組完成一筆有效綁定。", result.hasDefaultGroup ? "ok" : "warn");
@@ -1191,6 +1254,7 @@
         lineAdminAuthorized = false;
         lineBindingsCache = [];
         renderLineBindings();
+        renderHistory();
         updateAccessUi();
         setMessage("lineSettingsMessage", `讀取失敗：${error.message}`, "danger");
       }
@@ -1963,6 +2027,7 @@
           lineGroupsCache = [];
           renderLineBindings();
           renderLineGroups();
+          renderHistory();
           updateAccessUi();
           if (firebaseUser) Promise.all([loadLineGroups(), loadLineBindings()]);
         });

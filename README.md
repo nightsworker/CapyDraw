@@ -236,6 +236,8 @@ Endpoint 會以 `record.id === recordId` 在 array 或 object history 中尋找�
 
 這項操作只應用於管理員已人工確認真正公開過的紀錄，不得用於尚未發布的結果。Miaobing AI 的 fail-closed publication policy 維持不變：只有補登後具有有效 `lineSentAt` 且 `lineSendCount > 0` 的紀錄才可能進入 sanitized AI context。
 
+網站「歷史紀錄」會顯示每筆資料的 LINE 發布狀態。通過既有 Firebase Admin endpoint 驗證的 Google/Firebase 管理員，才會在缺少 metadata 的紀錄看到「✅ 我確認已發布到 LINE」；確認後前端只呼叫 `backfillDrawLinePublished` 並傳送 `record.id`，不會直接寫 RTDB 或呼叫 `sendDrawToLine`。
+
 人格 instructions、可注入測試的 mood pool 與 canonical 公會梗分別位於 `functions/lib/miaobingPersona.js` 和 `functions/lib/miaobingJokes.js`。梗可改語氣，但 immutable meaning 不可改；模型不知道的公會事實必須承認不知道，不可捏造成員、規則、歷史或數值。
 
 ## 喵餅人格系統
