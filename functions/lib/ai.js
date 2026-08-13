@@ -3,6 +3,8 @@
 const OpenAI = require("openai");
 const {buildMiaobingInstructions, pickMood} = require("./miaobingPersona");
 const {isBotMentioned} = require("./miaobing-personality");
+const {buildConversationInput} = require("./miaobingConversation");
+const {applyMiaobingStyleGuard} = require("./miaobingStyle");
 
 const AI_MODEL = "gpt-5-mini";
 const AI_MAX_OUTPUT_TOKENS = 600;
@@ -108,6 +110,7 @@ async function generateMiaobingAiReply({
   question,
   authoritativeContext = "",
   memoryContext = "",
+  conversationMessages = [],
   rng = Math.random,
   client,
 } = {}) {
@@ -127,15 +130,17 @@ async function generateMiaobingAiReply({
       authoritativeContext,
       memoryContext,
     }),
-    input: safeQuestion,
+    input: buildConversationInput(conversationMessages, safeQuestion),
     max_output_tokens: AI_MAX_OUTPUT_TOKENS,
     reasoning: {effort: AI_REASONING_EFFORT},
     store: false,
   });
+  const guarded = applyMiaobingStyleGuard(normalizeGeneratedAiText(response.output_text));
   return {
-    text: normalizeGeneratedAiText(response.output_text),
+    text: normalizeGeneratedAiText(guarded.text),
     mood,
     responseMeta: safeOpenAiResponseMeta(response),
+    styleMeta: {profanitySanitized: guarded.sanitized},
   };
 }
 
@@ -185,6 +190,8 @@ async function processMiaobingAiRequest({apiKey, question, reserveUsage, generat
       calledOpenAI: true,
       reason: "success",
       ...(mood ? {mood} : {}),
+      ...(result && result.styleMeta && result.styleMeta.profanitySanitized ?
+        {styleSanitized: true} : {}),
     };
   } catch (error) {
     return {

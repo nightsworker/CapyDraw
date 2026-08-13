@@ -93,6 +93,13 @@ const {
 } = require("./lib/miaobing-lore");
 const {directMiaobingExpression} = require("./lib/miaobingExpression");
 const {
+  appendConversationTurn,
+  contextualizeDrawFollowUp,
+  conversationAssistantText,
+  conversationScopeForEvent,
+  loadConversationContext,
+} = require("./lib/miaobingConversation");
+const {
   applyMemoryAction,
   findExactReplyMemory,
   findRelevantMemories,
@@ -104,6 +111,10 @@ const {
   MEMORY_ACTIONS,
   planAdminPrivateMemoryRoute,
 } = require("./lib/miaobingMemoryIntent");
+const {
+  applyMiaobingStyleGuard,
+  redactDisallowedProfanity,
+} = require("./lib/miaobingStyle");
 
 initializeApp();
 
@@ -374,19 +385,40 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
     if (!isPersonalityEnabled(enabledValue)) return;
   }
 
+  const conversationScope = conversationScopeForEvent(event);
+  const conversationRef = conversationScope ?
+    db.ref(`guildDraw/aiConversation/${conversationScope.key}`) : null;
+  const conversation = conversationRef ? await loadConversationContext(conversationRef, {
+    ttlMs: conversationScope.ttlMs,
+  }) : {messages: [], failed: false};
+  if (conversation.failed) {
+    logger.warn("Miaobing conversation context read failed", {
+      sourceType,
+      maskedSender: maskLineUserId(userId),
+      type: conversation.errorType,
+    });
+  }
+  const conversationMessages = conversation.messages;
+
   const memoryItems = aiPlan.memoryItems ||
     (await db.ref("guildDraw/aiMemory/items").get()).val() || {};
-  const drawPlan = planPublishedDrawQuery(aiPlan.question);
+  const drawQuestion = contextualizeDrawFollowUp(
+    aiPlan.question,
+    conversationMessages,
+    planPublishedDrawQuery,
+  );
+  const drawPlan = planPublishedDrawQuery(drawQuestion);
   const exactMemory = findExactReplyMemory(memoryItems, aiPlan.question, {
     isPublishedDrawQuery: drawPlan.shouldRetrieve,
   });
   if (exactMemory) {
-    let messages = [{type: "text", text: exactMemory.response}];
+    const guardedMemory = applyMiaobingStyleGuard(exactMemory.response);
+    let messages = [{type: "text", text: guardedMemory.text}];
     try {
       const expression = await directMiaobingExpression(
         db.ref("guildDraw/aiStyle/expressionState"),
         {
-          text: exactMemory.response,
+          text: guardedMemory.text,
           mood: "playful",
           question: aiPlan.question,
           isCommand: true,
@@ -408,6 +440,20 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
       memoryId: exactMemory.id,
     });
     await replyMessages(event.replyToken, messages, token);
+    if (conversationRef) {
+      const saved = await appendConversationTurn(conversationRef, {
+        userText: redactDisallowedProfanity(aiPlan.question),
+        assistantText: conversationAssistantText(messages, guardedMemory.text),
+        ttlMs: conversationScope.ttlMs,
+      });
+      if (!saved.saved) {
+        logger.warn("Miaobing conversation context write failed", {
+          sourceType,
+          maskedSender: maskLineUserId(userId),
+          type: saved.errorType,
+        });
+      }
+    }
     return;
   }
   const relevantMemories = findRelevantMemories(memoryItems, aiPlan.question);
@@ -437,6 +483,7 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
         question,
         authoritativeContext,
         memoryContext,
+        conversationMessages,
       });
     },
   });
@@ -479,6 +526,7 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
       ...logContext,
       result: outcome.reason,
       trigger: aiPlan.reason,
+      styleSanitized: outcome.styleSanitized === true,
       ...(outcome.responseMeta || {
         status: null,
         incompleteReason: null,
@@ -501,6 +549,19 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
     });
   }
   await replyMessages(event.replyToken, messages, token);
+  if (outcome.reason === "success" && conversationRef) {
+    const saved = await appendConversationTurn(conversationRef, {
+      userText: redactDisallowedProfanity(aiPlan.question),
+      assistantText: conversationAssistantText(messages, outcome.text),
+      ttlMs: conversationScope.ttlMs,
+    });
+    if (!saved.saved) {
+      logger.warn("Miaobing conversation context write failed", {
+        ...logContext,
+        type: saved.errorType,
+      });
+    }
+  }
 }
 
 async function replyMemoryOperation(event, token, replyTextValue, mood = "work") {

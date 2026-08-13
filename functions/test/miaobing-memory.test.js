@@ -188,7 +188,8 @@ test("exact reply stays fixed text and returns before the OpenAI orchestration",
     handler[0].indexOf("if (exactMemory)"),
     handler[0].indexOf("const relevantMemories"),
   );
-  assert.match(exactBranch, /text: exactMemory\.response/u);
+  assert.match(exactBranch, /applyMiaobingStyleGuard\(exactMemory\.response\)/u);
+  assert.match(exactBranch, /text: guardedMemory\.text/u);
   assert.match(exactBranch, /isCommand: true/u);
 });
 
@@ -324,7 +325,7 @@ test("30-32: draw publication context remains above memory and unpublished polic
   assert.ok(prompt.indexOf("受保護 Canon") < prompt.indexOf("權威即時資料"));
   assert.ok(prompt.indexOf("權威即時資料") < prompt.indexOf("管理員長期記憶資料"));
   assert.match(prompt,
-    /SYSTEM SECURITY > HARD_CANON > PUBLISHED DRAW DATA > ADMIN MEMORY > SOFT_CANON/u);
+    /SYSTEM SECURITY > HARD_CANON > PUBLISHED DRAW DATA > ADMIN MEMORY > CURRENT CONVERSATION CONTEXT > SOFT_CANON/u);
   assert.match(prompt, /不得推測|不可自行編造/u);
   const indexSource = fs.readFileSync(path.resolve(__dirname, "../index.js"), "utf8");
   assert.match(indexSource, /loadPublishedDrawKnowledge/u);

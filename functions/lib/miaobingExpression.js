@@ -12,10 +12,12 @@ const EXPRESSION_TYPES = Object.freeze({
   LINE_EMOJI: "lineEmoji",
   STICKER: "sticker",
 });
-const EMOJI_PROBABILITIES = Object.freeze({none: 0.35, one: 0.50, two: 0.15});
+const EMOJI_PROBABILITIES = Object.freeze({none: 0.55, one: 0.40, two: 0.05});
 const STICKER_PROBABILITY = 0.12;
 const STICKER_ONLY_PROBABILITY = 0.35;
 const RECENT_EMOJI_LIMIT = 10;
+const RECENT_EMOJI_REPLY_LIMIT = 3;
+const RECENT_EMOJI_SIGNATURE_LIMIT = 8;
 const RECENT_STICKER_LIMIT = 6;
 const RECENT_EXCLUSION_COUNT = 5;
 
@@ -35,10 +37,14 @@ const EMOJI_POOLS = Object.freeze({
 
 const MOOD_MAP = Object.freeze({
   "今天稍微慵懶": "sleepy",
-  "今天像很忙的船務人員": "work",
-  "今天吐槽感稍強": "playful",
+  "今天像忙碌但願意幫忙的船務人員": "work",
+  "今天有點調皮": "playful",
   "今天一本正經": "work",
   "今天比較溫柔": "warm",
+  "今天嘴硬但心情不錯": "playful",
+  // Read old state/test mood values without keeping them in the V2 persona prompt.
+  "今天像很忙的船務人員": "work",
+  "今天吐槽感稍強": "playful",
   "今天有點欠揍但不能攻擊人": "playful",
   sad: "warm",
   noisy: "annoyed",
@@ -63,7 +69,7 @@ const STICKER_ONLY_INTENTS = new Set([
   "tired", "annoyed", "surprised", "laugh", "calling",
 ]);
 
-const EMOJI_PATTERN = /\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?/gu;
+const EMOJI_PATTERN = /\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*/gu;
 
 function safeRandom(rng = Math.random) {
   const value = Number(rng());
@@ -121,10 +127,6 @@ function inferExpressionMood({mood, text} = {}) {
   return MOOD_MAP[String(mood || "")] || "neutral";
 }
 
-function emojiWeight(emoji) {
-  return emoji === "😼" || emoji === "🐾" ? 1.25 : 1;
-}
-
 function weightedPick(values, weightFor, rng) {
   if (!values.length) return null;
   const weights = values.map((value) => Math.max(0, Number(weightFor(value)) || 0));
@@ -138,23 +140,71 @@ function weightedPick(values, weightFor, rng) {
   return values.at(-1);
 }
 
-function selectEmoji({mood = "neutral", recentEmoji = [], lastReplyEmoji = [], count = 1,
-  rng = Math.random} = {}) {
+function flattenRecentReplyEmoji(value) {
+  return uniqueStrings((Array.isArray(value) ? value : []).flatMap((item) =>
+    Array.isArray(item) ? item : []), RECENT_EMOJI_LIMIT);
+}
+
+function emojiSignature(values) {
+  return uniqueStrings(values, 2).sort().join("|");
+}
+
+function selectEmoji({mood = "neutral", recentEmoji = [], lastReplyEmoji = [],
+  recentReplyEmoji = [], recentEmojiSignatures = [], count = 1, rng = Math.random} = {}) {
   const pool = [...new Set(EMOJI_POOLS[mood] || EMOJI_POOLS.neutral)];
   const blocked = new Set(uniqueStrings(lastReplyEmoji, 2));
-  const recent = new Set(uniqueStrings(recentEmoji, RECENT_EXCLUSION_COUNT));
+  const stronglyBlocked = new Set(flattenRecentReplyEmoji(recentReplyEmoji));
+  const recent = new Set(uniqueStrings(recentEmoji, RECENT_EMOJI_LIMIT));
+  const recentSignatures = new Set(uniqueStrings(
+    recentEmojiSignatures,
+    RECENT_EMOJI_SIGNATURE_LIMIT,
+  ));
   const selected = [];
   const wanted = Math.max(0, Math.min(2, Number(count) || 0));
   while (selected.length < wanted) {
-    const unused = pool.filter((emoji) => !blocked.has(emoji) && !selected.includes(emoji));
+    const unused = pool.filter((emoji) => !blocked.has(emoji) &&
+      !stronglyBlocked.has(emoji) && !selected.includes(emoji));
     const fresh = unused.filter((emoji) => !recent.has(emoji));
     const candidates = fresh.length ? fresh : unused;
     if (!candidates.length) break;
-    const emoji = weightedPick(candidates, emojiWeight, rng);
+    const emoji = weightedPick(candidates, () => 1, rng);
     if (!emoji) break;
+    if (selected.length === 1 && recentSignatures.has(emojiSignature([selected[0], emoji]))) {
+      const differentPair = candidates.filter((candidate) =>
+        !recentSignatures.has(emojiSignature([selected[0], candidate])));
+      if (!differentPair.length) break;
+      selected.push(weightedPick(differentPair, () => 1, rng));
+      continue;
+    }
     selected.push(emoji);
   }
   return selected;
+}
+
+function ensureSentenceEnding(text) {
+  const value = String(text || "").trimEnd();
+  if (!value || /[。.!！?？…」』）)]$/u.test(value)) return value;
+  return `${value}。`;
+}
+
+function sanitizeDecorativeTrailingEmoji(text, state = {}, {maxEmoji = 2} = {}) {
+  const value = String(text || "").trim();
+  const match = value.match(/^(.*?)([\s。.!！?？，,～~]+)((?:\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*\s*)+)$/u);
+  if (!match) return value;
+  const prefix = `${match[1]}${match[2]}`.trimEnd();
+  const trailing = String(match[3]).match(EMOJI_PATTERN) || [];
+  const current = normalizeExpressionState(state);
+  const last = new Set(current.lastReplyEmoji);
+  const recentReplies = new Set(flattenRecentReplyEmoji(current.recentReplyEmoji));
+  const signatures = new Set(current.recentEmojiSignatures);
+  const kept = [];
+  for (const emoji of trailing) {
+    if (kept.length >= maxEmoji || kept.includes(emoji) || last.has(emoji) ||
+        recentReplies.has(emoji)) continue;
+    if (kept.length === 1 && signatures.has(emojiSignature([kept[0], emoji]))) continue;
+    kept.push(emoji);
+  }
+  return kept.length ? `${prefix} ${kept.join(" ")}` : ensureSentenceEnding(prefix);
 }
 
 function chooseEmojiCount({conservative = false, existingEmojiCount = 0, rng = Math.random} = {}) {
@@ -201,9 +251,17 @@ function buildExpressionLineMessages({text, textMessage, sticker, stickerOnly = 
 
 function normalizeExpressionState(value) {
   const state = value && typeof value === "object" ? value : {};
+  const recentReplyEmoji = (Array.isArray(state.recentReplyEmoji) ? state.recentReplyEmoji : [])
+    .map((item) => uniqueStrings(item, 2))
+    .slice(0, RECENT_EMOJI_REPLY_LIMIT);
   return {
     recentEmoji: uniqueStrings(state.recentEmoji, RECENT_EMOJI_LIMIT),
     lastReplyEmoji: uniqueStrings(state.lastReplyEmoji, 2),
+    recentReplyEmoji,
+    recentEmojiSignatures: uniqueStrings(
+      state.recentEmojiSignatures,
+      RECENT_EMOJI_SIGNATURE_LIMIT,
+    ),
     recentStickerIds: uniqueStrings(state.recentStickerIds, RECENT_STICKER_LIMIT),
     lastStickerId: String(state.lastStickerId || "").slice(0, 40),
   };
@@ -216,7 +274,6 @@ function planMiaobingExpression({text, textMessage, mood, question, state, isFac
   }
   const originalText = String(text || "").trim();
   const current = normalizeExpressionState(state);
-  const existingEmoji = extractUnicodeEmoji(originalText);
   const expressionMood = inferExpressionMood({mood, text: question});
   const intent = detectStickerIntent(question);
   const protectedContent = Boolean(isFactual || isProtectedFactualQuestion(question));
@@ -242,26 +299,41 @@ function planMiaobingExpression({text, textMessage, mood, question, state, isFac
     }
   }
 
+  const sanitizedText = protectedContent ? originalText :
+    sanitizeDecorativeTrailingEmoji(originalText, current, {
+      maxEmoji: selectedSticker ? 1 : 2,
+    });
+  const existingEmoji = extractUnicodeEmoji(sanitizedText);
   const addedEmoji = stickerOnly || isError ? [] : selectEmoji({
     mood: expressionMood,
     recentEmoji: current.recentEmoji,
     lastReplyEmoji: current.lastReplyEmoji,
+    recentReplyEmoji: current.recentReplyEmoji,
+    recentEmojiSignatures: current.recentEmojiSignatures,
     count: chooseEmojiCount({
-      conservative: protectedContent || isCommand,
+      conservative: protectedContent || isCommand || Boolean(selectedSticker),
       existingEmojiCount: existingEmoji.length,
       rng,
     }),
     rng,
   });
-  const replyEmoji = stickerOnly ? [] :
-    uniqueStrings([...existingEmoji, ...addedEmoji], 2);
-  const decoratedText = addedEmoji.length ? `${originalText} ${addedEmoji.join(" ")}` : originalText;
+  const decoratedText = addedEmoji.length ? `${sanitizedText} ${addedEmoji.join(" ")}` :
+    sanitizedText;
+  const replyEmoji = stickerOnly ? [] : extractUnicodeEmoji(decoratedText).slice(0, 2);
+  const signature = replyEmoji.length === 2 ? emojiSignature(replyEmoji) : "";
   const selectedStickerKey = selectedSticker ? stickerKey(selectedSticker) : "";
   const decoratedTextMessage = textMessage && typeof textMessage === "object" ?
     {...textMessage, text: decoratedText} : null;
   const nextState = {
     recentEmoji: updateRecent(current.recentEmoji, replyEmoji, RECENT_EMOJI_LIMIT),
     lastReplyEmoji: replyEmoji,
+    recentReplyEmoji: [replyEmoji, ...current.recentReplyEmoji]
+      .slice(0, RECENT_EMOJI_REPLY_LIMIT),
+    recentEmojiSignatures: signature ? updateRecent(
+      current.recentEmojiSignatures,
+      [signature],
+      RECENT_EMOJI_SIGNATURE_LIMIT,
+    ) : current.recentEmojiSignatures,
     recentStickerIds: selectedStickerKey ?
       updateRecent(current.recentStickerIds, [selectedStickerKey], RECENT_STICKER_LIMIT) :
       current.recentStickerIds,
@@ -328,6 +400,8 @@ module.exports = {
   EMOJI_PROBABILITIES,
   EXPRESSION_TYPES,
   RECENT_EMOJI_LIMIT,
+  RECENT_EMOJI_REPLY_LIMIT,
+  RECENT_EMOJI_SIGNATURE_LIMIT,
   RECENT_STICKER_LIMIT,
   STICKER_ONLY_PROBABILITY,
   STICKER_PROBABILITY,
@@ -339,7 +413,9 @@ module.exports = {
   extractUnicodeEmoji,
   inferExpressionMood,
   isProtectedFactualQuestion,
+  emojiSignature,
   planMiaobingExpression,
+  sanitizeDecorativeTrailingEmoji,
   selectEmoji,
   selectSticker,
 };

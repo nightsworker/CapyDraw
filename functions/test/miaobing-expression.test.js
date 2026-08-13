@@ -44,12 +44,12 @@ function baseOptions(overrides = {}) {
 
 test("emoji probability supports deterministic zero, one, and two emoji cases", () => {
   assert.equal(chooseEmojiCount({rng: () => 0.1}), 0);
-  assert.equal(chooseEmojiCount({rng: () => 0.5}), 1);
-  assert.equal(chooseEmojiCount({rng: () => 0.9}), 2);
+  assert.equal(chooseEmojiCount({rng: () => 0.6}), 1);
+  assert.equal(chooseEmojiCount({rng: () => 0.99}), 2);
 });
 
 test("expression output adds at most two unique emoji", () => {
-  const plan = planMiaobingExpression(baseOptions({rng: rngSequence(0.9, 0, 0)}));
+  const plan = planMiaobingExpression(baseOptions({rng: rngSequence(0.99, 0, 0)}));
   assert.equal(plan.emojiDecision.added.length, 2);
   assert.equal(new Set(plan.emojiDecision.added).size, 2);
   assert.equal(countEmoji(plan.text), 2);
@@ -265,7 +265,7 @@ test("emoji decoration preserves textV2 substitution and only changes its text",
   const plan = planMiaobingExpression(baseOptions({
     text: textV2.text,
     textMessage: textV2,
-    rng: rngSequence(0.5, 0),
+    rng: rngSequence(0.6, 0),
   }));
   assert.equal(plan.messages[0].type, "textV2");
   assert.equal(plan.messages[0].substitution, textV2.substitution);

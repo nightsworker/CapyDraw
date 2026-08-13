@@ -218,15 +218,25 @@ Firebase `ADMIN_UID` 與 LINE userId 是不同身份，不能互相比較。先�
 
 列在既有 `guildDraw/lineSettings/adminLineUserIds` 的 LINE Bot Admin，可以直接私訊官方帳號測試正式 Miaobing AI；私訊文字不需要加「喵餅」前綴，並完整沿用正式模型、persona、canon、fallback 與 AI rate limits（包含每日 150 次上限）。Private mode 是 read-only，不會進入 command、binding 或公會 mutation routing，也不會讀寫 `defaultGroupId`；非 admin 私訊與所有非文字私訊都會安靜忽略。
 
-API key 必須使用 Firebase Functions v2 Secret `OPENAI_API_KEY`，只綁定到需要 AI 的 `lineWebhook`。不要把 key 寫入 source、`.env`、README、瀏覽器或 log。Responses request 使用 `store: false`、單輪 input 與 output token 上限，不使用 web search、tools、conversation history 或公會 Firebase 資料注入。
+API key 必須使用 Firebase Functions v2 Secret `OPENAI_API_KEY`，只綁定到需要 AI 的 `lineWebhook`。不要把 key 寫入 source、`.env`、README、瀏覽器或 log。Responses request 使用 `store: false` 與 output token 上限，不使用 web search 或 tools；每次 request 只包含有界限的近期對話、目前問題，以及既有安全層挑選出的 Canon、Published Draw 與 Admin Memory context。
 
 成本保護由 server-side `guildDraw/aiUsage` 管理，browser rules 明確禁止讀寫。系統以雜湊後的 LINE user key 執行每人 10 秒 cooldown、每 60 秒最多 5 次，並用同一個 RTDB transaction 原子保留全 Bot 每個 Asia/Taipei 日最多 150 次的額度。限流、缺少 Secret 或 OpenAI timeout／429／5xx 等錯誤都只回固定安全短訊息，不會把問題全文、API key、Authorization header 或完整 OpenAI error 寫入 usage storage 或 log。
 
 ### Emoji / Sticker Expression Director
 
-AI 與一般喵餅對話的文字完成後，會交由 `functions/lib/miaobingExpression.js` 做本地 presentation selection，不會增加 OpenAI request。Director 沿用既有 mood，依語意選擇 cute、playful、annoyed、work、sleepy、food、warm、surprised 或 neutral emoji pool；一般回覆的目標分布為 35% 無 emoji、50% 一個、15% 兩個，最多只新增兩個。如果模型原文已含 emoji，就不再額外堆疊。
+AI 與一般喵餅對話的文字完成後，會交由 `functions/lib/miaobingExpression.js` 做本地 presentation selection，不會增加 OpenAI request。Director 沿用既有 mood，依語意選擇 cute、playful、annoyed、work、sleepy、food、warm、surprised 或 neutral emoji pool；一般回覆的目標分布為 55% 無 emoji、40% 一個、5% 兩個，最多兩個。模型原文若自然產生 emoji，最終渲染結果仍會進 anti-repeat state；上一則與最近三則用過的裝飾 emoji 會被阻擋，重複的句尾 emoji 可安全移除，最近 pair signature 也不會連續重複。候選不足時寧可不使用 emoji。
 
-極小型 anti-repeat state 存在 `guildDraw/aiStyle/expressionState`：最多保留 10 個 `recentEmoji`、6 個 `recentStickerIds`、上一則 emoji 與上一張 sticker，不保存聊天文字。每次成功回覆只使用一次 RTDB transaction 同時輪替 expression state。Personality OFF、command、error／fallback 不會被此層繞過；Published Draw 與重要 Canon 回覆保留必要文字，不允許 sticker-only。LINE `textV2` mention message 會保留 substitution，只可能安全附加 allowlisted sticker。
+極小型 anti-repeat state 存在 `guildDraw/aiStyle/expressionState`：最多保留 10 個 `recentEmoji`、最近三則 reply emoji、8 個 `recentEmojiSignatures`、6 個 `recentStickerIds`、上一則 emoji 與上一張 sticker，不保存聊天文字。每次成功回覆只使用一次 RTDB transaction 同時輪替 expression state。Personality OFF、command、error／fallback 不會被此層繞過；Published Draw 與重要 Canon 回覆保留必要文字，不允許 sticker-only。LINE `textV2` mention message 會保留 substitution，只可能安全附加 allowlisted sticker。
+
+### Conversation Personality V2
+
+AI persona 的核心是「嘴硬但心軟的公會會貓」；回覆優先順序是討人喜歡、有個性、傲嬌、最後才是吐槽。日常聊天預設 1～2 句、約 20～70 個中文字；只有詳細說明、規則、Published Draw 多人名單、需要釐清、複雜問題或深入聊天時才允許 3～5 句。疲累、難過、受傷、焦慮或嚴肅擔心會提高溫柔與簡短支持，降低反諷。模型不需要主動使用 emoji，也不應把「本喵」或特定 emoji 當每句固定 signature。
+
+明確髒話與粗俗辱罵同時受 prompt policy 與 `functions/lib/miaobingStyle.js` 的本地 final guard 約束；安全替換不會增加第二次 OpenAI request，輕微玩笑如「笨蛋」「很煩」「白痴喔」則不會被無差別移除。
+
+短期對話獨立存放於 server-only `guildDraw/aiConversation/{scopeKey}`。群組以雜湊後的 LINE groupId 分區、TTL 30 分鐘；Admin private 以雜湊後的 LINE userId 分區、TTL 60 分鐘。每個 scope 最多 6 組來回／12 messages，每則最多 500 字元，送入模型的近期 history 最多 3600 字元，current user question 永遠置於最後。只保存真正進入 AI pipeline 的安全 user/assistant turn，不保存一般群聊、webhook、token、profile、unpublished draw context，也不寫入 `guildDraw/aiMemory`。RTDB 讀寫失敗只記安全 warning 並 fail-open，仍會回覆。
+
+資訊優先級維持：System/Security、Hard Canon、Published Draw、Admin Long-Term Memory、Current Conversation Context、Soft Canon、一般生成。對話 context 只協助指代、追問、主題與語氣連續；Published Draw follow-up 每次仍重新執行 publication check，群組及 Admin private 都不能從 context 取得未發布結果。
 
 Sticker catalog 位於 `functions/lib/lineStickerCatalog.js`，資料來源只採用 [LINE Developers Messaging API Sticker List](https://developers.line.biz/en/docs/messaging-api/sticker-list/)，並記錄驗證日期。第一版只收錄官方 Sticker definitions 中 package `6362`、`6632`、`8525`、`11537` 直接列出的 20 組 package/sticker pair。適合的簡短 conversation 以 12% 機率考慮 sticker，其中少數可 sticker-only；factual、command、admin operation 與 error 永遠保留文字或維持 text-only。
 
