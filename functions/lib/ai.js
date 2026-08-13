@@ -107,6 +107,7 @@ async function generateMiaobingAiReply({
   apiKey,
   question,
   authoritativeContext = "",
+  memoryContext = "",
   rng = Math.random,
   client,
 } = {}) {
@@ -124,6 +125,7 @@ async function generateMiaobingAiReply({
       question: safeQuestion,
       mood,
       authoritativeContext,
+      memoryContext,
     }),
     input: safeQuestion,
     max_output_tokens: AI_MAX_OUTPUT_TOKENS,

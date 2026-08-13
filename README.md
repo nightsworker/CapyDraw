@@ -230,6 +230,14 @@ AI 與一般喵餅對話的文字完成後，會交由 `functions/lib/miaobingEx
 
 Sticker catalog 位於 `functions/lib/lineStickerCatalog.js`，資料來源只採用 [LINE Developers Messaging API Sticker List](https://developers.line.biz/en/docs/messaging-api/sticker-list/)，並記錄驗證日期。第一版只收錄官方 Sticker definitions 中 package `6362`、`6632`、`8525`、`11537` 直接列出的 20 組 package/sticker pair。適合的簡短 conversation 以 12% 機率考慮 sticker，其中少數可 sticker-only；factual、command、admin operation 與 error 永遠保留文字或維持 text-only。
 
+### Admin Private Long-Term Memory
+
+長期記憶獨立存放於 server-only RTDB path `guildDraw/aiMemory/items`。只有列在既有 `guildDraw/lineSettings/adminLineUserIds` 的 LINE Bot Admin，透過 `source.type === "user"` 私訊並明確使用「記住／更正／忘掉／以後聽到…就…」等教學語句時，才能建立、修訂或停用記憶；管理員在群組裡、非管理員私訊，以及管理員普通聊天都沒有寫入入口。這套授權不使用 Firebase Web `ADMIN_UID`，也不建立第二份管理員名單。
+
+V1 支援 `fact`、`exact_reply` 與 `instruction`。每筆只保存必要欄位、時間、revision、來源及教學者 LINE userId，不保存完整私訊或 token。更正會停用舊 revision 並建立新版；忘記只將唯一命中的記憶設為 inactive，多筆命中則要求說清楚。查詢一次最多列 10 筆，正常 AI 最多只挑 6 筆相關 active memory；一般對話不增加額外 OpenAI call，固定回答命中時也不需要 OpenAI。
+
+記憶優先級固定低於 system security、HARD_CANON 與 Published Draw data。第四船艙三張船票、OWNER／GUILD_LEADER、發船規則或 Published Draw policy 的衝突教學會被拒絕；instruction 只能影響人格、措辭、笑話與反應，不能修改資料庫、權限、LINE 群組、binding 或抽籤。Memory module 不讀 `guildDraw/main/history`，且 `database.rules.json` 的 root default deny 使 browser 無法讀寫 `aiMemory`。Memory operation 回覆可沿用 emoji presentation，但一律保留明確文字、不使用 sticker-only。
+
 ### Published Draw Knowledge
 
 Miaobing AI 可以唯讀回答已正式發布的抽籤結果。只有 `sendDrawToLine` 成功後留下有效 `lineSentAt` 且 `lineSendCount > 0` 的 history record，才會由 server-side retrieval 選出；history 中存在但尚未發布、無法證明曾成功發送的 legacy record，以及 pool snapshot、consumed、候選池和其他內部欄位都不會進入 OpenAI context。`record.date` 只表示抽籤所屬日期，不是公開狀態；未來日期只要已發布即可查詢，過去或今天的紀錄若未發布仍不可見。查詢支援 Asia/Taipei 的今天、昨天、明天、`MM/DD`、`YYYY-MM-DD` 與最近一次已發布結果。

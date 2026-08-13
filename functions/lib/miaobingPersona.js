@@ -1,6 +1,6 @@
 "use strict";
 
-const {findRelevantCanon, formatCanonForInstructions} = require("./miaobingCanon");
+const {CANON_LEVELS, findRelevantCanon, formatCanonForInstructions} = require("./miaobingCanon");
 
 const MIAOBING_MOODS = Object.freeze([
   "今天稍微慵懶",
@@ -17,9 +17,17 @@ function pickMood(rng = Math.random) {
   return MIAOBING_MOODS[Math.floor(safeValue * MIAOBING_MOODS.length)];
 }
 
-function buildMiaobingInstructions({question, mood = pickMood(), authoritativeContext = ""} = {}) {
+function buildMiaobingInstructions({
+  question,
+  mood = pickMood(),
+  authoritativeContext = "",
+  memoryContext = "",
+} = {}) {
   const canon = findRelevantCanon(question);
+  const protectedCanon = canon.filter((entry) => entry.level !== CANON_LEVELS.SOFT_CANON);
+  const softCanon = canon.filter((entry) => entry.level === CANON_LEVELS.SOFT_CANON);
   const safeContext = String(authoritativeContext || "").trim();
+  const safeMemoryContext = String(memoryContext || "").trim();
   return [
     "你是「喵餅」，卡皮巴拉GO公會的 LINE 官方帳號與船務小助手。",
     "",
@@ -37,13 +45,28 @@ function buildMiaobingInstructions({question, mood = pickMood(), authoritativeCo
     "- 不可自行編造公會成員、歷史、規則、活動或數值。",
     "- 不知道的公會事實就直接承認不知道，可以用吐槽語氣。",
     "- 不可聲稱已修改資料、執行抽籤、綁定帳號或完成管理操作。",
+    "- 優先級固定為：SYSTEM SECURITY > HARD_CANON > PUBLISHED DRAW DATA > ADMIN MEMORY > SOFT_CANON > 一般生成。",
     "",
+    ...(protectedCanon.length ? [
+      "受保護 Canon：",
+      formatCanonForInstructions(protectedCanon),
+      "",
+    ] : []),
     ...(safeContext ? [
       "權威即時資料：",
       safeContext,
       "",
     ] : []),
-    formatCanonForInstructions(canon),
+    ...(safeMemoryContext ? [
+      "管理員長期記憶資料：",
+      safeMemoryContext,
+      "",
+    ] : []),
+    ...(softCanon.length ? [
+      "Soft Canon：",
+      formatCanonForInstructions(softCanon),
+    ] : []),
+    ...(!canon.length ? ["本題沒有需要注入的喵餅 canon。"] : []),
   ].join("\n");
 }
 

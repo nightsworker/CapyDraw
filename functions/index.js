@@ -92,6 +92,18 @@ const {
   resolveSenderRole,
 } = require("./lib/miaobing-lore");
 const {directMiaobingExpression} = require("./lib/miaobingExpression");
+const {
+  applyMemoryAction,
+  findExactReplyMemory,
+  findRelevantMemories,
+  formatMemoryContext,
+  formatMemoryList,
+  planGroupMemoryTrigger,
+} = require("./lib/miaobingMemory");
+const {
+  MEMORY_ACTIONS,
+  planAdminPrivateMemoryRoute,
+} = require("./lib/miaobingMemoryIntent");
 
 initializeApp();
 
@@ -362,20 +374,57 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
     if (!isPersonalityEnabled(enabledValue)) return;
   }
 
+  const memoryItems = aiPlan.memoryItems ||
+    (await db.ref("guildDraw/aiMemory/items").get()).val() || {};
+  const drawPlan = planPublishedDrawQuery(aiPlan.question);
+  const exactMemory = findExactReplyMemory(memoryItems, aiPlan.question, {
+    isPublishedDrawQuery: drawPlan.shouldRetrieve,
+  });
+  if (exactMemory) {
+    let messages = [{type: "text", text: exactMemory.response}];
+    try {
+      const expression = await directMiaobingExpression(
+        db.ref("guildDraw/aiStyle/expressionState"),
+        {
+          text: exactMemory.response,
+          mood: "playful",
+          question: aiPlan.question,
+          isCommand: true,
+          personalityEnabled: true,
+        },
+      );
+      if (expression.shouldReply && expression.messages.length) messages = expression.messages;
+    } catch (error) {
+      logger.warn("Miaobing exact memory expression failed", {
+        sourceType,
+        maskedSender: maskLineUserId(userId),
+        type: String(error && (error.code || error.name) || "unknown_error").slice(0, 80),
+      });
+    }
+    logger.info("Miaobing memory exact reply", {
+      sourceType,
+      isPrivateAdminTest: isPrivateRequest,
+      maskedSender: maskLineUserId(userId),
+      memoryId: exactMemory.id,
+    });
+    await replyMessages(event.replyToken, messages, token);
+    return;
+  }
+  const relevantMemories = findRelevantMemories(memoryItems, aiPlan.question);
+  const memoryContext = formatMemoryContext(relevantMemories);
+
   let apiKey = "";
   try {
     apiKey = OPENAI_API_KEY.value();
   } catch {
     apiKey = "";
   }
-  let isPublishedDrawQuery = false;
+  const isPublishedDrawQuery = drawPlan.shouldRetrieve;
   const outcome = await processMiaobingAiRequest({
     apiKey,
     question: aiPlan.question,
     reserveUsage: () => reserveAiUsage(db.ref("guildDraw/aiUsage"), userId),
     generateReply: async ({apiKey: key, question}) => {
-      const drawPlan = planPublishedDrawQuery(question);
-      isPublishedDrawQuery = drawPlan.shouldRetrieve;
       let authoritativeContext = "";
       if (drawPlan.shouldRetrieve) {
         authoritativeContext = (await loadPublishedDrawKnowledge(
@@ -387,6 +436,7 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
         apiKey: key,
         question,
         authoritativeContext,
+        memoryContext,
       });
     },
   });
@@ -453,12 +503,75 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
   await replyMessages(event.replyToken, messages, token);
 }
 
+async function replyMemoryOperation(event, token, replyTextValue, mood = "work") {
+  const db = getDatabase();
+  let messages = [{type: "text", text: replyTextValue}];
+  try {
+    const expression = await directMiaobingExpression(
+      db.ref("guildDraw/aiStyle/expressionState"),
+      {
+        text: replyTextValue,
+        mood,
+        question: "memory operation",
+        isCommand: true,
+        personalityEnabled: true,
+      },
+    );
+    if (expression.shouldReply && expression.messages.length) messages = expression.messages;
+  } catch (error) {
+    logger.warn("Miaobing memory expression failed", {
+      sourceType: "user",
+      type: String(error && (error.code || error.name) || "unknown_error").slice(0, 80),
+    });
+  }
+  await replyMessages(event.replyToken, messages, token);
+}
+
 async function handleMiaobingPrivateAdminAi(event, token) {
   if (!event || event.type !== "message" || !event.message || event.message.type !== "text" ||
       !event.source || event.source.type !== "user" || !isFirebaseSafeKey(event.source.userId)) return;
   const adminLineUserIds = (await getDatabase()
     .ref("guildDraw/lineSettings/adminLineUserIds").get()).val() || {};
   const isAdmin = isLineBotAdmin(adminLineUserIds, event.source.userId);
+  const memoryRoute = planAdminPrivateMemoryRoute({event, isAdmin});
+  if (memoryRoute.shouldHandle) {
+    if (!memoryRoute.memoryAction) {
+      await replyMemoryOperation(
+        event,
+        token,
+        "這句要記什麼，本喵還沒聽懂。請把對象和內容說完整一點。",
+      );
+      return;
+    }
+    const itemsRef = getDatabase().ref("guildDraw/aiMemory/items");
+    const action = memoryRoute.memoryAction;
+    let result;
+    if (action.action === MEMORY_ACTIONS.LIST || action.action === MEMORY_ACTIONS.QUERY) {
+      const items = (await itemsRef.get()).val() || {};
+      result = {
+        status: "listed",
+        changed: false,
+        replyText: formatMemoryList(items, {
+          filter: action.filter,
+          searchTerms: action.searchTerms,
+        }),
+      };
+    } else {
+      result = await applyMemoryAction(itemsRef, action, {
+        actorLineUserId: event.source.userId,
+      });
+    }
+    logger.info("Miaobing admin memory operation", {
+      action: action.action,
+      status: result.status,
+      changed: result.changed,
+      maskedSender: maskLineUserId(event.source.userId),
+      memoryId: result.item && result.item.id || null,
+    });
+    await replyMemoryOperation(event, token, result.replyText,
+      result.status === "conflict" ? "work" : "warm");
+    return;
+  }
   const aiPlan = planMiaobingPrivateAiTrigger({event, isAdmin});
   if (!aiPlan.shouldCallAi) return;
   await handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest: true});
@@ -1052,11 +1165,22 @@ exports.lineWebhook = onRequest({
           });
           return;
         }
-        const aiPlan = planMiaobingAiTrigger({
+        let aiPlan = planMiaobingAiTrigger({
           event,
           command: eventPlan.command,
           botUserId: payload.destination,
         });
+        if (!aiPlan.shouldCallAi && event && event.message && event.message.type === "text") {
+          const memoryItems = (await getDatabase()
+            .ref("guildDraw/aiMemory/items").get()).val() || {};
+          const memoryPlan = planGroupMemoryTrigger({
+            event,
+            rawItems: memoryItems,
+            command: eventPlan.command,
+            isPublishedDrawQuery: planPublishedDrawQuery(event.message.text).shouldRetrieve,
+          });
+          if (memoryPlan.shouldCallAi) aiPlan = {...memoryPlan, memoryItems};
+        }
         if (aiPlan.shouldCallAi) {
           await handleMiaobingAi({
             event,
