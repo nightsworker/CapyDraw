@@ -9,11 +9,13 @@ const {
   AI_MAX_OUTPUT_TOKENS,
   AI_MINUTE_LIMIT_TEXT,
   AI_MODEL,
+  AI_REASONING_EFFORT,
   generateMiaobingAiReply,
   normalizeAiQuestion,
   planMiaobingAiTrigger,
   planMiaobingPrivateAiTrigger,
   processMiaobingAiRequest,
+  safeOpenAiResponseMeta,
 } = require("../lib/ai");
 const {
   AI_DAILY_LIMIT,
@@ -276,11 +278,37 @@ test("10: OpenAI errors return the safe fixed fallback", async () => {
   assert.equal(JSON.stringify(result).includes("sensitive detail"), false);
 });
 
+test("safe response metadata keeps only status and token diagnostics", () => {
+  const meta = safeOpenAiResponseMeta({
+    status: "incomplete",
+    incomplete_details: {reason: "max_output_tokens"},
+    usage: {
+      output_tokens: 600,
+      output_tokens_details: {reasoning_tokens: 590},
+    },
+    output_text: "private output",
+    instructions: "private prompt",
+    apiKey: "private key",
+  });
+  assert.deepEqual(meta, {
+    status: "incomplete",
+    incompleteReason: "max_output_tokens",
+    outputTokens: 600,
+    reasoningTokens: 590,
+  });
+  assert.equal(JSON.stringify(meta).includes("private"), false);
+});
+
 test("11: a mocked Responses API response returns normal LINE text", async () => {
   let request;
   const client = {responses: {create: async (value) => {
     request = value;
-    return {output_text: "先不要急，船還沒沉。"};
+    return {
+      status: "completed",
+      incomplete_details: null,
+      output_text: "先不要急，船還沒沉。",
+      usage: {output_tokens: 42, output_tokens_details: {reasoning_tokens: 12}},
+    };
   }}};
   const result = await generateMiaobingAiReply({
     apiKey: "test-key-not-real",
@@ -289,23 +317,94 @@ test("11: a mocked Responses API response returns normal LINE text", async () =>
     client,
   });
   assert.equal(result.text, "先不要急，船還沒沉。");
+  assert.deepEqual(result.responseMeta, {
+    status: "completed",
+    incompleteReason: null,
+    outputTokens: 42,
+    reasoningTokens: 12,
+  });
   assert.equal(request.model, AI_MODEL);
+  assert.equal(AI_MAX_OUTPUT_TOKENS, 600);
   assert.equal(request.max_output_tokens, AI_MAX_OUTPUT_TOKENS);
+  assert.equal(AI_REASONING_EFFORT, "minimal");
+  assert.deepEqual(request.reasoning, {effort: AI_REASONING_EFFORT});
   assert.equal(request.store, false);
   assert.equal(request.input, "怎麼辦");
   assert.equal(normalizeAiQuestion("x".repeat(1500)).length, 1000);
 });
 
-test("a successful orchestrated AI response is ready for the LINE reply", async () => {
+test("completed output remains a successful orchestrated LINE reply", async () => {
   let calls = 0;
   const result = await processMiaobingAiRequest({
     apiKey: "test-key-not-real",
     question: "你好",
     reserveUsage: async () => ({allowed: true}),
-    generateReply: async () => { calls += 1; return {text: "在。怎麼了？"}; },
+    generateReply: async () => {
+      calls += 1;
+      return {
+        text: "在。怎麼了？",
+        responseMeta: {
+          status: "completed",
+          incompleteReason: null,
+          outputTokens: 20,
+          reasoningTokens: 5,
+        },
+      };
+    },
   });
   assert.equal(calls, 1);
   assert.deepEqual(result, {text: "在。怎麼了？", calledOpenAI: true, reason: "success"});
+});
+
+test("incomplete empty output returns fallback and safe diagnostics instead of success", async () => {
+  const client = {responses: {create: async () => ({
+    status: "incomplete",
+    incomplete_details: {reason: "max_output_tokens"},
+    output_text: "",
+    usage: {output_tokens: 600, output_tokens_details: {reasoning_tokens: 600}},
+  })}};
+  const generated = await generateMiaobingAiReply({
+    apiKey: "test-key-not-real",
+    question: "比較複雜的問題",
+    rng: () => 0,
+    client,
+  });
+  assert.equal(generated.text, "");
+  const result = await processMiaobingAiRequest({
+    apiKey: "test-key-not-real",
+    question: "比較複雜的問題",
+    reserveUsage: async () => ({allowed: true}),
+    generateReply: async () => generated,
+  });
+  assert.equal(result.text, AI_FALLBACK_TEXT);
+  assert.equal(result.calledOpenAI, true);
+  assert.equal(result.reason, "incomplete-output");
+  assert.deepEqual(result.responseMeta, {
+    status: "incomplete",
+    incompleteReason: "max_output_tokens",
+    outputTokens: 600,
+    reasoningTokens: 600,
+  });
+});
+
+test("completed but empty output is classified as empty-output", async () => {
+  const result = await processMiaobingAiRequest({
+    apiKey: "test-key-not-real",
+    question: "空輸出測試",
+    reserveUsage: async () => ({allowed: true}),
+    generateReply: async () => ({
+      text: "   ",
+      responseMeta: {
+        status: "completed",
+        incompleteReason: null,
+        outputTokens: 10,
+        reasoningTokens: 10,
+      },
+    }),
+  });
+  assert.equal(result.text, AI_FALLBACK_TEXT);
+  assert.equal(result.reason, "empty-output");
+  assert.equal(result.responseMeta.status, "completed");
 });
 
 test("12: mood selection varies and is injectable", () => {

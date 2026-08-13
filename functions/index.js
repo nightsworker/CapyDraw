@@ -334,12 +334,24 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
   const logContext = {
     sourceType,
     isPrivateAdminTest: isPrivateRequest,
-    sender: maskLineUserId(userId),
+    maskedSender: maskLineUserId(userId),
   };
   if (outcome.reason === "openai-error") {
     logger.warn("Miaobing AI request failed", {
       ...logContext,
       ...(outcome.errorMeta || {type: "unknown_error", status: null}),
+    });
+  } else if (outcome.reason === "empty-output" || outcome.reason === "incomplete-output") {
+    logger.warn("Miaobing AI returned no visible output", {
+      ...logContext,
+      result: outcome.reason,
+      trigger: aiPlan.reason,
+      ...(outcome.responseMeta || {
+        status: null,
+        incompleteReason: null,
+        outputTokens: null,
+        reasoningTokens: null,
+      }),
     });
   } else {
     logger.info("Miaobing AI request", {

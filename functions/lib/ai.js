@@ -5,7 +5,8 @@ const {buildMiaobingInstructions, pickMood} = require("./miaobingPersona");
 const {isBotMentioned} = require("./miaobing-personality");
 
 const AI_MODEL = "gpt-5-mini";
-const AI_MAX_OUTPUT_TOKENS = 220;
+const AI_MAX_OUTPUT_TOKENS = 600;
+const AI_REASONING_EFFORT = "minimal";
 const AI_FALLBACK_TEXT = "喵餅剛剛腦袋斷線了，等等再叫我。";
 const AI_COOLDOWN_TEXT = "慢點，喵餅只有一顆腦。";
 const AI_MINUTE_LIMIT_TEXT = "先讓本喵喘口氣，船務處一分鐘只接五張單。";
@@ -15,9 +16,46 @@ function createOpenAiClient(apiKey) {
   return new OpenAI({apiKey, timeout: 12000, maxRetries: 0});
 }
 
-function normalizeAiText(value) {
+function normalizeGeneratedAiText(value) {
   const text = String(value || "").trim();
-  return text ? text.slice(0, 1200) : AI_FALLBACK_TEXT;
+  return text.slice(0, 1200);
+}
+
+function normalizeAiText(value) {
+  return normalizeGeneratedAiText(value) || AI_FALLBACK_TEXT;
+}
+
+function safeMetadataText(value) {
+  const text = String(value || "").trim();
+  return text ? text.slice(0, 80) : null;
+}
+
+function safeTokenCount(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? Math.floor(count) : null;
+}
+
+function normalizeOpenAiResponseMeta(value) {
+  const meta = value && typeof value === "object" ? value : {};
+  return {
+    status: safeMetadataText(meta.status),
+    incompleteReason: safeMetadataText(meta.incompleteReason),
+    outputTokens: safeTokenCount(meta.outputTokens),
+    reasoningTokens: safeTokenCount(meta.reasoningTokens),
+  };
+}
+
+function safeOpenAiResponseMeta(response) {
+  const usage = response && response.usage;
+  return normalizeOpenAiResponseMeta({
+    status: response && response.status,
+    incompleteReason: response && response.incomplete_details &&
+      response.incomplete_details.reason,
+    outputTokens: usage && usage.output_tokens,
+    reasoningTokens: usage && usage.output_tokens_details &&
+      usage.output_tokens_details.reasoning_tokens,
+  });
 }
 
 function normalizeAiQuestion(value) {
@@ -79,9 +117,14 @@ async function generateMiaobingAiReply({apiKey, question, rng = Math.random, cli
     instructions: buildMiaobingInstructions({question: safeQuestion, mood}),
     input: safeQuestion,
     max_output_tokens: AI_MAX_OUTPUT_TOKENS,
+    reasoning: {effort: AI_REASONING_EFFORT},
     store: false,
   });
-  return {text: normalizeAiText(response.output_text), mood};
+  return {
+    text: normalizeGeneratedAiText(response.output_text),
+    mood,
+    responseMeta: safeOpenAiResponseMeta(response),
+  };
 }
 
 function safeOpenAiErrorMeta(error) {
@@ -113,7 +156,18 @@ async function processMiaobingAiRequest({apiKey, question, reserveUsage, generat
     }
     calledOpenAI = true;
     const result = await generateReply({apiKey, question});
-    return {text: normalizeAiText(result && result.text), calledOpenAI: true, reason: "success"};
+    const text = normalizeGeneratedAiText(result && result.text);
+    if (!text) {
+      const responseMeta = normalizeOpenAiResponseMeta(result && result.responseMeta);
+      return {
+        text: AI_FALLBACK_TEXT,
+        calledOpenAI: true,
+        reason: responseMeta.status === "incomplete" || responseMeta.incompleteReason ?
+          "incomplete-output" : "empty-output",
+        responseMeta,
+      };
+    }
+    return {text, calledOpenAI: true, reason: "success"};
   } catch (error) {
     return {
       text: AI_FALLBACK_TEXT,
@@ -131,6 +185,7 @@ module.exports = {
   AI_MAX_OUTPUT_TOKENS,
   AI_MINUTE_LIMIT_TEXT,
   AI_MODEL,
+  AI_REASONING_EFFORT,
   generateMiaobingAiReply,
   normalizeAiQuestion,
   normalizeAiText,
@@ -138,4 +193,5 @@ module.exports = {
   planMiaobingPrivateAiTrigger,
   processMiaobingAiRequest,
   safeOpenAiErrorMeta,
+  safeOpenAiResponseMeta,
 };
