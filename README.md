@@ -215,7 +215,7 @@ Firebase `ADMIN_UID` 與 LINE userId 是不同身份，不能互相比較。先�
 
 API key 必須使用 Firebase Functions v2 Secret `OPENAI_API_KEY`，只綁定到需要 AI 的 `lineWebhook`。不要把 key 寫入 source、`.env`、README、瀏覽器或 log。Responses request 使用 `store: false`、單輪 input 與 output token 上限，不使用 web search、tools、conversation history 或公會 Firebase 資料注入。
 
-成本保護由 server-side `guildDraw/aiUsage` 管理，browser rules 明確禁止讀寫。系統以雜湊後的 LINE user key 執行每人 10 秒 cooldown、每 60 秒最多 5 次，並用同一個 RTDB transaction 原子保留全 Bot 每個 Asia/Taipei 日最多 500 次的額度。限流、缺少 Secret 或 OpenAI timeout／429／5xx 等錯誤都只回固定安全短訊息，不會把問題全文、API key、Authorization header 或完整 OpenAI error 寫入 usage storage 或 log。
+成本保護由 server-side `guildDraw/aiUsage` 管理，browser rules 明確禁止讀寫。系統以雜湊後的 LINE user key 執行每人 10 秒 cooldown、每 60 秒最多 5 次，並用同一個 RTDB transaction 原子保留全 Bot 每個 Asia/Taipei 日最多 150 次的額度。限流、缺少 Secret 或 OpenAI timeout／429／5xx 等錯誤都只回固定安全短訊息，不會把問題全文、API key、Authorization header 或完整 OpenAI error 寫入 usage storage 或 log。
 
 人格 instructions、可注入測試的 mood pool 與 canonical 公會梗分別位於 `functions/lib/miaobingPersona.js` 和 `functions/lib/miaobingJokes.js`。梗可改語氣，但 immutable meaning 不可改；模型不知道的公會事實必須承認不知道，不可捏造成員、規則、歷史或數值。
 

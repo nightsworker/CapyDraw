@@ -91,8 +91,10 @@ test("6: cooldown blocks without calling OpenAI", () =>
 test("7: per-user minute limit blocks without calling OpenAI", () =>
   assertBlockedRequest("minute-limit", AI_MINUTE_LIMIT_TEXT));
 
-test("8: global daily cap blocks without calling OpenAI", () =>
-  assertBlockedRequest("daily-limit", AI_DAILY_LIMIT_TEXT));
+test("8: global daily cap of 150 blocks without calling OpenAI", async () => {
+  assert.equal(AI_DAILY_LIMIT, 150);
+  await assertBlockedRequest("daily-limit", AI_DAILY_LIMIT_TEXT);
+});
 
 test("rate-limit planner enforces cooldown, minute limit, and daily cap atomically", () => {
   const now = 100_000;

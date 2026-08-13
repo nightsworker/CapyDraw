@@ -5,7 +5,7 @@ const crypto = require("node:crypto");
 const AI_COOLDOWN_MS = 10_000;
 const AI_MINUTE_WINDOW_MS = 60_000;
 const AI_MINUTE_LIMIT = 5;
-const AI_DAILY_LIMIT = 500;
+const AI_DAILY_LIMIT = 150;
 
 function taipeiDateKey(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
