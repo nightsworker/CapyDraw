@@ -34,23 +34,74 @@ function drawRecord(id, date = "2026-08-13", overrides = {}) {
   };
 }
 
-function createHistoryRef(initialValue) {
+function createHistoryRef(initialValue, {beforeObserve} = {}) {
   let value = structuredClone(initialValue);
-  let transactions = 0;
+  let gets = 0;
+  let rootTransactions = 0;
+  let childTransactions = 0;
+  let activeListeners = 0;
+  const childKeys = [];
   return {
     get transactions() {
-      return transactions;
+      return childTransactions;
+    },
+    get gets() {
+      return gets;
+    },
+    get rootTransactions() {
+      return rootTransactions;
+    },
+    get activeListeners() {
+      return activeListeners;
+    },
+    get childKeys() {
+      return childKeys;
     },
     get value() {
       return value;
     },
+    async get() {
+      gets += 1;
+      return {val: () => structuredClone(value)};
+    },
     async transaction(update) {
-      transactions += 1;
-      const nextValue = update(value);
-      if (nextValue !== undefined) value = nextValue;
+      rootTransactions += 1;
+      const nextValue = update(null);
       return {
-        committed: nextValue !== undefined,
-        snapshot: {val: () => value},
+        committed: false,
+        snapshot: {val: () => nextValue},
+      };
+    },
+    child(key) {
+      childKeys.push(key);
+      let observing = false;
+      return {
+        on(event, valueHandler) {
+          assert.equal(event, "value");
+          observing = true;
+          activeListeners += 1;
+          if (beforeObserve) value = beforeObserve(value, key);
+          valueHandler({val: () => structuredClone(value[key] ?? null)});
+        },
+        off(event) {
+          assert.equal(event, "value");
+          if (observing) {
+            observing = false;
+            activeListeners -= 1;
+          }
+        },
+        async transaction(update) {
+          childTransactions += 1;
+          // The installed RTDB SDK starts an uncached transaction with null.
+          // An active value listener makes the actual server child available.
+          const currentValue = observing ? structuredClone(value[key] ?? null) : null;
+          const nextValue = update(currentValue);
+          if (nextValue !== undefined) value[key] = nextValue;
+          return {
+            committed: nextValue !== undefined,
+            snapshot: {val: () => structuredClone(value[key] ?? null)},
+          };
+        },
       };
     },
   };
@@ -119,6 +170,13 @@ test("missing recordId returns a not-found plan without changing history", () =>
   assert.equal(isDrawPublishedToLine(history[0]), false);
 });
 
+test("recordId lookup requires an exact string match", () => {
+  assert.equal(planDrawPublicationBackfill(
+    [drawRecord(1786455181162)],
+    {recordId: "1786455181162", publishedAt: PUBLISHED_AT, now: NOW},
+  ).status, "not-found");
+});
+
 test("array history backfills only publication metadata and never calls LINE", async () => {
   const target = drawRecord("legacy-array", "2026-08-13", {lineSendCount: 0});
   const untouched = drawRecord("unpublished-other", "2026-08-12");
@@ -146,7 +204,11 @@ test("array history backfills only publication metadata and never calls LINE", a
   }
 
   const updated = historyRef.value[0];
+  assert.equal(historyRef.gets, 1);
   assert.equal(historyRef.transactions, 1);
+  assert.equal(historyRef.rootTransactions, 0);
+  assert.deepEqual(historyRef.childKeys, ["0"]);
+  assert.equal(historyRef.activeListeners, 0);
   assert.equal(lineCalls, 0);
   assert.equal(updated.lineSentAt, PUBLISHED_AT);
   assert.equal(updated.lineSendCount, 1);
@@ -169,6 +231,42 @@ test("object history finds records by record.id rather than Firebase node key", 
   assert.equal(outcome.status, "updated");
   assert.equal(historyRef.value.unrelatedFirebaseKey.lineSentAt, PUBLISHED_AT);
   assert.equal(historyRef.value.unrelatedFirebaseKey.lastLineSendStatus, "sent");
+});
+
+test("production null-cache regression reads history then transacts only the matched child", async () => {
+  const historyRef = createHistoryRef([
+    drawRecord("unrelated"),
+    drawRecord("1786455181162-de73c1355d6eb"),
+  ]);
+  const outcome = await backfillDrawLinePublication(historyRef, {
+    recordId: "1786455181162-de73c1355d6eb",
+    publishedAt: PUBLISHED_AT,
+    now: NOW,
+  });
+  assert.equal(outcome.status, "updated");
+  assert.equal(historyRef.rootTransactions, 0);
+  assert.deepEqual(historyRef.childKeys, ["1"]);
+  assert.equal(historyRef.value[1].lineSentAt, PUBLISHED_AT);
+  assert.equal(historyRef.value[0].lineSentAt, undefined);
+});
+
+test("a record removed after lookup is not recreated", async () => {
+  const historyRef = createHistoryRef({targetKey: drawRecord("removed")}, {
+    beforeObserve(history) {
+      const nextHistory = {...history};
+      delete nextHistory.targetKey;
+      return nextHistory;
+    },
+  });
+  const outcome = await backfillDrawLinePublication(historyRef, {
+    recordId: "removed",
+    publishedAt: PUBLISHED_AT,
+    now: NOW,
+  });
+  assert.deepEqual(outcome, {status: "not-found"});
+  assert.equal(historyRef.transactions, 0);
+  assert.equal(historyRef.value.targetKey, undefined);
+  assert.equal(historyRef.activeListeners, 0);
 });
 
 test("existing positive lineSendCount is never reduced during backfill", () => {
@@ -204,6 +302,33 @@ test("already published records are returned unchanged", async () => {
   assert.equal(outcome.alreadyPublished, true);
   assert.equal(outcome.publishedAt, "2026-08-12T08:00:00.000Z");
   assert.deepEqual(historyRef.value, before);
+  assert.equal(historyRef.transactions, 0);
+});
+
+test("a concurrently published record is not overwritten", async () => {
+  const concurrentPublishedAt = "2026-08-13T09:00:00.000Z";
+  const historyRef = createHistoryRef({targetKey: drawRecord("concurrent")}, {
+    beforeObserve(history) {
+      return {
+        ...history,
+        targetKey: {
+          ...history.targetKey,
+          lineSentAt: concurrentPublishedAt,
+          lineSendCount: 2,
+          lastLineSendStatus: "sent",
+        },
+      };
+    },
+  });
+  const outcome = await backfillDrawLinePublication(historyRef, {
+    recordId: "concurrent",
+    publishedAt: PUBLISHED_AT,
+    now: NOW,
+  });
+  assert.equal(outcome.status, "already-published");
+  assert.equal(outcome.publishedAt, concurrentPublishedAt);
+  assert.equal(historyRef.value.targetKey.lineSendCount, 2);
+  assert.equal(historyRef.transactions, 0);
 });
 
 test("future and invalid record dates fail closed", () => {

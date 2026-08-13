@@ -67,45 +67,92 @@ function validateRecordDate(record, now) {
   return {ok: true, recordDate: record.date};
 }
 
-function planDrawPublicationBackfill(rawHistory, {recordId, publishedAt, now = new Date()} = {}) {
-  const found = findHistoryEntry(rawHistory, recordId);
-  if (!found) return {status: "not-found"};
-  if (isDrawPublishedToLine(found.record)) {
+function planDrawPublicationRecordBackfill(record, {
+  recordId,
+  publishedAt,
+  now = new Date(),
+} = {}) {
+  if (!record || record.id !== recordId) return {status: "not-found"};
+  if (isDrawPublishedToLine(record)) {
     return {
       status: "already-published",
-      recordDate: found.record.date,
-      publishedAt: found.record.lineSentAt,
+      recordDate: record.date,
+      publishedAt: record.lineSentAt,
       alreadyPublished: true,
     };
   }
-  const dateValidation = validateRecordDate(found.record, now);
-  if (!dateValidation.ok) return {status: dateValidation.reason, recordDate: found.record.date || null};
-
-  const nextHistory = Array.isArray(rawHistory) ? [...rawHistory] : {...rawHistory};
-  nextHistory[found.key] = {
-    ...found.record,
-    lineSentAt: publishedAt,
-    lineSendCount: Math.max(Number(found.record.lineSendCount) || 0, 1),
-    lastLineSendStatus: "sent",
-  };
+  const dateValidation = validateRecordDate(record, now);
+  if (!dateValidation.ok) {
+    return {status: dateValidation.reason, recordDate: record.date || null};
+  }
   return {
     status: "updated",
-    nextHistory,
+    nextRecord: {
+      ...record,
+      lineSentAt: publishedAt,
+      lineSendCount: Math.max(Number(record.lineSendCount) || 0, 1),
+      lastLineSendStatus: "sent",
+    },
     recordDate: dateValidation.recordDate,
     publishedAt,
     alreadyPublished: false,
   };
 }
 
-async function backfillDrawLinePublication(historyRef, options) {
-  let outcome = {status: "not-found"};
-  await historyRef.transaction((currentHistory) => {
-    outcome = planDrawPublicationBackfill(currentHistory, options);
-    return outcome.status === "updated" ? outcome.nextHistory : undefined;
+function planDrawPublicationBackfill(rawHistory, {recordId, publishedAt, now = new Date()} = {}) {
+  const found = findHistoryEntry(rawHistory, recordId);
+  if (!found) return {status: "not-found"};
+  const recordPlan = planDrawPublicationRecordBackfill(found.record, {
+    recordId,
+    publishedAt,
+    now,
   });
-  return Object.fromEntries(
-    Object.entries(outcome).filter(([key]) => key !== "nextHistory"),
-  );
+  if (recordPlan.status !== "updated") return recordPlan;
+
+  const nextHistory = Array.isArray(rawHistory) ? [...rawHistory] : {...rawHistory};
+  nextHistory[found.key] = recordPlan.nextRecord;
+  return {
+    ...recordPlan,
+    nextHistory,
+  };
+}
+
+function observeCurrentValue(ref) {
+  let valueHandler;
+  return new Promise((resolve, reject) => {
+    valueHandler = (snapshot) => resolve({
+      snapshot,
+      release: () => ref.off("value", valueHandler),
+    });
+    const cancelHandler = (error) => {
+      ref.off("value", valueHandler);
+      reject(error);
+    };
+    ref.on("value", valueHandler, cancelHandler);
+  });
+}
+
+async function backfillDrawLinePublication(historyRef, options) {
+  const historySnapshot = await historyRef.get();
+  const found = findHistoryEntry(historySnapshot.val(), options.recordId);
+  if (!found) return {status: "not-found"};
+
+  const recordRef = historyRef.child(String(found.key));
+  const observed = await observeCurrentValue(recordRef);
+  let outcome = {status: "not-found"};
+  try {
+    outcome = planDrawPublicationRecordBackfill(observed.snapshot.val(), options);
+    if (outcome.status === "updated") {
+      await recordRef.transaction((currentRecord) => {
+        outcome = planDrawPublicationRecordBackfill(currentRecord, options);
+        return outcome.status === "updated" ? outcome.nextRecord : undefined;
+      });
+    }
+  } finally {
+    observed.release();
+  }
+  return Object.fromEntries(Object.entries(outcome)
+    .filter(([key]) => key !== "nextRecord"));
 }
 
 module.exports = {
@@ -114,5 +161,6 @@ module.exports = {
   findHistoryEntry,
   normalizePublishedAt,
   planDrawPublicationBackfill,
+  planDrawPublicationRecordBackfill,
   validateBackfillRecordId,
 };
