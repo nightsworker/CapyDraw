@@ -10,6 +10,7 @@ const {assertAdminUid} = require("./lib/admin");
 const {
   generateMiaobingAiReply,
   planMiaobingAiTrigger,
+  planMiaobingPrivateAiTrigger,
   processMiaobingAiRequest,
 } = require("./lib/ai");
 const {reserveAiUsage} = require("./lib/aiRateLimit");
@@ -29,6 +30,7 @@ const {
   decideLineGroupAction,
   findMembersByLineName,
   listBindingRecords,
+  maskLineUserId,
   normalizeMemberName,
   parseAdminBindArguments,
   planWebhookEvent,
@@ -302,15 +304,20 @@ async function handleMiaobingPersonality({event, botUserId, token}) {
   await replyMessages(event.replyToken, [message], token);
 }
 
-async function handleMiaobingAi({event, aiPlan, token}) {
+async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = false}) {
   if (!aiPlan || !aiPlan.shouldCallAi || !event || !event.source) return;
+  const sourceType = event.source.type;
   const groupId = event.source.groupId;
   const userId = event.source.userId;
-  if (!isFirebaseSafeKey(groupId) || !isFirebaseSafeKey(userId)) return;
+  const isGroupRequest = sourceType === "group" && isFirebaseSafeKey(groupId);
+  const isPrivateRequest = sourceType === "user" && isPrivateAdminTest === true;
+  if ((!isGroupRequest && !isPrivateRequest) || !isFirebaseSafeKey(userId)) return;
 
   const db = getDatabase();
-  const enabledValue = (await db.ref(`guildDraw/linePersonality/${groupId}/enabled`).get()).val();
-  if (!isPersonalityEnabled(enabledValue)) return;
+  if (isGroupRequest) {
+    const enabledValue = (await db.ref(`guildDraw/linePersonality/${groupId}/enabled`).get()).val();
+    if (!isPersonalityEnabled(enabledValue)) return;
+  }
 
   let apiKey = "";
   try {
@@ -324,12 +331,35 @@ async function handleMiaobingAi({event, aiPlan, token}) {
     reserveUsage: () => reserveAiUsage(db.ref("guildDraw/aiUsage"), userId),
     generateReply: ({apiKey: key, question}) => generateMiaobingAiReply({apiKey: key, question}),
   });
+  const logContext = {
+    sourceType,
+    isPrivateAdminTest: isPrivateRequest,
+    sender: maskLineUserId(userId),
+  };
   if (outcome.reason === "openai-error") {
-    logger.warn("Miaobing AI request failed", outcome.errorMeta || {type: "unknown_error", status: null});
+    logger.warn("Miaobing AI request failed", {
+      ...logContext,
+      ...(outcome.errorMeta || {type: "unknown_error", status: null}),
+    });
   } else {
-    logger.info("Miaobing AI request", {result: outcome.reason, trigger: aiPlan.reason});
+    logger.info("Miaobing AI request", {
+      ...logContext,
+      result: outcome.reason,
+      trigger: aiPlan.reason,
+    });
   }
   await replyText(event.replyToken, outcome.text, token);
+}
+
+async function handleMiaobingPrivateAdminAi(event, token) {
+  if (!event || event.type !== "message" || !event.message || event.message.type !== "text" ||
+      !event.source || event.source.type !== "user" || !isFirebaseSafeKey(event.source.userId)) return;
+  const adminLineUserIds = (await getDatabase()
+    .ref("guildDraw/lineSettings/adminLineUserIds").get()).val() || {};
+  const isAdmin = isLineBotAdmin(adminLineUserIds, event.source.userId);
+  const aiPlan = planMiaobingPrivateAiTrigger({event, isAdmin});
+  if (!aiPlan.shouldCallAi) return;
+  await handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest: true});
 }
 
 async function fetchGroupMemberProfile(groupId, userId, token) {
@@ -888,6 +918,10 @@ exports.lineWebhook = onRequest({
   try {
     const events = Array.isArray(payload.events) ? payload.events : [];
     await Promise.all(events.map(async (event) => {
+      if (event && event.source && event.source.type === "user") {
+        await handleMiaobingPrivateAdminAi(event, LINE_CHANNEL_ACCESS_TOKEN.value());
+        return;
+      }
       const eventPlan = planWebhookEvent(event);
       if (eventPlan.joinGroup) {
         await handleLineGroupJoin(event, LINE_CHANNEL_ACCESS_TOKEN.value());

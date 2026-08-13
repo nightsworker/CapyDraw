@@ -12,6 +12,7 @@ const {
   generateMiaobingAiReply,
   normalizeAiQuestion,
   planMiaobingAiTrigger,
+  planMiaobingPrivateAiTrigger,
   processMiaobingAiRequest,
 } = require("../lib/ai");
 const {
@@ -23,13 +24,23 @@ const {
 } = require("../lib/aiRateLimit");
 const {MIAOBING_JOKES} = require("../lib/miaobingJokes");
 const {MIAOBING_MOODS, buildMiaobingInstructions, pickMood} = require("../lib/miaobingPersona");
-const {parseBotCommand} = require("../lib/line");
+const {parseBotCommand, planWebhookEvent} = require("../lib/line");
+const {isLineBotAdmin} = require("../lib/line-sync");
 
 function textEvent(text, messageExtra = {}) {
   return {
     type: "message",
     replyToken: "reply-token",
     source: {type: "group", groupId: "C_GROUP_A", userId: "U_MEMBER_A"},
+    message: {type: "text", text, ...messageExtra},
+  };
+}
+
+function privateTextEvent(text, messageExtra = {}) {
+  return {
+    type: "message",
+    replyToken: "private-reply-token",
+    source: {type: "user", userId: "U_ADMIN"},
     message: {type: "text", text, ...messageExtra},
   };
 }
@@ -72,6 +83,96 @@ test("5: existing commands always take priority over AI", () => {
   });
 });
 
+test("group AI trigger behavior remains separate from private admin mode", () => {
+  const event = textEvent("今晚九點有人嗎");
+  assert.equal(planMiaobingAiTrigger({event}).reason, "not-addressed");
+  assert.deepEqual(planMiaobingPrivateAiTrigger({event, isAdmin: true}), {
+    shouldCallAi: false,
+    reason: "unsupported-event",
+  });
+});
+
+test("LINE Bot admin private text triggers AI without a Miaobing prefix", () => {
+  const adminLineUserIds = {U_ADMIN: true};
+  const plan = planMiaobingPrivateAiTrigger({
+    event: privateTextEvent("第四船艙要做什麼"),
+    isAdmin: isLineBotAdmin(adminLineUserIds, "U_ADMIN"),
+  });
+  assert.deepEqual(plan, {
+    shouldCallAi: true,
+    reason: "private-admin",
+    question: "第四船艙要做什麼",
+  });
+});
+
+test("LINE Bot admin private text accepts and strips the Miaobing prefix", () => {
+  assert.deepEqual(planMiaobingPrivateAiTrigger({
+    event: privateTextEvent("喵餅 你好"),
+    isAdmin: true,
+  }), {
+    shouldCallAi: true,
+    reason: "private-admin",
+    question: "你好",
+  });
+});
+
+test("non-admin private text stays silent and cannot reach the AI pipeline", () => {
+  const plan = planMiaobingPrivateAiTrigger({
+    event: privateTextEvent("你好"),
+    isAdmin: isLineBotAdmin({}, "U_ADMIN"),
+  });
+  let calls = 0;
+  if (plan.shouldCallAi) calls += 1;
+  assert.deepEqual(plan, {shouldCallAi: false, reason: "not-admin"});
+  assert.equal(calls, 0);
+  assert.equal(Object.hasOwn(plan, "replyText"), false);
+});
+
+test("private command-looking text never enters command or guild mutation routing", () => {
+  const event = privateTextEvent("!同步");
+  assert.deepEqual(planWebhookEvent(event), {
+    joinGroup: false,
+    observeMember: false,
+    command: null,
+  });
+  const plan = planMiaobingPrivateAiTrigger({event, isAdmin: true});
+  assert.equal(plan.shouldCallAi, true);
+  assert.equal(Object.hasOwn(plan, "groupId"), false);
+  assert.equal(Object.hasOwn(plan, "defaultGroupId"), false);
+  assert.equal(Object.hasOwn(plan, "binding"), false);
+});
+
+test("non-text private events are ignored", () => {
+  const event = privateTextEvent("");
+  event.message = {type: "sticker", id: "sticker"};
+  assert.deepEqual(planMiaobingPrivateAiTrigger({event, isAdmin: true}), {
+    shouldCallAi: false,
+    reason: "unsupported-event",
+  });
+});
+
+test("private AI tests use the production generator, persona, and canon", async () => {
+  let request;
+  const client = {responses: {create: async (value) => {
+    request = value;
+    return {output_text: "三張船票，一張都不能少。"};
+  }}};
+  const plan = planMiaobingPrivateAiTrigger({
+    event: privateTextEvent("第四船艙要捐幾張船票？"),
+    isAdmin: true,
+  });
+  const result = await generateMiaobingAiReply({
+    apiKey: "test-key-not-real",
+    question: plan.question,
+    rng: () => 0,
+    client,
+  });
+  assert.equal(result.text, "三張船票，一張都不能少。");
+  assert.equal(request.model, AI_MODEL);
+  assert.equal(request.max_output_tokens, AI_MAX_OUTPUT_TOKENS);
+  assert.match(request.instructions, /數字 3 絕對不可改/u);
+});
+
 async function assertBlockedRequest(reason, expectedText) {
   let calls = 0;
   const result = await processMiaobingAiRequest({
@@ -84,6 +185,27 @@ async function assertBlockedRequest(reason, expectedText) {
   assert.equal(result.calledOpenAI, false);
   assert.equal(result.text, expectedText);
 }
+
+test("private AI requests keep the existing limits and safe fallback", async () => {
+  for (const [reason, expectedText] of [
+    ["cooldown", AI_COOLDOWN_TEXT],
+    ["minute-limit", AI_MINUTE_LIMIT_TEXT],
+    ["daily-limit", AI_DAILY_LIMIT_TEXT],
+  ]) {
+    await assertBlockedRequest(reason, expectedText);
+  }
+  const result = await processMiaobingAiRequest({
+    apiKey: "test-key-not-real",
+    question: "私訊測試",
+    reserveUsage: async () => ({allowed: true}),
+    generateReply: async () => {
+      throw Object.assign(new Error("hidden detail"), {status: 500});
+    },
+  });
+  assert.equal(result.text, AI_FALLBACK_TEXT);
+  assert.equal(result.reason, "openai-error");
+  assert.equal(JSON.stringify(result).includes("hidden detail"), false);
+});
 
 test("6: cooldown blocks without calling OpenAI", () =>
   assertBlockedRequest("cooldown", AI_COOLDOWN_TEXT));

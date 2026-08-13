@@ -50,6 +50,21 @@ function planMiaobingAiTrigger({event, command, botUserId} = {}) {
   };
 }
 
+function planMiaobingPrivateAiTrigger({event, isAdmin = false} = {}) {
+  if (!event || event.type !== "message" || !event.message || event.message.type !== "text" ||
+      !event.source || event.source.type !== "user" || !event.source.userId) {
+    return {shouldCallAi: false, reason: "unsupported-event"};
+  }
+  if (!isAdmin) return {shouldCallAi: false, reason: "not-admin"};
+  const text = String(event.message.text || "").trim();
+  if (!text) return {shouldCallAi: false, reason: "unsupported-event"};
+  return {
+    shouldCallAi: true,
+    reason: "private-admin",
+    question: stripMiaobingCallPrefix(text) || "有人叫你，請簡短回應。",
+  };
+}
+
 async function generateMiaobingAiReply({apiKey, question, rng = Math.random, client} = {}) {
   if (!String(apiKey || "").trim()) {
     const error = new Error("OpenAI API key is unavailable.");
@@ -120,6 +135,7 @@ module.exports = {
   normalizeAiQuestion,
   normalizeAiText,
   planMiaobingAiTrigger,
+  planMiaobingPrivateAiTrigger,
   processMiaobingAiRequest,
   safeOpenAiErrorMeta,
 };

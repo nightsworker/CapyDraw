@@ -213,6 +213,10 @@ Firebase `ADMIN_UID` 與 LINE userId 是不同身份，不能互相比較。先�
 
 `lineWebhook` 使用官方 `openai` npm package 與 OpenAI Responses API，預設模型為 `gpt-5-mini`。只有群組文字以「喵餅」明確開頭，或 LINE webhook 提供可靠的 Bot true mention metadata 時才會呼叫 AI；一般群聊、圖片、貼圖與既有 `!` command 都不會產生 OpenAI request。正式 command 永遠優先，人格睡覺／喚醒控制也維持既有 routing。
 
+### Admin Private AI Test Mode
+
+列在既有 `guildDraw/lineSettings/adminLineUserIds` 的 LINE Bot Admin，可以直接私訊官方帳號測試正式 Miaobing AI；私訊文字不需要加「喵餅」前綴，並完整沿用正式模型、persona、canon、fallback 與 AI rate limits（包含每日 150 次上限）。Private mode 是 read-only，不會進入 command、binding 或公會 mutation routing，也不會讀寫 `defaultGroupId`；非 admin 私訊與所有非文字私訊都會安靜忽略。
+
 API key 必須使用 Firebase Functions v2 Secret `OPENAI_API_KEY`，只綁定到需要 AI 的 `lineWebhook`。不要把 key 寫入 source、`.env`、README、瀏覽器或 log。Responses request 使用 `store: false`、單輪 input 與 output token 上限，不使用 web search、tools、conversation history 或公會 Firebase 資料注入。
 
 成本保護由 server-side `guildDraw/aiUsage` 管理，browser rules 明確禁止讀寫。系統以雜湊後的 LINE user key 執行每人 10 秒 cooldown、每 60 秒最多 5 次，並用同一個 RTDB transaction 原子保留全 Bot 每個 Asia/Taipei 日最多 150 次的額度。限流、缺少 Secret 或 OpenAI timeout／429／5xx 等錯誤都只回固定安全短訊息，不會把問題全文、API key、Authorization header 或完整 OpenAI error 寫入 usage storage 或 log。
