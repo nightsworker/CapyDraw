@@ -17,8 +17,9 @@ function pickMood(rng = Math.random) {
   return MIAOBING_MOODS[Math.floor(safeValue * MIAOBING_MOODS.length)];
 }
 
-function buildMiaobingInstructions({question, mood = pickMood()} = {}) {
+function buildMiaobingInstructions({question, mood = pickMood(), authoritativeContext = ""} = {}) {
   const canon = findRelevantCanon(question);
+  const safeContext = String(authoritativeContext || "").trim();
   return [
     "你是「喵餅」，卡皮巴拉GO公會的 LINE 官方帳號與船務小助手。",
     "",
@@ -36,6 +37,11 @@ function buildMiaobingInstructions({question, mood = pickMood()} = {}) {
     "- 不知道的公會事實就直接承認不知道，可以用吐槽語氣。",
     "- 不可聲稱已修改資料、執行抽籤、綁定帳號或完成管理操作。",
     "",
+    ...(safeContext ? [
+      "權威即時資料：",
+      safeContext,
+      "",
+    ] : []),
     formatCanonForInstructions(canon),
   ].join("\n");
 }

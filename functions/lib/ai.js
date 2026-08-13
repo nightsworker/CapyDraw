@@ -103,7 +103,13 @@ function planMiaobingPrivateAiTrigger({event, isAdmin = false} = {}) {
   };
 }
 
-async function generateMiaobingAiReply({apiKey, question, rng = Math.random, client} = {}) {
+async function generateMiaobingAiReply({
+  apiKey,
+  question,
+  authoritativeContext = "",
+  rng = Math.random,
+  client,
+} = {}) {
   if (!String(apiKey || "").trim()) {
     const error = new Error("OpenAI API key is unavailable.");
     error.code = "missing_openai_api_key";
@@ -114,7 +120,11 @@ async function generateMiaobingAiReply({apiKey, question, rng = Math.random, cli
   const openai = client || createOpenAiClient(apiKey);
   const response = await openai.responses.create({
     model: AI_MODEL,
-    instructions: buildMiaobingInstructions({question: safeQuestion, mood}),
+    instructions: buildMiaobingInstructions({
+      question: safeQuestion,
+      mood,
+      authoritativeContext,
+    }),
     input: safeQuestion,
     max_output_tokens: AI_MAX_OUTPUT_TOKENS,
     reasoning: {effort: AI_REASONING_EFFORT},

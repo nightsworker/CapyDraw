@@ -15,6 +15,10 @@ const {
 } = require("./lib/ai");
 const {reserveAiUsage} = require("./lib/aiRateLimit");
 const {
+  planPublishedDrawQuery,
+  resolvePublishedDrawKnowledge,
+} = require("./lib/drawKnowledge");
+const {
   buildAdminBindingSuccessText,
   buildAdminUnbindSuccessText,
   bindingKeyForGroup,
@@ -329,7 +333,26 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
     apiKey,
     question: aiPlan.question,
     reserveUsage: () => reserveAiUsage(db.ref("guildDraw/aiUsage"), userId),
-    generateReply: ({apiKey: key, question}) => generateMiaobingAiReply({apiKey: key, question}),
+    generateReply: async ({apiKey: key, question}) => {
+      const drawPlan = planPublishedDrawQuery(question);
+      let authoritativeContext = "";
+      if (drawPlan.shouldRetrieve) {
+        const historyRef = db.ref("guildDraw/main/history");
+        const historyQuery = drawPlan.mode === "date" ?
+          historyRef.orderByChild("date").equalTo(drawPlan.date) :
+          historyRef.orderByChild("lineSentAt").limitToLast(50);
+        const historySnapshot = await historyQuery.get();
+        authoritativeContext = resolvePublishedDrawKnowledge(
+          historySnapshot.val(),
+          drawPlan,
+        ).context;
+      }
+      return generateMiaobingAiReply({
+        apiKey: key,
+        question,
+        authoritativeContext,
+      });
+    },
   });
   const logContext = {
     sourceType,
