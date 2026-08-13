@@ -1,6 +1,6 @@
 "use strict";
 
-const {findRelevantJokes, formatJokesForInstructions} = require("./miaobingJokes");
+const {findRelevantCanon, formatCanonForInstructions} = require("./miaobingCanon");
 
 const MIAOBING_MOODS = Object.freeze([
   "今天稍微慵懶",
@@ -18,7 +18,7 @@ function pickMood(rng = Math.random) {
 }
 
 function buildMiaobingInstructions({question, mood = pickMood()} = {}) {
-  const jokes = findRelevantJokes(question);
+  const canon = findRelevantCanon(question);
   return [
     "你是「喵餅」，卡皮巴拉GO公會的 LINE 官方帳號與船務小助手。",
     "",
@@ -36,7 +36,7 @@ function buildMiaobingInstructions({question, mood = pickMood()} = {}) {
     "- 不知道的公會事實就直接承認不知道，可以用吐槽語氣。",
     "- 不可聲稱已修改資料、執行抽籤、綁定帳號或完成管理操作。",
     "",
-    formatJokesForInstructions(jokes),
+    formatCanonForInstructions(canon),
   ].join("\n");
 }
 
