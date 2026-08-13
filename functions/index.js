@@ -8,6 +8,12 @@ const {getAuth} = require("firebase-admin/auth");
 const {getDatabase, ServerValue} = require("firebase-admin/database");
 const {assertAdminUid} = require("./lib/admin");
 const {
+  generateMiaobingAiReply,
+  planMiaobingAiTrigger,
+  processMiaobingAiRequest,
+} = require("./lib/ai");
+const {reserveAiUsage} = require("./lib/aiRateLimit");
+const {
   buildAdminBindingSuccessText,
   buildAdminUnbindSuccessText,
   bindingKeyForGroup,
@@ -81,6 +87,7 @@ const REGION = "asia-southeast1";
 const LINE_API_BASE = "https://api.line.me/v2/bot";
 const LINE_CHANNEL_ACCESS_TOKEN = defineSecret("LINE_CHANNEL_ACCESS_TOKEN");
 const LINE_CHANNEL_SECRET = defineSecret("LINE_CHANNEL_SECRET");
+const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
 const ALLOWED_ORIGIN = defineString("ALLOWED_ORIGIN");
 const ADMIN_UID = defineString("ADMIN_UID");
 
@@ -293,6 +300,36 @@ async function handleMiaobingPersonality({event, botUserId, token}) {
 
   logger.info("Miaobing personality reply", {kind: plan.kind, intent: plan.intent});
   await replyMessages(event.replyToken, [message], token);
+}
+
+async function handleMiaobingAi({event, aiPlan, token}) {
+  if (!aiPlan || !aiPlan.shouldCallAi || !event || !event.source) return;
+  const groupId = event.source.groupId;
+  const userId = event.source.userId;
+  if (!isFirebaseSafeKey(groupId) || !isFirebaseSafeKey(userId)) return;
+
+  const db = getDatabase();
+  const enabledValue = (await db.ref(`guildDraw/linePersonality/${groupId}/enabled`).get()).val();
+  if (!isPersonalityEnabled(enabledValue)) return;
+
+  let apiKey = "";
+  try {
+    apiKey = OPENAI_API_KEY.value();
+  } catch {
+    apiKey = "";
+  }
+  const outcome = await processMiaobingAiRequest({
+    apiKey,
+    question: aiPlan.question,
+    reserveUsage: () => reserveAiUsage(db.ref("guildDraw/aiUsage"), userId),
+    generateReply: ({apiKey: key, question}) => generateMiaobingAiReply({apiKey: key, question}),
+  });
+  if (outcome.reason === "openai-error") {
+    logger.warn("Miaobing AI request failed", outcome.errorMeta || {type: "unknown_error", status: null});
+  } else {
+    logger.info("Miaobing AI request", {result: outcome.reason, trigger: aiPlan.reason});
+  }
+  await replyText(event.replyToken, outcome.text, token);
 }
 
 async function fetchGroupMemberProfile(groupId, userId, token) {
@@ -826,7 +863,7 @@ async function handleBindingCommand(event, command, token, observedProfile, send
 
 exports.lineWebhook = onRequest({
   region: REGION,
-  secrets: [LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN],
+  secrets: [LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN, OPENAI_API_KEY],
   timeoutSeconds: 30,
 }, async (req, res) => {
   if (req.method !== "POST") {
@@ -869,6 +906,29 @@ exports.lineWebhook = onRequest({
         if (profile) await rememberObservedMember(event, profile);
       }
       if (!eventPlan.command) {
+        const control = event && event.message && event.message.type === "text" ?
+          detectPersonalityControl(event.message.text) : null;
+        if (control) {
+          await handleMiaobingPersonality({
+            event,
+            botUserId: payload.destination,
+            token: LINE_CHANNEL_ACCESS_TOKEN.value(),
+          });
+          return;
+        }
+        const aiPlan = planMiaobingAiTrigger({
+          event,
+          command: eventPlan.command,
+          botUserId: payload.destination,
+        });
+        if (aiPlan.shouldCallAi) {
+          await handleMiaobingAi({
+            event,
+            aiPlan,
+            token: LINE_CHANNEL_ACCESS_TOKEN.value(),
+          });
+          return;
+        }
         await handleMiaobingPersonality({
           event,
           botUserId: payload.destination,

@@ -26,6 +26,10 @@
       "linePersonality": {
         ".read": false,
         ".write": false
+      },
+      "aiUsage": {
+        ".read": false,
+        ".write": false
       }
     }
   }

@@ -209,6 +209,16 @@ Firebase `ADMIN_UID` 與 LINE userId 是不同身份，不能互相比較。先�
 
 前端只把 `getLineBindings` 回傳的 `bindingId` 與目標 `enabled` 狀態傳給既有 `setLineBotAdmin`。後端仍驗證 Firebase ID Token 與 `ADMIN_UID` allowlist，再從 binding 取得 lineUserId，並只在 server-side 更新 `guildDraw/lineSettings/adminLineUserIds/{lineUserId}`；browser 不能直接寫 RTDB。`getLineBindings` 只回傳 `isLineBotAdmin` 與遮罩後的 userId，不會公開完整 lineUserId。不要把完整 lineUserId、Channel Access Token、Channel Secret 或 Authorization header 寫入 repo、前端或 log。
 
+## Miaobing AI
+
+`lineWebhook` 使用官方 `openai` npm package 與 OpenAI Responses API，預設模型為 `gpt-5-mini`。只有群組文字以「喵餅」明確開頭，或 LINE webhook 提供可靠的 Bot true mention metadata 時才會呼叫 AI；一般群聊、圖片、貼圖與既有 `!` command 都不會產生 OpenAI request。正式 command 永遠優先，人格睡覺／喚醒控制也維持既有 routing。
+
+API key 必須使用 Firebase Functions v2 Secret `OPENAI_API_KEY`，只綁定到需要 AI 的 `lineWebhook`。不要把 key 寫入 source、`.env`、README、瀏覽器或 log。Responses request 使用 `store: false`、單輪 input 與 output token 上限，不使用 web search、tools、conversation history 或公會 Firebase 資料注入。
+
+成本保護由 server-side `guildDraw/aiUsage` 管理，browser rules 明確禁止讀寫。系統以雜湊後的 LINE user key 執行每人 10 秒 cooldown、每 60 秒最多 5 次，並用同一個 RTDB transaction 原子保留全 Bot 每個 Asia/Taipei 日最多 500 次的額度。限流、缺少 Secret 或 OpenAI timeout／429／5xx 等錯誤都只回固定安全短訊息，不會把問題全文、API key、Authorization header 或完整 OpenAI error 寫入 usage storage 或 log。
+
+人格 instructions、可注入測試的 mood pool 與 canonical 公會梗分別位於 `functions/lib/miaobingPersona.js` 和 `functions/lib/miaobingJokes.js`。梗可改語氣，但 immutable meaning 不可改；模型不知道的公會事實必須承認不知道，不可捏造成員、規則、歷史或數值。
+
 ## 喵餅人格系統
 
 喵餅是住在公會船上的「公會會貓」：嘴上嫌麻煩，實際會把名冊、綁定與管理工作處理好；核心台詞是「會長管人，本喵管會長」。人格內容集中在 `functions/lib/miaobing-personality.js`，`lineWebhook` 只負責依優先順序 routing，不會把 response pools 散落在 webhook。
