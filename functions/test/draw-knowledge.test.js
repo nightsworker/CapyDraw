@@ -8,6 +8,7 @@ const {
   findPublishedDrawByDate,
   isDrawPublishedToLine,
   listPublishedDrawRecords,
+  loadPublishedDrawKnowledge,
   planPublishedDrawQuery,
   resolvePublishedDrawKnowledge,
   resolveRequestedDrawDate,
@@ -117,6 +118,57 @@ test("date resolution uses Asia/Taipei for today, yesterday, future and explicit
   assert.equal(resolveRequestedDrawDate("2025-12-31 船長", NOW), "2025-12-31");
 });
 
+test("unindexed retrieval uses only historyRef.get and resolves the requested published date", async () => {
+  let reads = 0;
+  const historyRef = {
+    get: async () => {
+      reads += 1;
+      return {val: () => ({
+        hidden: hiddenRecord("2026-08-13"),
+        published: publishedRecord("2026-08-13", {
+          captain: "Target Captain - 指定日期船長",
+        }),
+        other: publishedRecord("2026-08-12"),
+      })};
+    },
+  };
+  const knowledge = await loadPublishedDrawKnowledge(
+    historyRef,
+    planPublishedDrawQuery("今天船長是誰？", NOW),
+  );
+  assert.equal(reads, 1);
+  assert.equal(knowledge.record.captain, "Target Captain - 指定日期船長");
+  HIDDEN_NAMES.forEach((name) => assert.equal(knowledge.context.includes(name), false));
+});
+
+test("unindexed retrieval resolves latest from published records only", async () => {
+  const historyRef = {get: async () => ({val: () => ({
+    old: publishedRecord("2026-08-10"),
+    latest: publishedRecord("2026-08-12", {captain: "Latest Captain - 最新船長"}),
+    newerHidden: hiddenRecord("2026-08-14"),
+  })})};
+  const knowledge = await loadPublishedDrawKnowledge(
+    historyRef,
+    planPublishedDrawQuery("最近一次抽籤結果？", NOW),
+  );
+  assert.equal(knowledge.record.captain, "Latest Captain - 最新船長");
+  HIDDEN_NAMES.forEach((name) => assert.equal(knowledge.context.includes(name), false));
+});
+
+test("ordinary AI questions never read draw history", async () => {
+  let reads = 0;
+  const historyRef = {get: async () => {
+    reads += 1;
+    return {val: () => ({})};
+  }};
+  const knowledge = await loadPublishedDrawKnowledge(
+    historyRef,
+    planPublishedDrawQuery("你好", NOW),
+  );
+  assert.equal(reads, 0);
+  assert.deepEqual(knowledge, {record: null, context: ""});
+});
+
 test("D/E/F: group and admin private queries cannot retrieve today's hidden names", () => {
   const history = [hiddenRecord("2026-08-13")];
   for (const sourceType of ["group", "user"]) {
@@ -171,7 +223,10 @@ test("J: latest lookup ignores newer unpublished records", () => {
 });
 
 test("K: unpublished names are completely absent from the mocked OpenAI request", async () => {
-  const history = [hiddenRecord("2026-08-13")];
+  const history = [
+    hiddenRecord("2026-08-13"),
+    publishedRecord("2026-08-13", {captain: "Public Captain - 公開船長"}),
+  ];
   const plan = planPublishedDrawQuery("今天抽籤結果？", NOW);
   const {context} = resolvePublishedDrawKnowledge(history, plan);
   let request;
@@ -188,8 +243,9 @@ test("K: unpublished names are completely absent from the mocked OpenAI request"
   });
   const payload = JSON.stringify(request);
   HIDDEN_NAMES.forEach((name) => assert.equal(payload.includes(name), false));
+  assert.equal(payload.includes("Public Captain - 公開船長"), true);
   assert.match(request.instructions, /PUBLISHED DRAW DATA — AUTHORITATIVE/u);
-  assert.match(request.instructions, /沒有可公開的/u);
+  assert.match(request.instructions, /船長：Public Captain - 公開船長/u);
 });
 
 test("published lookup normalizes arrays and objects without exposing internal fields", () => {

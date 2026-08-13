@@ -155,12 +155,20 @@ function resolvePublishedDrawKnowledge(rawHistory, queryPlan) {
   return {record, context: buildPublishedDrawContext(record, plan)};
 }
 
+async function loadPublishedDrawKnowledge(historyRef, queryPlan) {
+  const plan = queryPlan && queryPlan.shouldRetrieve ? queryPlan : null;
+  if (!plan) return {record: null, context: ""};
+  const historySnapshot = await historyRef.get();
+  return resolvePublishedDrawKnowledge(historySnapshot.val(), plan);
+}
+
 module.exports = {
   buildPublishedDrawContext,
   findLatestPublishedDraw,
   findPublishedDrawByDate,
   isDrawPublishedToLine,
   listPublishedDrawRecords,
+  loadPublishedDrawKnowledge,
   planPublishedDrawQuery,
   resolvePublishedDrawKnowledge,
   resolveRequestedDrawDate,

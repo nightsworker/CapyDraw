@@ -15,8 +15,8 @@ const {
 } = require("./lib/ai");
 const {reserveAiUsage} = require("./lib/aiRateLimit");
 const {
+  loadPublishedDrawKnowledge,
   planPublishedDrawQuery,
-  resolvePublishedDrawKnowledge,
 } = require("./lib/drawKnowledge");
 const {
   buildAdminBindingSuccessText,
@@ -337,15 +337,10 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
       const drawPlan = planPublishedDrawQuery(question);
       let authoritativeContext = "";
       if (drawPlan.shouldRetrieve) {
-        const historyRef = db.ref("guildDraw/main/history");
-        const historyQuery = drawPlan.mode === "date" ?
-          historyRef.orderByChild("date").equalTo(drawPlan.date) :
-          historyRef.orderByChild("lineSentAt").limitToLast(50);
-        const historySnapshot = await historyQuery.get();
-        authoritativeContext = resolvePublishedDrawKnowledge(
-          historySnapshot.val(),
+        authoritativeContext = (await loadPublishedDrawKnowledge(
+          db.ref("guildDraw/main/history"),
           drawPlan,
-        ).context;
+        )).context;
       }
       return generateMiaobingAiReply({
         apiKey: key,
