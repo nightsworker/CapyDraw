@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const {assertAdminUid} = require("../lib/admin");
 const {
@@ -331,15 +333,37 @@ test("a concurrently published record is not overwritten", async () => {
   assert.equal(historyRef.transactions, 0);
 });
 
-test("future and invalid record dates fail closed", () => {
-  assert.equal(planDrawPublicationBackfill(
-    [drawRecord("future", "2026-08-14")],
-    {recordId: "future", publishedAt: PUBLISHED_AT, now: NOW},
-  ).status, "future-record");
+test("a future draw date can be backfilled and becomes published", async () => {
+  const target = drawRecord("future", "2026-08-14");
+  const historyRef = createHistoryRef([target]);
+  const outcome = await backfillDrawLinePublication(historyRef, {
+    recordId: "future",
+    publishedAt: PUBLISHED_AT,
+    now: NOW,
+  });
+  assert.equal(outcome.status, "updated");
+  assert.equal(outcome.recordDate, "2026-08-14");
+  assert.equal(isDrawPublishedToLine(historyRef.value[0]), true);
+  assert.deepEqual(
+    withoutPublicationMetadata(historyRef.value[0]),
+    withoutPublicationMetadata(target),
+  );
+});
+
+test("a malformed record date still fails closed", () => {
   assert.equal(planDrawPublicationBackfill(
     [drawRecord("invalid", "2026-02-30")],
     {recordId: "invalid", publishedAt: PUBLISHED_AT, now: NOW},
   ).status, "invalid-record-date");
+});
+
+test("sendDrawToLine has no future draw-date rejection", () => {
+  const indexSource = fs.readFileSync(path.resolve(__dirname, "../index.js"), "utf8");
+  const handler = indexSource.match(
+    /exports\.sendDrawToLine[\s\S]*?(?=exports\.backfillDrawLinePublished)/u,
+  );
+  assert.ok(handler, "sendDrawToLine handler should exist");
+  assert.doesNotMatch(handler[0], /future-record|record\.date\s*>|taipeiDateKey/u);
 });
 
 test("AI sees the backfilled record but not another legacy unpublished record", async () => {

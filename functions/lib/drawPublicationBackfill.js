@@ -2,7 +2,6 @@
 
 const {
   isDrawPublishedToLine,
-  taipeiDateKey,
 } = require("./drawKnowledge");
 
 const FUTURE_CLOCK_TOLERANCE_MS = 5 * 60 * 1000;
@@ -58,19 +57,17 @@ function findHistoryEntry(rawHistory, recordId) {
   return key === undefined ? null : {key, record: rawHistory[key]};
 }
 
-function validateRecordDate(record, now) {
+function validateRecordDate(record) {
   const match = String(record && record.date || "").match(DATE_KEY_PATTERN);
   if (!match || !isValidDateParts(Number(match[1]), Number(match[2]), Number(match[3]))) {
     return {ok: false, reason: "invalid-record-date"};
   }
-  if (record.date > taipeiDateKey(now)) return {ok: false, reason: "future-record"};
   return {ok: true, recordDate: record.date};
 }
 
 function planDrawPublicationRecordBackfill(record, {
   recordId,
   publishedAt,
-  now = new Date(),
 } = {}) {
   if (!record || record.id !== recordId) return {status: "not-found"};
   if (isDrawPublishedToLine(record)) {
@@ -81,7 +78,7 @@ function planDrawPublicationRecordBackfill(record, {
       alreadyPublished: true,
     };
   }
-  const dateValidation = validateRecordDate(record, now);
+  const dateValidation = validateRecordDate(record);
   if (!dateValidation.ok) {
     return {status: dateValidation.reason, recordDate: record.date || null};
   }
@@ -99,13 +96,12 @@ function planDrawPublicationRecordBackfill(record, {
   };
 }
 
-function planDrawPublicationBackfill(rawHistory, {recordId, publishedAt, now = new Date()} = {}) {
+function planDrawPublicationBackfill(rawHistory, {recordId, publishedAt} = {}) {
   const found = findHistoryEntry(rawHistory, recordId);
   if (!found) return {status: "not-found"};
   const recordPlan = planDrawPublicationRecordBackfill(found.record, {
     recordId,
     publishedAt,
-    now,
   });
   if (recordPlan.status !== "updated") return recordPlan;
 

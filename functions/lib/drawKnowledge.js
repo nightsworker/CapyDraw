@@ -143,7 +143,7 @@ function buildPublishedDrawContext(record, {date = null, mode = "date"} = {}) {
     "",
     "以上資料已正式發布到 LINE，可以回答。",
     "此資料優先於一般 Canon；名字、日期與角色不得修改或自行補充。",
-    "不得依此資料推測未發布或未來的抽籤結果。",
+    "不得依此資料推測其他未發布的抽籤結果。",
   ].join("\n");
 }
 

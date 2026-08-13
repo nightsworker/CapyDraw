@@ -23,13 +23,14 @@ test("history publication status requires a valid lineSentAt and positive lineSe
   assert.equal(isLinePublishedRecord({lineSentAt: "not-a-date", lineSendCount: 1}), false);
 });
 
-test("an unpublished record shows the manual backfill action only to an authorized admin", () => {
-  assert.deepEqual(getLinePublicationView({id: "legacy"}, {isAdmin: true}), {
+test("an unpublished future record shows backfill only to an authorized admin", () => {
+  const futureRecord = {id: "legacy", date: "2099-12-31"};
+  assert.deepEqual(getLinePublicationView(futureRecord, {isAdmin: true}), {
     published: false,
     statusText: "⚠️ 無發布紀錄",
     showBackfillAction: true,
   });
-  assert.deepEqual(getLinePublicationView({id: "legacy"}, {isAdmin: false}), {
+  assert.deepEqual(getLinePublicationView(futureRecord, {isAdmin: false}), {
     published: false,
     statusText: "⚠️ 無發布紀錄",
     showBackfillAction: false,

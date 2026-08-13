@@ -1129,10 +1129,8 @@ exports.backfillDrawLinePublished = onRequest({region: REGION}, async (req, res)
       json(res, 404, {ok: false, error: "找不到指定的抽籤紀錄。"});
       return;
     }
-    if (outcome.status === "future-record" || outcome.status === "invalid-record-date") {
-      const error = outcome.status === "future-record" ?
-        "不可將未來日期的抽籤紀錄標記為已發布。" : "抽籤紀錄日期無效，無法安全補登。";
-      json(res, 409, {ok: false, error});
+    if (outcome.status === "invalid-record-date") {
+      json(res, 409, {ok: false, error: "抽籤紀錄日期無效，無法安全補登。"});
       return;
     }
 

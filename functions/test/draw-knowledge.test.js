@@ -206,6 +206,51 @@ test("I: a future hidden result remains unavailable and cannot be predicted", ()
   HIDDEN_NAMES.forEach((name) => assert.equal(knowledge.context.includes(name), false));
 });
 
+test("a published future result is available by explicit date and tomorrow", () => {
+  const future = publishedRecord("2026-08-14", {
+    lineSentAt: "2026-08-13T10:00:00.000Z",
+    captain: "Future Public Captain - 明日船長",
+  });
+  for (const question of ["8/14 船長是誰？", "明天船長是誰？"]) {
+    const knowledge = resolvePublishedDrawKnowledge(
+      [future],
+      planPublishedDrawQuery(question, NOW),
+    );
+    assert.equal(knowledge.record.date, "2026-08-14", question);
+    assert.match(knowledge.context, /船長：Future Public Captain - 明日船長/u, question);
+  }
+});
+
+test("future unpublished data is equally hidden from group and admin private AI", () => {
+  const history = [hiddenRecord("2026-08-14")];
+  for (const sourceType of ["group", "admin-private"]) {
+    const knowledge = resolvePublishedDrawKnowledge(
+      history,
+      planPublishedDrawQuery("明天船長是誰？", NOW),
+    );
+    assert.equal(knowledge.record, null, sourceType);
+    assert.match(knowledge.context, /沒有可公開的/u, sourceType);
+    HIDDEN_NAMES.forEach((name) =>
+      assert.equal(knowledge.context.includes(name), false, sourceType));
+  }
+});
+
+test("past, today, and future unpublished records use the same hidden policy", () => {
+  for (const [date, question] of [
+    ["2026-08-12", "昨天抽籤結果？"],
+    ["2026-08-13", "今天抽籤結果？"],
+    ["2026-08-14", "明天抽籤結果？"],
+  ]) {
+    const knowledge = resolvePublishedDrawKnowledge(
+      [hiddenRecord(date)],
+      planPublishedDrawQuery(question, NOW),
+    );
+    assert.equal(knowledge.record, null, date);
+    HIDDEN_NAMES.forEach((name) =>
+      assert.equal(knowledge.context.includes(name), false, date));
+  }
+});
+
 test("J: latest lookup ignores newer unpublished records", () => {
   const history = [
     publishedRecord("2026-08-10"),
@@ -220,6 +265,20 @@ test("J: latest lookup ignores newer unpublished records", () => {
   );
   assert.match(knowledge.context, /Latest Public - 最新公開/u);
   HIDDEN_NAMES.forEach((name) => assert.equal(knowledge.context.includes(name), false));
+});
+
+test("latest published may select a future draw date that was already published", () => {
+  const history = [
+    publishedRecord("2026-08-13"),
+    publishedRecord("2026-08-14", {
+      lineSentAt: "2026-08-13T10:00:00.000Z",
+      captain: "Future Latest - 已提前公開",
+    }),
+    hiddenRecord("2026-08-15"),
+  ];
+  const latest = findLatestPublishedDraw(history);
+  assert.equal(latest.date, "2026-08-14");
+  assert.equal(latest.captain, "Future Latest - 已提前公開");
 });
 
 test("K: unpublished names are completely absent from the mocked OpenAI request", async () => {
