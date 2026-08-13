@@ -8,6 +8,7 @@ Functions v2 部署在 `asia-southeast1`（新加坡），與目前 Realtime Dat
 
 - `lineWebhook`：驗證 LINE 原始 request body 的 HMAC-SHA256 簽章；join event 會登記 Bot 已知群組並回覆自我介紹，一般群組事件只更新該群的 `lastSeenAt`，再依優先順序處理 `!` 指令與喵餅人格互動。
 - `sendDrawToLine`：驗證 Firebase ID Token 及 `ADMIN_UID`，依 `recordId` 從 RTDB 重讀抽籤紀錄，再用 LINE `textV2` 發送真正 mention。
+- `backfillDrawLinePublished`：供 `ADMIN_UID` 管理者為 migration 前已確實發布到 LINE 的單筆舊抽籤補登 publication metadata；不會重新發送 LINE。
 - `getLineBindings`：供管理者讀取遮罩後的綁定狀態。
 - `removeLineBinding`：供管理者解除指定綁定；前端不會直接寫入 `lineBindings`。
 - `getLineGroups`：供 `ADMIN_UID` 管理者讀取 Bot 已知群組，只回傳 opaque group key 與遮罩後的 groupId。
@@ -226,6 +227,14 @@ API key 必須使用 Firebase Functions v2 Secret `OPENAI_API_KEY`，只綁定�
 Miaobing AI 可以唯讀回答已正式發布的抽籤結果。只有 `sendDrawToLine` 成功後留下有效 `lineSentAt` 且 `lineSendCount > 0` 的 history record，才會由 server-side retrieval 選出；history 中存在但尚未發布、無法證明曾成功發送的 legacy record，以及 pool snapshot、consumed、候選池和其他內部欄位都不會進入 OpenAI context。查詢支援 Asia/Taipei 的今天、昨天、明天、`MM/DD`、`YYYY-MM-DD` 與最近一次已發布結果。
 
 正式群與 Admin Private AI Test Mode 使用相同的 published-only policy；LINE Bot Admin 也不能透過私訊取得未發布結果。沒有可公開結果時只會提供「沒有可公開結果」的安全 context，不會透露 hidden record 是否存在，也不會預測未來抽籤。AI 對抽籤資料只有 read-only access，不能抽籤、修改 history、操作池子或自行發布。
+
+### Legacy Published Draw Backfill
+
+`backfillDrawLinePublished` 僅用於 migration 前已經實際發送到正式 LINE 群組、但尚無 publication metadata 的歷史抽籤。呼叫者必須提供 Firebase ID Token，且 UID 必須列在既有 `ADMIN_UID` allowlist；request body 必須包含 `recordId`，可選擇提供嚴格 ISO datetime 格式的 `publishedAt`。若知道實際歷史發布時間，應提供該時間；省略時才使用 server current timestamp。
+
+Endpoint 會以 `record.id === recordId` 在 array 或 object history 中尋找單筆紀錄，只補上 `lineSentAt`、將 `lineSendCount` 保持在至少 1，並把 `lastLineSendStatus` 設為 `sent`。它不會重新發 LINE，也不修改 captain、guardian、cabin4、specialDay、pool、consumed 或其他抽籤內容；已具有可信 publication metadata 的紀錄會原樣保留。未來日期紀錄與不合理的未來 `publishedAt` 會被拒絕，也不會自動 backfill 其他歷史資料。
+
+這項操作只應用於管理員已人工確認真正公開過的紀錄，不得用於尚未發布的結果。Miaobing AI 的 fail-closed publication policy 維持不變：只有補登後具有有效 `lineSentAt` 且 `lineSendCount > 0` 的紀錄才可能進入 sanitized AI context。
 
 人格 instructions、可注入測試的 mood pool 與 canonical 公會梗分別位於 `functions/lib/miaobingPersona.js` 和 `functions/lib/miaobingJokes.js`。梗可改語氣，但 immutable meaning 不可改；模型不知道的公會事實必須承認不知道，不可捏造成員、規則、歷史或數值。
 

@@ -19,6 +19,11 @@ const {
   planPublishedDrawQuery,
 } = require("./lib/drawKnowledge");
 const {
+  backfillDrawLinePublication,
+  normalizePublishedAt,
+  validateBackfillRecordId,
+} = require("./lib/drawPublicationBackfill");
+const {
   buildAdminBindingSuccessText,
   buildAdminUnbindSuccessText,
   bindingKeyForGroup,
@@ -1099,6 +1104,52 @@ exports.sendDrawToLine = onRequest({
     lineSendCount: updated.lineSendCount,
   });
 }));
+
+exports.backfillDrawLinePublished = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["POST"], async (adminUser) => {
+    const recordId = validateBackfillRecordId(req.body && req.body.recordId);
+    if (!recordId) {
+      json(res, 400, {ok: false, error: "recordId 格式不正確。"});
+      return;
+    }
+    const now = new Date();
+    const publishedAtResult = normalizePublishedAt(req.body && req.body.publishedAt, {now});
+    if (!publishedAtResult.ok) {
+      const error = publishedAtResult.reason === "future-published-at" ?
+        "publishedAt 不可晚於目前時間。" : "publishedAt 必須是合法的 ISO datetime。";
+      json(res, 400, {ok: false, error});
+      return;
+    }
+
+    const outcome = await backfillDrawLinePublication(
+      getDatabase().ref("guildDraw/main/history"),
+      {recordId, publishedAt: publishedAtResult.publishedAt, now},
+    );
+    if (outcome.status === "not-found") {
+      json(res, 404, {ok: false, error: "找不到指定的抽籤紀錄。"});
+      return;
+    }
+    if (outcome.status === "future-record" || outcome.status === "invalid-record-date") {
+      const error = outcome.status === "future-record" ?
+        "不可將未來日期的抽籤紀錄標記為已發布。" : "抽籤紀錄日期無效，無法安全補登。";
+      json(res, 409, {ok: false, error});
+      return;
+    }
+
+    logger.info("Legacy draw publication backfill", {
+      recordId,
+      recordDate: outcome.recordDate,
+      publishedAt: outcome.publishedAt,
+      adminUid: adminUser.uid,
+      alreadyPublished: outcome.alreadyPublished,
+    });
+    json(res, 200, {
+      ok: true,
+      alreadyPublished: outcome.alreadyPublished,
+      recordDate: outcome.recordDate,
+      publishedAt: outcome.publishedAt,
+    });
+  }));
 
 exports.getLineBindings = onRequest({region: REGION}, async (req, res) =>
   withAdminRequest(req, res, ["GET"], async () => {
