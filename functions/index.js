@@ -91,6 +91,7 @@ const {
   resolveLoreIdentity,
   resolveSenderRole,
 } = require("./lib/miaobing-lore");
+const {directMiaobingExpression} = require("./lib/miaobingExpression");
 
 initializeApp();
 
@@ -309,8 +310,41 @@ async function handleMiaobingPersonality({event, botUserId, token}) {
   }
   if (cooldownRef && !await claimPersonalityCooldown(cooldownRef, now, cooldownMs)) return;
 
-  logger.info("Miaobing personality reply", {kind: plan.kind, intent: plan.intent});
-  await replyMessages(event.replyToken, [message], token);
+  let expression = null;
+  let messages = [message];
+  try {
+    expression = await directMiaobingExpression(
+      db.ref("guildDraw/aiStyle/expressionState"),
+      {
+        text: message.text,
+        textMessage: message,
+        mood: plan.intent,
+        question: text,
+        isFactual: Boolean(plan.mentionTarget),
+        personalityEnabled: true,
+      },
+    );
+    if (expression.shouldReply && expression.messages.length) {
+      messages = expression.messages;
+    }
+  } catch (error) {
+    logger.warn("Miaobing expression selection failed", {
+      sourceType: "group",
+      type: String(error && (error.code || error.name) || "unknown_error").slice(0, 80),
+    });
+  }
+  logger.info("Miaobing personality reply", {
+    kind: plan.kind,
+    intent: plan.intent,
+    expressionMood: expression && expression.mood || null,
+    usedEmoji: Boolean(expression && expression.emojiDecision.used),
+    emojiCount: expression && expression.emojiDecision.count || 0,
+    usedSticker: Boolean(expression && expression.stickerDecision.used),
+    stickerPackageId: expression && expression.stickerDecision.packageId || null,
+    stickerId: expression && expression.stickerDecision.stickerId || null,
+    expressionReason: expression && expression.stickerDecision.reason || "not-applied",
+  });
+  await replyMessages(event.replyToken, messages, token);
 }
 
 async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = false}) {
@@ -334,12 +368,14 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
   } catch {
     apiKey = "";
   }
+  let isPublishedDrawQuery = false;
   const outcome = await processMiaobingAiRequest({
     apiKey,
     question: aiPlan.question,
     reserveUsage: () => reserveAiUsage(db.ref("guildDraw/aiUsage"), userId),
     generateReply: async ({apiKey: key, question}) => {
       const drawPlan = planPublishedDrawQuery(question);
+      isPublishedDrawQuery = drawPlan.shouldRetrieve;
       let authoritativeContext = "";
       if (drawPlan.shouldRetrieve) {
         authoritativeContext = (await loadPublishedDrawKnowledge(
@@ -359,6 +395,30 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
     isPrivateAdminTest: isPrivateRequest,
     maskedSender: maskLineUserId(userId),
   };
+  let expression = null;
+  let messages = [{type: "text", text: outcome.text}];
+  if (outcome.reason === "success") {
+    try {
+      expression = await directMiaobingExpression(
+        db.ref("guildDraw/aiStyle/expressionState"),
+        {
+          text: outcome.text,
+          mood: outcome.mood,
+          question: aiPlan.question,
+          isFactual: isPublishedDrawQuery,
+          personalityEnabled: true,
+        },
+      );
+      if (expression.shouldReply && expression.messages.length) {
+        messages = expression.messages;
+      }
+    } catch (error) {
+      logger.warn("Miaobing expression selection failed", {
+        ...logContext,
+        type: String(error && (error.code || error.name) || "unknown_error").slice(0, 80),
+      });
+    }
+  }
   if (outcome.reason === "openai-error") {
     logger.warn("Miaobing AI request failed", {
       ...logContext,
@@ -381,9 +441,16 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
       ...logContext,
       result: outcome.reason,
       trigger: aiPlan.reason,
+      expressionMood: expression && expression.mood || null,
+      usedEmoji: Boolean(expression && expression.emojiDecision.used),
+      emojiCount: expression && expression.emojiDecision.count || 0,
+      usedSticker: Boolean(expression && expression.stickerDecision.used),
+      stickerPackageId: expression && expression.stickerDecision.packageId || null,
+      stickerId: expression && expression.stickerDecision.stickerId || null,
+      expressionReason: expression && expression.stickerDecision.reason || "not-applied",
     });
   }
-  await replyText(event.replyToken, outcome.text, token);
+  await replyMessages(event.replyToken, messages, token);
 }
 
 async function handleMiaobingPrivateAdminAi(event, token) {

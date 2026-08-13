@@ -177,7 +177,13 @@ async function processMiaobingAiRequest({apiKey, question, reserveUsage, generat
         responseMeta,
       };
     }
-    return {text, calledOpenAI: true, reason: "success"};
+    const mood = String(result && result.mood || "").trim().slice(0, 80);
+    return {
+      text,
+      calledOpenAI: true,
+      reason: "success",
+      ...(mood ? {mood} : {}),
+    };
   } catch (error) {
     return {
       text: AI_FALLBACK_TEXT,

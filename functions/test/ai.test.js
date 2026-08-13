@@ -356,6 +356,17 @@ test("completed output remains a successful orchestrated LINE reply", async () =
   assert.deepEqual(result, {text: "在。怎麼了？", calledOpenAI: true, reason: "success"});
 });
 
+test("successful orchestration preserves the generated mood for the expression director", async () => {
+  const result = await processMiaobingAiRequest({
+    apiKey: "test-key-not-real",
+    question: "你好",
+    reserveUsage: async () => ({allowed: true}),
+    generateReply: async () => ({text: "在。", mood: "今天比較溫柔"}),
+  });
+  assert.equal(result.reason, "success");
+  assert.equal(result.mood, "今天比較溫柔");
+});
+
 test("incomplete empty output returns fallback and safe diagnostics instead of success", async () => {
   const client = {responses: {create: async () => ({
     status: "incomplete",
@@ -419,6 +430,7 @@ test("13: relevant canonical joke and immutable meaning are included in instruct
   assert.match(instructions, new RegExp(joke.core));
   assert.match(instructions, new RegExp(joke.immutableMeaning));
   assert.match(instructions, /immutable meaning 絕對不可改/);
+  assert.match(instructions, /Emoji 與貼圖呈現主要由外層 expression system 處理/u);
 });
 
 test("14: a missing API key fails safely without reserving usage or calling OpenAI", async () => {

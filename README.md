@@ -222,6 +222,14 @@ API key 必須使用 Firebase Functions v2 Secret `OPENAI_API_KEY`，只綁定�
 
 成本保護由 server-side `guildDraw/aiUsage` 管理，browser rules 明確禁止讀寫。系統以雜湊後的 LINE user key 執行每人 10 秒 cooldown、每 60 秒最多 5 次，並用同一個 RTDB transaction 原子保留全 Bot 每個 Asia/Taipei 日最多 150 次的額度。限流、缺少 Secret 或 OpenAI timeout／429／5xx 等錯誤都只回固定安全短訊息，不會把問題全文、API key、Authorization header 或完整 OpenAI error 寫入 usage storage 或 log。
 
+### Emoji / Sticker Expression Director
+
+AI 與一般喵餅對話的文字完成後，會交由 `functions/lib/miaobingExpression.js` 做本地 presentation selection，不會增加 OpenAI request。Director 沿用既有 mood，依語意選擇 cute、playful、annoyed、work、sleepy、food、warm、surprised 或 neutral emoji pool；一般回覆的目標分布為 35% 無 emoji、50% 一個、15% 兩個，最多只新增兩個。如果模型原文已含 emoji，就不再額外堆疊。
+
+極小型 anti-repeat state 存在 `guildDraw/aiStyle/expressionState`：最多保留 10 個 `recentEmoji`、6 個 `recentStickerIds`、上一則 emoji 與上一張 sticker，不保存聊天文字。每次成功回覆只使用一次 RTDB transaction 同時輪替 expression state。Personality OFF、command、error／fallback 不會被此層繞過；Published Draw 與重要 Canon 回覆保留必要文字，不允許 sticker-only。LINE `textV2` mention message 會保留 substitution，只可能安全附加 allowlisted sticker。
+
+Sticker catalog 位於 `functions/lib/lineStickerCatalog.js`，資料來源只採用 [LINE Developers Messaging API Sticker List](https://developers.line.biz/en/docs/messaging-api/sticker-list/)，並記錄驗證日期。第一版只收錄官方 Sticker definitions 中 package `6362`、`6632`、`8525`、`11537` 直接列出的 20 組 package/sticker pair。適合的簡短 conversation 以 12% 機率考慮 sticker，其中少數可 sticker-only；factual、command、admin operation 與 error 永遠保留文字或維持 text-only。
+
 ### Published Draw Knowledge
 
 Miaobing AI 可以唯讀回答已正式發布的抽籤結果。只有 `sendDrawToLine` 成功後留下有效 `lineSentAt` 且 `lineSendCount > 0` 的 history record，才會由 server-side retrieval 選出；history 中存在但尚未發布、無法證明曾成功發送的 legacy record，以及 pool snapshot、consumed、候選池和其他內部欄位都不會進入 OpenAI context。`record.date` 只表示抽籤所屬日期，不是公開狀態；未來日期只要已發布即可查詢，過去或今天的紀錄若未發布仍不可見。查詢支援 Asia/Taipei 的今天、昨天、明天、`MM/DD`、`YYYY-MM-DD` 與最近一次已發布結果。
