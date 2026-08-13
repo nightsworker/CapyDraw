@@ -234,7 +234,9 @@ AI persona 的核心是「嘴硬但心軟的公會會貓」；回覆優先順序
 
 明確髒話與粗俗辱罵同時受 prompt policy 與 `functions/lib/miaobingStyle.js` 的本地 final guard 約束；安全替換不會增加第二次 OpenAI request，輕微玩笑如「笨蛋」「很煩」「白痴喔」則不會被無差別移除。
 
-短期對話獨立存放於 server-only `guildDraw/aiConversation/{scopeKey}`。群組以雜湊後的 LINE groupId 分區、TTL 30 分鐘；Admin private 以雜湊後的 LINE userId 分區、TTL 60 分鐘。每個 scope 最多 6 組來回／12 messages，每則最多 500 字元，送入模型的近期 history 最多 3600 字元，current user question 永遠置於最後。只保存真正進入 AI pipeline 的安全 user/assistant turn，不保存一般群聊、webhook、token、profile、unpublished draw context，也不寫入 `guildDraw/aiMemory`。RTDB 讀寫失敗只記安全 warning 並 fail-open，仍會回覆。
+短期對話獨立存放於 server-only `guildDraw/aiConversation/{scopeKey}`。群組以雜湊後的 LINE groupId 分區、TTL 30 分鐘；Admin private 以雜湊後的 LINE userId 分區、TTL 60 分鐘。每個 scope 最多 6 組來回／12 messages，每則最多 500 字元，送入模型的近期 history 最多 3600 字元，current user question 永遠置於最後。只保存真正進入 AI pipeline 的安全 user/assistant turn，不保存一般群聊、webhook、token、profile、unpublished draw context，也不寫入 `guildDraw/aiMemory`。
+
+Conversation turn 只有在 LINE reply 成功後才以單一 RTDB transaction 同時 commit user + assistant；AI、Published Draw retrieval 或 LINE reply 失敗都不會留下 user-only history。讀取時只接受相鄰的完整 user/assistant pairs，legacy dangling 或 corrupted segment 會被忽略；concurrent turn 依 LINE event timestamp 排序。RTDB context 讀寫失敗只記安全 warning 並 fail-open，不會重送 LINE reply。AI generation 另有低於 30 秒 webhook deadline 的 application timeout，逾時 execution 只回安全 fallback，完成得太晚的舊 promise 不會再使用舊 replyToken 發送答案。
 
 資訊優先級維持：System/Security、Hard Canon、Published Draw、Admin Long-Term Memory、Current Conversation Context、Soft Canon、一般生成。對話 context 只協助指代、追問、主題與語氣連續；Published Draw follow-up 每次仍重新執行 publication check，群組及 Admin private 都不能從 context 取得未發布結果。
 

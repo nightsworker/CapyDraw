@@ -20,13 +20,16 @@ const {
   buildConversationTurnState,
   contextualizeDrawFollowUp,
   conversationScopeForEvent,
+  deliverAndCommitConversationTurn,
   loadConversationContext,
+  normalizeConversationHistory,
   recentConversationMessages,
 } = require("../lib/miaobingConversation");
 const {
   EMOJI_POOLS,
   EMOJI_PROBABILITIES,
   countEmoji,
+  directMiaobingExpression,
   emojiSignature,
   planMiaobingExpression,
   sanitizeDecorativeTrailingEmoji,
@@ -125,11 +128,14 @@ test("V2 group and private scopes are hashed and isolated", () => {
 });
 
 test("V2 group TTL is 30 minutes and private TTL is 60 minutes", () => {
-  const state = {updatedAt: NOW, messages: [message("user", "剛剛聊過") ]};
+  const state = {updatedAt: NOW, messages: [
+    message("user", "剛剛聊過"),
+    message("assistant", "記得。"),
+  ]};
   assert.equal(recentConversationMessages(state, {
     now: NOW + GROUP_CONVERSATION_TTL_MS,
     ttlMs: GROUP_CONVERSATION_TTL_MS,
-  }).length, 1);
+  }).length, 2);
   assert.equal(recentConversationMessages(state, {
     now: NOW + GROUP_CONVERSATION_TTL_MS + 1,
     ttlMs: GROUP_CONVERSATION_TTL_MS,
@@ -137,7 +143,7 @@ test("V2 group TTL is 30 minutes and private TTL is 60 minutes", () => {
   assert.equal(recentConversationMessages(state, {
     now: NOW + PRIVATE_CONVERSATION_TTL_MS,
     ttlMs: PRIVATE_CONVERSATION_TTL_MS,
-  }).length, 1);
+  }).length, 2);
 });
 
 test("V2 context keeps six rounds, twelve messages, and bounded text", () => {
@@ -176,6 +182,128 @@ test("V2 successful group interaction persists one bounded user/assistant turn",
   assert.equal(stored.updatedAt, NOW);
 });
 
+test("completed turn delivery sends LINE before one atomic pair commit", async () => {
+  const order = [];
+  const result = await deliverAndCommitConversationTurn({
+    sendReply: async () => order.push("line"),
+    commitTurn: async () => {
+      order.push("commit");
+      return {saved: true};
+    },
+  });
+  assert.deepEqual(order, ["line", "commit"]);
+  assert.deepEqual(result, {
+    lineReplySucceeded: true,
+    contextCommitSucceeded: true,
+    commitSkipped: false,
+    commitResult: {saved: true},
+  });
+});
+
+test("AI failure skips conversation commit after the fallback reply", async () => {
+  let replies = 0;
+  let commits = 0;
+  const result = await deliverAndCommitConversationTurn({
+    sendReply: async () => { replies += 1; },
+    commitTurn: null,
+  });
+  assert.equal(replies, 1);
+  assert.equal(commits, 0);
+  assert.equal(result.commitSkipped, true);
+});
+
+test("LINE reply failure never commits a conversation turn", async () => {
+  let commits = 0;
+  await assert.rejects(deliverAndCommitConversationTurn({
+    sendReply: async () => { throw Object.assign(new Error("LINE rejected"), {status: 400}); },
+    commitTurn: async () => { commits += 1; return {saved: true}; },
+  }), /LINE rejected/u);
+  assert.equal(commits, 0);
+});
+
+test("context write failure keeps one successful LINE reply and never retries it", async () => {
+  let replies = 0;
+  let commits = 0;
+  const result = await deliverAndCommitConversationTurn({
+    sendReply: async () => { replies += 1; },
+    commitTurn: async () => {
+      commits += 1;
+      throw Object.assign(new Error("DB unavailable"), {code: "db-write"});
+    },
+  });
+  assert.equal(replies, 1);
+  assert.equal(commits, 1);
+  assert.equal(result.lineReplySucceeded, true);
+  assert.equal(result.contextCommitSucceeded, false);
+  assert.equal(result.commitResult.errorType, "db-write");
+});
+
+test("dangling trailing user is excluded from the next prompt", () => {
+  const history = [
+    message("user", "第一題"),
+    message("assistant", "第一答"),
+    message("user", "不該補答的上一題"),
+  ];
+  const normalized = normalizeConversationHistory(history);
+  assert.deepEqual(normalized.map((item) => item.text), ["第一題", "第一答"]);
+  const input = buildConversationInput(history, "現在這一題");
+  assert.doesNotMatch(input, /不該補答的上一題/u);
+  assert.equal((input.match(/現在這一題/gu) || []).length, 1);
+});
+
+test("corrupted USER USER ASSISTANT history keeps only the valid adjacent pair", () => {
+  const normalized = normalizeConversationHistory([
+    message("user", "孤立題 A", NOW),
+    message("user", "完整題 B", NOW + 1),
+    message("assistant", "完整答 B", NOW + 1),
+  ]);
+  assert.deepEqual(normalized.map((item) => item.text), ["完整題 B", "完整答 B"]);
+});
+
+test("completed conversation pairs are retained and ordered by event timestamp", () => {
+  const normalized = normalizeConversationHistory([
+    message("user", "晚到的題", NOW + 200),
+    message("assistant", "晚到的答", NOW + 200),
+    message("user", "先發的題", NOW + 100),
+    message("assistant", "先發的答", NOW + 100),
+  ]);
+  assert.deepEqual(normalized.map((item) => item.text), [
+    "先發的題", "先發的答", "晚到的題", "晚到的答",
+  ]);
+});
+
+test("fast concurrent events use transactions without lost updates or completion-order corruption", async () => {
+  let stored = null;
+  let queue = Promise.resolve();
+  const ref = {transaction: (update) => {
+    queue = queue.then(async () => {
+      stored = update(stored);
+      return {committed: true};
+    });
+    return queue;
+  }};
+  await Promise.all([
+    appendConversationTurn(ref, {
+      userText: "後發但較快",
+      assistantText: "後發回答",
+      now: NOW + 200,
+      turnTimestamp: NOW + 200,
+      ttlMs: GROUP_CONVERSATION_TTL_MS,
+    }),
+    appendConversationTurn(ref, {
+      userText: "先發但較慢",
+      assistantText: "先發回答",
+      now: NOW + 300,
+      turnTimestamp: NOW + 100,
+      ttlMs: GROUP_CONVERSATION_TTL_MS,
+    }),
+  ]);
+  assert.equal(stored.messages.length, 4);
+  assert.deepEqual(stored.messages.map((item) => item.text), [
+    "先發但較慢", "先發回答", "後發但較快", "後發回答",
+  ]);
+});
+
 test("V2 context input puts the current question last and bounds recent chars", () => {
   const rows = Array.from({length: 12}, (_, index) =>
     message(index % 2 ? "assistant" : "user", `${index}-${"文".repeat(500)}`, NOW + index));
@@ -204,6 +332,27 @@ test("V2 OpenAI request includes context in the existing single request", async 
   assert.equal(calls, 1);
   assert.match(request.input, /妳怎麼又用一樣表情/u);
   assert.ok(request.input.endsWith("CURRENT USER:\n至少換掉現在這個"));
+});
+
+test("a stalled AI generation returns before the webhook deadline and cannot send a late reply", async () => {
+  let finishGeneration;
+  let generationCalls = 0;
+  const result = await processMiaobingAiRequest({
+    apiKey: "fake-test-key",
+    question: "明天A艙有誰",
+    reserveUsage: async () => ({allowed: true}),
+    generateReply: async () => {
+      generationCalls += 1;
+      return new Promise((resolve) => { finishGeneration = resolve; });
+    },
+    generationTimeoutMs: 5,
+  });
+  assert.equal(generationCalls, 1);
+  assert.equal(result.reason, "ai-timeout");
+  assert.equal(result.errorMeta.type, "ai_generation_timeout");
+  finishGeneration({text: "這個舊答案不可以在之後自行送出"});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.reason, "ai-timeout");
 });
 
 test("V2 context read and write failures are fail-open", async () => {
@@ -249,6 +398,10 @@ test("V2 conversation persistence is limited to the AI handler", () => {
     handler[0].lastIndexOf("appendConversationTurn(conversationRef"));
   assert.doesNotMatch(source.slice(source.indexOf("async function handleMiaobingPersonality"),
     source.indexOf("async function handleMiaobingAi")), /appendConversationTurn/u);
+  for (const field of [
+    "stage", "sourceType", "scopeHash", "historyPairs", "currentQuestionLength",
+    "aiSucceeded", "lineReplySucceeded", "contextCommitSucceeded", "elapsedMs",
+  ]) assert.match(handler[0], new RegExp(field, "u"));
 });
 
 test("V2 conversation module cannot read draw history or long-term memory", () => {
@@ -266,8 +419,32 @@ test("V2 default emoji distribution is 55/40/5", () => {
 test("V2 final GPT emoji is persisted as expression state truth", () => {
   const plan = expression({text: "被你抓到了 🤭"});
   assert.deepEqual(plan.nextState.lastReplyEmoji, ["🤭"]);
-  assert.deepEqual(plan.nextState.recentReplyEmoji[0], ["🤭"]);
+  assert.deepEqual(plan.nextState.recentReplyEmoji[0], {emoji: ["🤭"]});
   assert.equal(plan.nextState.recentEmoji.includes("🤭"), true);
+});
+
+test("V2 expression state never serializes empty recent reply slots as undefined", () => {
+  const plan = expression({
+    state: {recentReplyEmoji: [["🤭"], []]},
+    rng: () => 0.1,
+  });
+  assert.deepEqual(plan.nextState.recentReplyEmoji, [
+    {none: true},
+    {emoji: ["🤭"]},
+    {none: true},
+  ]);
+  assert.equal(JSON.stringify(plan.nextState).includes("undefined"), false);
+});
+
+test("a stalled expression transaction times out so LINE can use the raw text fallback", async () => {
+  await assert.rejects(directMiaobingExpression({
+    transaction: async () => new Promise(() => {}),
+  }, {
+    text: "仍然要回這段文字。",
+    question: "測試",
+    personalityEnabled: true,
+    stateTimeoutMs: 5,
+  }), (error) => error && error.code === "expression_state_timeout");
 });
 
 test("V2 repeated decorative trailing GPT emoji is safely removed", () => {

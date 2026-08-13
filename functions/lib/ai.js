@@ -9,6 +9,7 @@ const {applyMiaobingStyleGuard} = require("./miaobingStyle");
 const AI_MODEL = "gpt-5-mini";
 const AI_MAX_OUTPUT_TOKENS = 600;
 const AI_REASONING_EFFORT = "minimal";
+const AI_GENERATION_TIMEOUT_MS = 18000;
 const AI_FALLBACK_TEXT = "喵餅剛剛腦袋斷線了，等等再叫我。";
 const AI_COOLDOWN_TEXT = "慢點，喵餅只有一顆腦。";
 const AI_MINUTE_LIMIT_TEXT = "先讓本喵喘口氣，船務處一分鐘只接五張單。";
@@ -152,7 +153,13 @@ function safeOpenAiErrorMeta(error) {
   };
 }
 
-async function processMiaobingAiRequest({apiKey, question, reserveUsage, generateReply} = {}) {
+async function processMiaobingAiRequest({
+  apiKey,
+  question,
+  reserveUsage,
+  generateReply,
+  generationTimeoutMs = AI_GENERATION_TIMEOUT_MS,
+} = {}) {
   if (!String(apiKey || "").trim()) {
     return {text: AI_FALLBACK_TEXT, calledOpenAI: false, reason: "missing-api-key"};
   }
@@ -172,7 +179,19 @@ async function processMiaobingAiRequest({apiKey, question, reserveUsage, generat
       };
     }
     calledOpenAI = true;
-    const result = await generateReply({apiKey, question});
+    const timeoutMs = Math.max(1, Number(generationTimeoutMs) || AI_GENERATION_TIMEOUT_MS);
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error("Miaobing AI generation timed out.");
+        error.code = "ai_generation_timeout";
+        reject(error);
+      }, timeoutMs);
+    });
+    const result = await Promise.race([
+      Promise.resolve(generateReply({apiKey, question})),
+      timeout,
+    ]).finally(() => clearTimeout(timer));
     const text = normalizeGeneratedAiText(result && result.text);
     if (!text) {
       const responseMeta = normalizeOpenAiResponseMeta(result && result.responseMeta);
@@ -194,11 +213,12 @@ async function processMiaobingAiRequest({apiKey, question, reserveUsage, generat
         {styleSanitized: true} : {}),
     };
   } catch (error) {
+    const errorMeta = safeOpenAiErrorMeta(error);
     return {
       text: AI_FALLBACK_TEXT,
       calledOpenAI,
-      reason: "openai-error",
-      errorMeta: safeOpenAiErrorMeta(error),
+      reason: errorMeta.type === "ai_generation_timeout" ? "ai-timeout" : "openai-error",
+      errorMeta,
     };
   }
 }
@@ -207,6 +227,7 @@ module.exports = {
   AI_COOLDOWN_TEXT,
   AI_DAILY_LIMIT_TEXT,
   AI_FALLBACK_TEXT,
+  AI_GENERATION_TIMEOUT_MS,
   AI_MAX_OUTPUT_TOKENS,
   AI_MINUTE_LIMIT_TEXT,
   AI_MODEL,

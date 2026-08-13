@@ -97,6 +97,7 @@ const {
   contextualizeDrawFollowUp,
   conversationAssistantText,
   conversationScopeForEvent,
+  deliverAndCommitConversationTurn,
   loadConversationContext,
 } = require("./lib/miaobingConversation");
 const {
@@ -380,6 +381,7 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
   if ((!isGroupRequest && !isPrivateRequest) || !isFirebaseSafeKey(userId)) return;
 
   const db = getDatabase();
+  const turnStartedAt = Date.now();
   if (isGroupRequest) {
     const enabledValue = (await db.ref(`guildDraw/linePersonality/${groupId}/enabled`).get()).val();
     if (!isPersonalityEnabled(enabledValue)) return;
@@ -399,6 +401,24 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
     });
   }
   const conversationMessages = conversation.messages;
+  const conversationLog = (stage, values = {}, warning = false) => {
+    const method = warning ? "warn" : "info";
+    logger[method]("Miaobing conversation turn", {
+      stage,
+      sourceType,
+      scopeHash: conversationScope && conversationScope.key || null,
+      historyPairs: Math.floor(conversationMessages.length / 2),
+      currentQuestionLength: String(aiPlan.question || "").length,
+      aiSucceeded: null,
+      lineReplySucceeded: false,
+      contextCommitSucceeded: false,
+      elapsedMs: Date.now() - turnStartedAt,
+      ...values,
+    });
+  };
+  conversationLog("context-loaded", {
+    contextReadSucceeded: !conversation.failed,
+  }, conversation.failed);
 
   const memoryItems = aiPlan.memoryItems ||
     (await db.ref("guildDraw/aiMemory/items").get()).val() || {};
@@ -439,21 +459,33 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
       maskedSender: maskLineUserId(userId),
       memoryId: exactMemory.id,
     });
-    await replyMessages(event.replyToken, messages, token);
-    if (conversationRef) {
-      const saved = await appendConversationTurn(conversationRef, {
-        userText: redactDisallowedProfanity(aiPlan.question),
-        assistantText: conversationAssistantText(messages, guardedMemory.text),
-        ttlMs: conversationScope.ttlMs,
+    let delivery;
+    try {
+      delivery = await deliverAndCommitConversationTurn({
+        sendReply: () => replyMessages(event.replyToken, messages, token),
+        commitTurn: conversationRef ? () => appendConversationTurn(conversationRef, {
+          userText: redactDisallowedProfanity(aiPlan.question),
+          assistantText: conversationAssistantText(messages, guardedMemory.text),
+          turnTimestamp: event.timestamp,
+          ttlMs: conversationScope.ttlMs,
+        }) : null,
       });
-      if (!saved.saved) {
-        logger.warn("Miaobing conversation context write failed", {
-          sourceType,
-          maskedSender: maskLineUserId(userId),
-          type: saved.errorType,
-        });
-      }
+    } catch (error) {
+      conversationLog("line-reply-failed", {aiSucceeded: true}, true);
+      throw error;
     }
+    if (!delivery.contextCommitSucceeded && !delivery.commitSkipped) {
+      logger.warn("Miaobing conversation context write failed", {
+        sourceType,
+        maskedSender: maskLineUserId(userId),
+        type: delivery.commitResult && delivery.commitResult.errorType || "unknown_error",
+      });
+    }
+    conversationLog("turn-finished", {
+      aiSucceeded: true,
+      lineReplySucceeded: true,
+      contextCommitSucceeded: delivery.contextCommitSucceeded,
+    }, !delivery.contextCommitSucceeded);
     return;
   }
   const relevantMemories = findRelevantMemories(memoryItems, aiPlan.question);
@@ -492,6 +524,11 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
     isPrivateAdminTest: isPrivateRequest,
     maskedSender: maskLineUserId(userId),
   };
+  conversationLog("ai-finished", {
+    aiSucceeded: outcome.reason === "success",
+    generatedTextLength: String(outcome.text || "").length,
+    publishedDrawRequested: drawPlan.shouldRetrieve,
+  }, outcome.reason !== "success");
   let expression = null;
   let messages = [{type: "text", text: outcome.text}];
   if (outcome.reason === "success") {
@@ -516,7 +553,7 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
       });
     }
   }
-  if (outcome.reason === "openai-error") {
+  if (outcome.reason === "openai-error" || outcome.reason === "ai-timeout") {
     logger.warn("Miaobing AI request failed", {
       ...logContext,
       ...(outcome.errorMeta || {type: "unknown_error", status: null}),
@@ -548,20 +585,35 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
       expressionReason: expression && expression.stickerDecision.reason || "not-applied",
     });
   }
-  await replyMessages(event.replyToken, messages, token);
-  if (outcome.reason === "success" && conversationRef) {
-    const saved = await appendConversationTurn(conversationRef, {
-      userText: redactDisallowedProfanity(aiPlan.question),
-      assistantText: conversationAssistantText(messages, outcome.text),
-      ttlMs: conversationScope.ttlMs,
+  let delivery;
+  try {
+    delivery = await deliverAndCommitConversationTurn({
+      sendReply: () => replyMessages(event.replyToken, messages, token),
+      commitTurn: outcome.reason === "success" && conversationRef ?
+        () => appendConversationTurn(conversationRef, {
+          userText: redactDisallowedProfanity(aiPlan.question),
+          assistantText: conversationAssistantText(messages, outcome.text),
+          turnTimestamp: event.timestamp,
+          ttlMs: conversationScope.ttlMs,
+        }) : null,
     });
-    if (!saved.saved) {
-      logger.warn("Miaobing conversation context write failed", {
-        ...logContext,
-        type: saved.errorType,
-      });
-    }
+  } catch (error) {
+    conversationLog("line-reply-failed", {
+      aiSucceeded: outcome.reason === "success",
+    }, true);
+    throw error;
   }
+  if (!delivery.contextCommitSucceeded && !delivery.commitSkipped) {
+    logger.warn("Miaobing conversation context write failed", {
+      ...logContext,
+      type: delivery.commitResult && delivery.commitResult.errorType || "unknown_error",
+    });
+  }
+  conversationLog("turn-finished", {
+    aiSucceeded: outcome.reason === "success",
+    lineReplySucceeded: true,
+    contextCommitSucceeded: delivery.contextCommitSucceeded,
+  }, !delivery.contextCommitSucceeded && !delivery.commitSkipped);
 }
 
 async function replyMemoryOperation(event, token, replyTextValue, mood = "work") {

@@ -20,6 +20,7 @@ const RECENT_EMOJI_REPLY_LIMIT = 3;
 const RECENT_EMOJI_SIGNATURE_LIMIT = 8;
 const RECENT_STICKER_LIMIT = 6;
 const RECENT_EXCLUSION_COUNT = 5;
+const EXPRESSION_STATE_TIMEOUT_MS = 2000;
 
 const EMOJI_POOLS = Object.freeze({
   cute: Object.freeze(["🥺", "🥹", "🫶", "✨", "💕", "🌷", "🎀", "😽", "😸", "🐾", "💗", "🤍", "🌸", "🫧"]),
@@ -142,7 +143,22 @@ function weightedPick(values, weightFor, rng) {
 
 function flattenRecentReplyEmoji(value) {
   return uniqueStrings((Array.isArray(value) ? value : []).flatMap((item) =>
-    Array.isArray(item) ? item : []), RECENT_EMOJI_LIMIT);
+    Array.isArray(item) ? item : item && Array.isArray(item.emoji) ? item.emoji : []),
+  RECENT_EMOJI_LIMIT);
+}
+
+function normalizeRecentReplyEmoji(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => uniqueStrings(
+      Array.isArray(item) ? item : item && item.emoji,
+      2,
+    ))
+    .slice(0, RECENT_EMOJI_REPLY_LIMIT);
+}
+
+function serializeRecentReplyEmoji(value) {
+  const emoji = uniqueStrings(value, 2);
+  return emoji.length ? {emoji} : {none: true};
 }
 
 function emojiSignature(values) {
@@ -251,9 +267,7 @@ function buildExpressionLineMessages({text, textMessage, sticker, stickerOnly = 
 
 function normalizeExpressionState(value) {
   const state = value && typeof value === "object" ? value : {};
-  const recentReplyEmoji = (Array.isArray(state.recentReplyEmoji) ? state.recentReplyEmoji : [])
-    .map((item) => uniqueStrings(item, 2))
-    .slice(0, RECENT_EMOJI_REPLY_LIMIT);
+  const recentReplyEmoji = normalizeRecentReplyEmoji(state.recentReplyEmoji);
   return {
     recentEmoji: uniqueStrings(state.recentEmoji, RECENT_EMOJI_LIMIT),
     lastReplyEmoji: uniqueStrings(state.lastReplyEmoji, 2),
@@ -328,7 +342,8 @@ function planMiaobingExpression({text, textMessage, mood, question, state, isFac
     recentEmoji: updateRecent(current.recentEmoji, replyEmoji, RECENT_EMOJI_LIMIT),
     lastReplyEmoji: replyEmoji,
     recentReplyEmoji: [replyEmoji, ...current.recentReplyEmoji]
-      .slice(0, RECENT_EMOJI_REPLY_LIMIT),
+      .slice(0, RECENT_EMOJI_REPLY_LIMIT)
+      .map(serializeRecentReplyEmoji),
     recentEmojiSignatures: signature ? updateRecent(
       current.recentEmojiSignatures,
       [signature],
@@ -381,7 +396,7 @@ async function directMiaobingExpression(stateRef, options = {}) {
   const replayFactory = createReplayRng(options.rng || Math.random);
   let plan = planMiaobingExpression({...options, state: null, rng: replayFactory()});
   if (!plan.shouldReply) return plan;
-  await stateRef.transaction((currentState) => {
+  const transaction = stateRef.transaction((currentState) => {
     plan = planMiaobingExpression({
       ...options,
       state: currentState,
@@ -392,12 +407,23 @@ async function directMiaobingExpression(stateRef, options = {}) {
       ...plan.nextState,
     };
   });
+  let timer;
+  const timeoutMs = Math.max(1, Number(options.stateTimeoutMs) || EXPRESSION_STATE_TIMEOUT_MS);
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error("Miaobing expression state timed out.");
+      error.code = "expression_state_timeout";
+      reject(error);
+    }, timeoutMs);
+  });
+  await Promise.race([transaction, timeout]).finally(() => clearTimeout(timer));
   return plan;
 }
 
 module.exports = {
   EMOJI_POOLS,
   EMOJI_PROBABILITIES,
+  EXPRESSION_STATE_TIMEOUT_MS,
   EXPRESSION_TYPES,
   RECENT_EMOJI_LIMIT,
   RECENT_EMOJI_REPLY_LIMIT,

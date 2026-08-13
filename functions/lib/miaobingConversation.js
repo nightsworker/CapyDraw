@@ -8,6 +8,7 @@ const MAX_MESSAGE_CHARS = 500;
 const MAX_CONTEXT_CHARS = 3600;
 const GROUP_CONVERSATION_TTL_MS = 30 * 60 * 1000;
 const PRIVATE_CONVERSATION_TTL_MS = 60 * 60 * 1000;
+const CONVERSATION_IO_TIMEOUT_MS = 2000;
 
 function safeConversationText(value, limit = MAX_MESSAGE_CHARS) {
   return String(value || "")
@@ -33,7 +34,7 @@ function conversationScopeForEvent(event) {
   };
 }
 
-function normalizeConversationMessages(value) {
+function normalizeRawConversationMessages(value) {
   const rows = Array.isArray(value) ? value : [];
   return rows
     .map((message) => {
@@ -43,8 +44,35 @@ function normalizeConversationMessages(value) {
       return ["user", "assistant"].includes(role) && text && timestamp ?
         {role, text, timestamp} : null;
     })
-    .filter(Boolean)
-    .slice(-MAX_CONVERSATION_MESSAGES);
+    .filter(Boolean);
+}
+
+function normalizeConversationHistory(value) {
+  const rows = normalizeRawConversationMessages(value);
+  const pairs = [];
+  for (let index = 0; index < rows.length;) {
+    const user = rows[index];
+    const assistant = rows[index + 1];
+    if (user && user.role === "user" && assistant && assistant.role === "assistant") {
+      pairs.push({
+        messages: [user, assistant],
+        timestamp: Math.min(user.timestamp, assistant.timestamp),
+        sourceIndex: index,
+      });
+      index += 2;
+    } else {
+      index += 1;
+    }
+  }
+  return pairs
+    .sort((left, right) => left.timestamp - right.timestamp ||
+      left.sourceIndex - right.sourceIndex)
+    .slice(-MAX_CONVERSATION_ROUNDS)
+    .flatMap((pair) => pair.messages);
+}
+
+function normalizeConversationMessages(value) {
+  return normalizeConversationHistory(value);
 }
 
 function normalizeConversationState(value) {
@@ -88,7 +116,7 @@ function buildConversationInput(messages, currentQuestion) {
 
 async function loadConversationContext(ref, {now = Date.now(), ttlMs} = {}) {
   try {
-    const snapshot = await ref.get();
+    const snapshot = await withConversationTimeout(ref.get());
     return {
       messages: recentConversationMessages(snapshot.val(), {now, ttlMs}),
       failed: false,
@@ -106,30 +134,76 @@ function buildConversationTurnState(current, {
   userText,
   assistantText,
   now = Date.now(),
+  turnTimestamp = now,
   ttlMs,
 } = {}) {
   const user = safeConversationText(userText);
   const assistant = safeConversationText(assistantText);
   if (!user || !assistant) return normalizeConversationState(current);
   const previous = recentConversationMessages(current, {now, ttlMs});
+  const timestamp = Math.max(1, Math.floor(Number(turnTimestamp) || now));
   return {
-    messages: [
+    messages: normalizeConversationHistory([
       ...previous,
-      {role: "user", text: user, timestamp: now},
-      {role: "assistant", text: assistant, timestamp: now},
-    ].slice(-MAX_CONVERSATION_MESSAGES),
+      {role: "user", text: user, timestamp},
+      {role: "assistant", text: assistant, timestamp},
+    ]),
     updatedAt: now,
   };
 }
 
 async function appendConversationTurn(ref, options = {}) {
   try {
-    await ref.transaction((current) => buildConversationTurnState(current, options));
+    const now = Math.max(1, Math.floor(Number(options.now) || Date.now()));
+    const turnTimestamp = Math.max(1, Math.floor(Number(options.turnTimestamp) || now));
+    await withConversationTimeout(ref.transaction((current) => buildConversationTurnState(current, {
+      ...options,
+      now,
+      turnTimestamp,
+    })));
     return {saved: true};
   } catch (error) {
     return {
       saved: false,
       errorType: String(error && (error.code || error.name) || "unknown_error").slice(0, 80),
+    };
+  }
+}
+
+function withConversationTimeout(promise, timeoutMs = CONVERSATION_IO_TIMEOUT_MS) {
+  let timer;
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error("Conversation state I/O timed out.");
+      error.code = "conversation_io_timeout";
+      reject(error);
+    }, Math.max(1, Number(timeoutMs) || CONVERSATION_IO_TIMEOUT_MS));
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+}
+
+async function deliverAndCommitConversationTurn({sendReply, commitTurn} = {}) {
+  await sendReply();
+  if (typeof commitTurn !== "function") {
+    return {lineReplySucceeded: true, contextCommitSucceeded: false, commitSkipped: true};
+  }
+  try {
+    const result = await commitTurn();
+    return {
+      lineReplySucceeded: true,
+      contextCommitSucceeded: Boolean(result && result.saved),
+      commitSkipped: false,
+      commitResult: result,
+    };
+  } catch (error) {
+    return {
+      lineReplySucceeded: true,
+      contextCommitSucceeded: false,
+      commitSkipped: false,
+      commitResult: {
+        saved: false,
+        errorType: String(error && (error.code || error.name) || "unknown_error").slice(0, 80),
+      },
     };
   }
 }
@@ -160,6 +234,7 @@ function contextualizeDrawFollowUp(question, messages, planDrawQuery) {
 
 module.exports = {
   GROUP_CONVERSATION_TTL_MS,
+  CONVERSATION_IO_TIMEOUT_MS,
   MAX_CONTEXT_CHARS,
   MAX_CONVERSATION_MESSAGES,
   MAX_CONVERSATION_ROUNDS,
@@ -171,9 +246,11 @@ module.exports = {
   contextualizeDrawFollowUp,
   conversationAssistantText,
   conversationScopeForEvent,
+  deliverAndCommitConversationTurn,
   isConversationFresh,
   loadConversationContext,
   normalizeConversationMessages,
+  normalizeConversationHistory,
   normalizeConversationState,
   recentConversationMessages,
   safeConversationText,
