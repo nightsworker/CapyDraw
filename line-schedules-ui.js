@@ -72,14 +72,16 @@
   function runStatusLabel(status) {
     const labels = {
       sent: "✅ 已發送",
+      "sent-via-reply": "✅ 已透過 Reply 發布",
+      "queued-for-reply": "⏳ 等待群組訊息後免費回覆",
       "waiting-for-draw": "⏳ 等待抽籤",
       "skipped-already-published": "✅ 已由其他方式發布",
       "expired-no-draw": "⌛ 到期仍無抽籤",
       "ambiguous-draw-records": "⚠️ 同日期多筆，已停止",
       "failed-retryable": "🔄 等待重試",
-      failed: "❌ 發送失敗",
+      failed: "❌ 排入失敗",
       expired: "⌛ 已錯過執行日",
-      sending: "📤 發送中",
+      sending: "📥 排入公告中",
       checking: "🔎 檢查中",
     };
     return labels[status] || (status ? `ℹ️ ${status}` : "尚未執行");

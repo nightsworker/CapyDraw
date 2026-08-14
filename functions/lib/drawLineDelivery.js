@@ -83,7 +83,10 @@ async function finishDrawClaim(claimRef, claim, status, {now = new Date(), error
   return update;
 }
 
-async function markDrawPublished(recordRef, {sentAt = new Date().toISOString()} = {}) {
+async function markDrawPublished(recordRef, {
+  sentAt = new Date().toISOString(),
+  deliveryMode = null,
+} = {}) {
   let updated = null;
   const transaction = await recordRef.transaction((current) => {
     if (!current || typeof current !== "object") return;
@@ -92,6 +95,7 @@ async function markDrawPublished(recordRef, {sentAt = new Date().toISOString()} 
       lineSentAt: sentAt,
       lineSendCount: (Number(current.lineSendCount) || 0) + 1,
       lastLineSendStatus: "sent",
+      ...(deliveryMode ? {lastLineSendMode: String(deliveryMode).slice(0, 40)} : {}),
     };
     return updated;
   });

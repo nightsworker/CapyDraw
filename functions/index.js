@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const {AsyncLocalStorage} = require("node:async_hooks");
 const {onRequest} = require("firebase-functions/v2/https");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {defineSecret, defineString} = require("firebase-functions/params");
@@ -140,6 +141,11 @@ const {
   pruneRunsRef,
 } = require("./lib/lineScheduleRuntime");
 const {
+  enqueuePendingAnnouncement,
+  pendingGroupRef,
+} = require("./lib/linePendingAnnouncements");
+const {consumePendingAnnouncements} = require("./lib/linePendingRuntime");
+const {
   createScheduleWrapper,
   generateMiaobingScheduleWrapper,
 } = require("./lib/miaobingScheduleWrapper");
@@ -153,6 +159,7 @@ const LINE_CHANNEL_SECRET = defineSecret("LINE_CHANNEL_SECRET");
 const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
 const ALLOWED_ORIGIN = defineString("ALLOWED_ORIGIN");
 const ADMIN_UID = defineString("ADMIN_UID");
+const replyCollectorStorage = new AsyncLocalStorage();
 
 function json(res, status, body) {
   res.status(status).type("application/json").send(JSON.stringify(body));
@@ -220,7 +227,10 @@ async function callLine(path, token, body, method = "POST", {retryKey = null} = 
     return {retryAccepted: true};
   }
   if (!response.ok) {
-    logger.error("LINE Messaging API request failed", {path, status: response.status});
+    const safePath = String(path || "")
+      .replace(/\/group\/[^/]+\/member\/[^/?]+/gu, "/group/{group}/member/{member}")
+      .replace(/\/group\/[^/]+/gu, "/group/{group}");
+    logger.error("LINE Messaging API request failed", {path: safePath, status: response.status});
     const error = new Error(`LINE Messaging API 回傳 ${response.status}。`);
     error.lineStatus = response.status;
     throw error;
@@ -233,12 +243,45 @@ async function pushLineMessages({to, messages, retryKey} = {}) {
   return callLine("/message/push", LINE_CHANNEL_ACCESS_TOKEN.value(), {to, messages}, "POST", {retryKey});
 }
 
+function normalizeReplyMessages(lineMessages) {
+  return (Array.isArray(lineMessages) ? lineMessages : [lineMessages])
+    .filter((message) => message && typeof message === "object")
+    .slice(0, 5);
+}
+
+async function sendReplyMessagesNow(replyToken, lineMessages, token) {
+  const messages = normalizeReplyMessages(lineMessages);
+  if (!replyToken || !messages.length) return;
+  await callLine("/message/reply", token, {replyToken, messages});
+}
+
 async function replyMessages(replyToken, lineMessages, token) {
   const messages = (Array.isArray(lineMessages) ? lineMessages : [lineMessages])
     .filter((message) => message && typeof message === "object")
     .slice(0, 5);
   if (!replyToken || !messages.length) return;
-  await callLine("/message/reply", token, {replyToken, messages});
+  const collector = replyCollectorStorage.getStore();
+  if (collector && collector.replyToken === replyToken) {
+    collector.messages.push(...messages);
+    return {queued: true};
+  }
+  await sendReplyMessagesNow(replyToken, messages, token);
+}
+
+function registerReplySuccess(callback) {
+  const collector = replyCollectorStorage.getStore();
+  if (!collector || typeof callback !== "function") return false;
+  collector.successHooks.push(callback);
+  return true;
+}
+
+async function deliverReplyAndCommit({sendReply, commitTurn} = {}) {
+  const collector = replyCollectorStorage.getStore();
+  if (!collector) return deliverAndCommitConversationTurn({sendReply, commitTurn});
+  await sendReply();
+  if (commitTurn) registerReplySuccess(commitTurn);
+  return {lineReplySucceeded: true, contextCommitSucceeded: true,
+    commitSkipped: !commitTurn, commitDeferred: Boolean(commitTurn)};
 }
 
 async function replyTexts(replyToken, texts, token) {
@@ -495,7 +538,7 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
     });
     let delivery;
     try {
-      delivery = await deliverAndCommitConversationTurn({
+      delivery = await deliverReplyAndCommit({
         sendReply: () => replyMessages(event.replyToken, messages, token),
         commitTurn: conversationRef ? () => appendConversationTurn(conversationRef, {
           userText: redactDisallowedProfanity(aiPlan.question),
@@ -621,7 +664,7 @@ async function handleMiaobingAi({event, aiPlan, token, isPrivateAdminTest = fals
   }
   let delivery;
   try {
-    delivery = await deliverAndCommitConversationTurn({
+    delivery = await deliverReplyAndCommit({
       sendReply: () => replyMessages(event.replyToken, messages, token),
       commitTurn: outcome.reason === "success" && conversationRef ?
         () => appendConversationTurn(conversationRef, {
@@ -737,7 +780,11 @@ async function getGroupMemberProfile(groupId, userId, token) {
   try {
     return await fetchGroupMemberProfile(groupId, userId, token);
   } catch (error) {
-    logger.warn("Could not load LINE group member profile", {groupId, userId, message: error.message});
+    logger.warn("Could not load LINE group member profile", {
+      groupKey: lineGroupKey(groupId),
+      maskedSender: maskLineUserId(userId),
+      status: error.lineStatus || null,
+    });
     return null;
   }
 }
@@ -751,7 +798,10 @@ async function getLineGroupSummary(groupId, token) {
       "GET",
     );
   } catch (error) {
-    logger.warn("Could not load LINE group summary", {groupId, message: error.message});
+    logger.warn("Could not load LINE group summary", {
+      groupKey: lineGroupKey(groupId),
+      status: error.lineStatus || null,
+    });
     return null;
   }
 }
@@ -868,7 +918,10 @@ async function handleSyncCommand({event, token, db, settings, bindings, bindings
     if (Object.keys(result.updates).length) await bindingsRef.update(result.updates);
     await replier.text(buildSyncReply(result, source.mode), "success");
   } catch (error) {
-    logger.warn("LINE member sync failed", {groupId, status: error.lineStatus, message: error.message});
+    logger.warn("LINE member sync failed", {
+      groupKey: lineGroupKey(groupId),
+      status: error.lineStatus || null,
+    });
     await replier.text(syncErrorMessage(error), "failure");
   }
 }
@@ -1253,6 +1306,110 @@ async function handleBindingCommand(event, command, token, observedProfile, send
   await replier.text(buildBindingSuccessText(matches));
 }
 
+async function processLineWebhookEvent(event, payload, token) {
+  if (event && event.source && event.source.type === "user") {
+    await handleMiaobingPrivateAdminAi(event, token);
+    return;
+  }
+  const eventPlan = planWebhookEvent(event);
+  if (eventPlan.joinGroup) {
+    await handleLineGroupJoin(event, token);
+    return;
+  }
+  if (event && event.source && event.source.type === "group" && event.source.groupId) {
+    await rememberKnownLineGroup(event.source.groupId, null);
+  }
+  let profile = null;
+  if (eventPlan.observeMember) {
+    profile = await getGroupMemberProfile(event.source.groupId, event.source.userId, token);
+    if (profile) await rememberObservedMember(event, profile);
+  }
+  if (!eventPlan.command) {
+    const control = event && event.message && event.message.type === "text" ?
+      detectPersonalityControl(event.message.text) : null;
+    if (control) {
+      await handleMiaobingPersonality({event, botUserId: payload.destination, token});
+      return;
+    }
+    let aiPlan = planMiaobingAiTrigger({
+      event,
+      command: eventPlan.command,
+      botUserId: payload.destination,
+    });
+    if (!aiPlan.shouldCallAi && event && event.message && event.message.type === "text") {
+      const memoryItems = (await getDatabase().ref("guildDraw/aiMemory/items").get()).val() || {};
+      const memoryPlan = planGroupMemoryTrigger({
+        event,
+        rawItems: memoryItems,
+        command: eventPlan.command,
+        isPublishedDrawQuery: planPublishedDrawQuery(event.message.text).shouldRetrieve,
+      });
+      if (memoryPlan.shouldCallAi) aiPlan = {...memoryPlan, memoryItems};
+    }
+    if (aiPlan.shouldCallAi) {
+      await handleMiaobingAi({event, aiPlan, token});
+      return;
+    }
+    await handleMiaobingPersonality({event, botUserId: payload.destination, token});
+    return;
+  }
+  const senderRole = await getEventSenderRole(event);
+  if (eventPlan.command.command === "help") {
+    await handleHelpCommand(event, token, senderRole);
+    return;
+  }
+  if (eventPlan.command.command === "unknown") {
+    const replier = createCommandReplier(event, eventPlan.command, token, senderRole);
+    await replier.text([
+      `找不到指令「${eventPlan.command.input}」`,
+      "輸入 !說明 查看可用指令。",
+    ].join("\n"), "failure");
+    return;
+  }
+  await handleBindingCommand(event, eventPlan.command, token, profile, senderRole);
+}
+
+async function runReplySuccessHooks(hooks) {
+  for (const hook of hooks) {
+    try {
+      await hook();
+    } catch (error) {
+      logger.warn("LINE reply success hook failed", {
+        type: String(error && (error.code || error.name) || "unknown-error").slice(0, 80),
+      });
+    }
+  }
+}
+
+async function processLineWebhookEventWithPending(event, payload, token) {
+  const isGroupMessage = Boolean(event && event.type === "message" && event.replyToken &&
+    event.source && event.source.type === "group" && event.source.groupId);
+  if (!isGroupMessage) return processLineWebhookEvent(event, payload, token);
+  const collector = {replyToken: event.replyToken, messages: [], successHooks: []};
+  return replyCollectorStorage.run(collector, async () => {
+    await processLineWebhookEvent(event, payload, token);
+    const db = getDatabase();
+    const defaultGroupId = (await db.ref("guildDraw/lineSettings/defaultGroupId").get()).val();
+    const outcome = await consumePendingAnnouncements({
+      db,
+      event,
+      defaultGroupId,
+      normalMessages: collector.messages,
+      sendReply: (messages) => sendReplyMessagesNow(event.replyToken, messages, token),
+    });
+    if (outcome.messages && outcome.messages.length) {
+      await runReplySuccessHooks(collector.successHooks);
+    }
+    logger.info("LINE reply-first event", {
+      eventType: event.message && event.message.type || "message",
+      status: outcome.status,
+      pendingCount: outcome.sentPending && outcome.sentPending.length || 0,
+      pendingIds: (outcome.sentPending || []).map((item) => item.id),
+      sentVia: outcome.sentPending && outcome.sentPending.length ? "reply" : null,
+    });
+  });
+}
+
 exports.lineWebhook = onRequest({
   region: REGION,
   secrets: [LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN, OPENAI_API_KEY],
@@ -1279,96 +1436,9 @@ exports.lineWebhook = onRequest({
 
   try {
     const events = Array.isArray(payload.events) ? payload.events : [];
-    await Promise.all(events.map(async (event) => {
-      if (event && event.source && event.source.type === "user") {
-        await handleMiaobingPrivateAdminAi(event, LINE_CHANNEL_ACCESS_TOKEN.value());
-        return;
-      }
-      const eventPlan = planWebhookEvent(event);
-      if (eventPlan.joinGroup) {
-        await handleLineGroupJoin(event, LINE_CHANNEL_ACCESS_TOKEN.value());
-        return;
-      }
-      if (event && event.source && event.source.type === "group" && event.source.groupId) {
-        await rememberKnownLineGroup(event.source.groupId, null);
-      }
-      let profile = null;
-      if (eventPlan.observeMember) {
-        profile = await getGroupMemberProfile(
-          event.source.groupId,
-          event.source.userId,
-          LINE_CHANNEL_ACCESS_TOKEN.value(),
-        );
-        if (profile) await rememberObservedMember(event, profile);
-      }
-      if (!eventPlan.command) {
-        const control = event && event.message && event.message.type === "text" ?
-          detectPersonalityControl(event.message.text) : null;
-        if (control) {
-          await handleMiaobingPersonality({
-            event,
-            botUserId: payload.destination,
-            token: LINE_CHANNEL_ACCESS_TOKEN.value(),
-          });
-          return;
-        }
-        let aiPlan = planMiaobingAiTrigger({
-          event,
-          command: eventPlan.command,
-          botUserId: payload.destination,
-        });
-        if (!aiPlan.shouldCallAi && event && event.message && event.message.type === "text") {
-          const memoryItems = (await getDatabase()
-            .ref("guildDraw/aiMemory/items").get()).val() || {};
-          const memoryPlan = planGroupMemoryTrigger({
-            event,
-            rawItems: memoryItems,
-            command: eventPlan.command,
-            isPublishedDrawQuery: planPublishedDrawQuery(event.message.text).shouldRetrieve,
-          });
-          if (memoryPlan.shouldCallAi) aiPlan = {...memoryPlan, memoryItems};
-        }
-        if (aiPlan.shouldCallAi) {
-          await handleMiaobingAi({
-            event,
-            aiPlan,
-            token: LINE_CHANNEL_ACCESS_TOKEN.value(),
-          });
-          return;
-        }
-        await handleMiaobingPersonality({
-          event,
-          botUserId: payload.destination,
-          token: LINE_CHANNEL_ACCESS_TOKEN.value(),
-        });
-        return;
-      }
-      const senderRole = await getEventSenderRole(event);
-      if (eventPlan.command.command === "help") {
-        await handleHelpCommand(event, LINE_CHANNEL_ACCESS_TOKEN.value(), senderRole);
-        return;
-      }
-      if (eventPlan.command.command === "unknown") {
-        const replier = createCommandReplier(
-          event,
-          eventPlan.command,
-          LINE_CHANNEL_ACCESS_TOKEN.value(),
-          senderRole,
-        );
-        await replier.text([
-          `找不到指令「${eventPlan.command.input}」`,
-          "輸入 !說明 查看可用指令。",
-        ].join("\n"), "failure");
-        return;
-      }
-      await handleBindingCommand(
-        event,
-        eventPlan.command,
-        LINE_CHANNEL_ACCESS_TOKEN.value(),
-        profile,
-        senderRole,
-      );
-    }));
+    const token = LINE_CHANNEL_ACCESS_TOKEN.value();
+    await Promise.all(events.map((event) =>
+      processLineWebhookEventWithPending(event, payload, token)));
     json(res, 200, {ok: true});
   } catch (error) {
     logger.error("LINE webhook processing failed", error);
@@ -1489,6 +1559,8 @@ function publicScheduleRun(run) {
     warning: run.warning || null,
     errorType: run.errorType || null,
     retryCount: Math.max(0, Number(run.retryCount) || 0),
+    replyDelayMs: run.replyDelayMs !== null && run.replyDelayMs !== undefined &&
+      Number.isFinite(Number(run.replyDelayMs)) ? Number(run.replyDelayMs) : null,
     targetDrawDate: run.targetDrawDate || null,
   };
 }
@@ -1821,6 +1893,9 @@ async function dispatchFixedSchedules({db, items, runs, bindings, defaultGroupId
   let dueCount = 0;
   let claimedCount = 0;
   const outcomes = [];
+  const groupPendingRef = pendingGroupRef(db, defaultGroupId);
+  const enqueueAnnouncement = (announcement) =>
+    enqueuePendingAnnouncement(groupPendingRef, announcement);
   for (const schedule of Object.values(items || {})) {
     if (!schedule || schedule.enabled === false || !schedule.id) continue;
     const scheduleRuns = runs && runs[schedule.id] || {};
@@ -1845,7 +1920,7 @@ async function dispatchFixedSchedules({db, items, runs, bindings, defaultGroupId
       const result = await dispatchFixedOccurrence({
         schedule, occurrence,
         runRef: db.ref(`guildDraw/lineSchedules/runs/${schedule.id}/${occurrence.runKey}`),
-        bindings, defaultGroupId, pushMessage: pushLineMessages, createWrapper, now,
+        bindings, defaultGroupId, enqueueAnnouncement, createWrapper, now,
       });
       processedRunKeys.add(occurrence.runKey);
       if (!["busy", "not-due"].includes(result.status)) claimedCount += 1;
@@ -1867,7 +1942,7 @@ async function dispatchFixedSchedules({db, items, runs, bindings, defaultGroupId
     const result = await dispatchFixedOccurrence({
       schedule, occurrence,
       runRef: db.ref(`guildDraw/lineSchedules/runs/${schedule.id}/${occurrence.runKey}`),
-      bindings, defaultGroupId, pushMessage: pushLineMessages, createWrapper, now,
+      bindings, defaultGroupId, enqueueAnnouncement, createWrapper, now,
     });
     if (!["busy", "not-due"].includes(result.status)) {
       claimedCount += 1;
@@ -1889,7 +1964,7 @@ exports.scheduleDispatcher = onSchedule({
   region: REGION,
   schedule: "every 1 minutes",
   timeZone: SCHEDULE_TIMEZONE,
-  secrets: [LINE_CHANNEL_ACCESS_TOKEN, OPENAI_API_KEY],
+  secrets: [OPENAI_API_KEY],
   timeoutSeconds: 120,
 }, async () => {
   const db = getDatabase();
@@ -1908,6 +1983,9 @@ exports.scheduleDispatcher = onSchedule({
     return;
   }
   const bindings = bindingsSnapshot.val() || {};
+  const groupPendingRef = pendingGroupRef(db, defaultGroupId);
+  const enqueueAnnouncement = (announcement) =>
+    enqueuePendingAnnouncement(groupPendingRef, announcement);
   let tomorrowStatus = "disabled";
   const tomorrowSettings = tomorrowSnapshot.val();
   const tomorrowOccurrence = latestTomorrowOccurrence(tomorrowSettings, now);
@@ -1918,8 +1996,7 @@ exports.scheduleDispatcher = onSchedule({
       historyRef: db.ref("guildDraw/main/history"),
       bindings,
       defaultGroupId,
-      drawClaimsRef: db.ref("guildDraw/lineSchedules/drawClaims"),
-      pushMessage: pushLineMessages,
+      enqueueAnnouncement,
       now,
     });
     tomorrowStatus = result.status;

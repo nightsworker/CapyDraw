@@ -13,15 +13,20 @@ const {
   stableRetryKey,
   taipeiDateKey,
 } = require("./lineSchedule");
+const {buildDrawLineMessage} = require("./line");
 const {isDrawPublishedToLine} = require("./drawKnowledge");
 const {
   listHistoryEntries,
   selectDrawRecordByDate,
-  sendDrawLineRecord,
 } = require("./drawLineDelivery");
+const {
+  buildPendingAnnouncement,
+  pendingAnnouncementId,
+} = require("./linePendingAnnouncements");
 
 const TERMINAL_RUN_STATUSES = new Set([
-  "sent", "failed", "expired", "expired-no-draw", "ambiguous-draw-records",
+  "sent", "sent-via-reply", "queued-for-reply", "failed", "expired", "expired-no-draw",
+  "ambiguous-draw-records",
   "skipped-already-published",
 ]);
 
@@ -130,7 +135,7 @@ async function dispatchFixedOccurrence({
   runRef,
   bindings,
   defaultGroupId,
-  pushMessage,
+  enqueueAnnouncement,
   createWrapper,
   now = new Date(),
 } = {}) {
@@ -152,11 +157,20 @@ async function dispatchFixedOccurrence({
       bindings,
       defaultGroupId,
     });
-    const wrapper = await createWrapper(core.plainText);
+    let wrapper;
+    try {
+      wrapper = await createWrapper(core.plainText);
+    } catch {
+      wrapper = {intro: "", outro: "", reason: "wrapper-error"};
+    }
     wrapperReason = wrapper.reason;
     warnings = core.warnings;
+    if (wrapperReason === "wrapper-error") warnings.push("wrapper-error");
     payload = {
       message: buildScheduledLineMessage(core, wrapper),
+      coreText: core.plainText,
+      aiIntro: wrapper.intro || "",
+      aiOutro: wrapper.outro || "",
       warning: warnings,
       wrapperReason,
     };
@@ -168,15 +182,28 @@ async function dispatchFixedOccurrence({
   }
 
   try {
-    await pushMessage({
-      to: defaultGroupId,
-      messages: [payload.message],
-      retryKey: claim.state.retryKey,
+    const pending = buildPendingAnnouncement({
+      id: pendingAnnouncementId("fixed", occurrence.runKey),
+      type: "fixed",
+      scheduledFor: occurrence.scheduledFor,
+      occurrenceDate: occurrence.occurrenceDate,
+      scheduleId: schedule.id,
+      runKey: occurrence.runKey,
+      runPath: `guildDraw/lineSchedules/runs/${schedule.id}/${occurrence.runKey}`,
+      message: payload.message,
+      renderedCore: payload.coreText || null,
+      aiIntro: payload.aiIntro || null,
+      aiOutro: payload.aiOutro || null,
+      wrapperReason,
+      warning: warnings.length ? warnings.join(",").slice(0, 500) : null,
+      createdAt: now.toISOString(),
     });
-    const finished = await finishScheduleRun(runRef, claim, "sent", {
+    await enqueueAnnouncement(pending);
+    const finished = await finishScheduleRun(runRef, claim, "queued-for-reply", {
       now: new Date(), warnings, wrapperReason,
     });
-    return {status: "sent", run: finished, warnings, wrapperReason};
+    return {status: "queued-for-reply", run: finished, warnings, wrapperReason,
+      pendingId: pending.id};
   } catch (error) {
     const nextAttempt = new Date(now.getTime() + retryDelayMs(claim.state.retryCount));
     const retryable = claim.state.retryCount < FIXED_RETRY_LIMIT &&
@@ -249,8 +276,7 @@ async function dispatchTomorrowDraw({
   historyRef,
   bindings,
   defaultGroupId,
-  drawClaimsRef,
-  pushMessage,
+  enqueueAnnouncement,
   now = new Date(),
 } = {}) {
   const occurrence = latestTomorrowOccurrence(settings, now);
@@ -286,29 +312,25 @@ async function dispatchTomorrowDraw({
       previousStatus: claim.previousStatus || null};
   }
   try {
-    const sent = await sendDrawLineRecord({
-      historyRef, bindings, groupId: defaultGroupId, claimsRef: drawClaimsRef,
-      recordId: selection.record.id, owner: "scheduler",
-      retryNamespace: `tomorrow:${occurrence.runKey}`, skipPublished: true,
-      allowRepublish: false, pushMessage, now,
+    const rendered = buildDrawLineMessage(selection.record, bindings || {}, defaultGroupId);
+    const pending = buildPendingAnnouncement({
+      id: pendingAnnouncementId("draw", occurrence.runKey),
+      type: "draw",
+      scheduledFor: occurrence.scheduledFor,
+      occurrenceDate: occurrence.occurrenceDate,
+      drawRecordId: selection.record.id,
+      runKey: occurrence.runKey,
+      runPath: `guildDraw/lineSchedules/tomorrowRuns/${occurrence.runKey}`,
+      message: rendered.message,
+      warning: rendered.unboundMembers.length ?
+        `unbound:${rendered.unboundMembers.join(",")}`.slice(0, 500) : null,
+      createdAt: now.toISOString(),
     });
-    const terminalStatus = sent.status === "sent" ? "sent" : sent.status;
-    if (terminalStatus === "not-found") {
-      const nextCheckAt = new Date(now.getTime() + TOMORROW_CHECK_INTERVAL_MS).toISOString();
-      await setTomorrowRunStatus(runRef, claim, "waiting-for-draw", {now, nextCheckAt});
-      return {status: "waiting-for-draw", occurrence, nextCheckAt, lookup,
-        previousStatus: claim.previousStatus || null, sendClaimResult: terminalStatus};
-    }
-    if (["busy", "failed"].includes(terminalStatus)) {
-      const nextCheckAt = new Date(now.getTime() + TOMORROW_CHECK_INTERVAL_MS).toISOString();
-      await setTomorrowRunStatus(runRef, claim, "failed-retryable", {now, nextCheckAt,
-        errorType: terminalStatus});
-      return {status: "failed-retryable", occurrence, nextCheckAt, lookup,
-        previousStatus: claim.previousStatus || null, sendClaimResult: terminalStatus};
-    }
-    await setTomorrowRunStatus(runRef, claim, terminalStatus, {now: new Date()});
-    return {...sent, occurrence, lookup, previousStatus: claim.previousStatus || null,
-      sendClaimResult: sent.status};
+    await enqueueAnnouncement(pending);
+    await setTomorrowRunStatus(runRef, claim, "queued-for-reply", {now: new Date()});
+    return {status: "queued-for-reply", occurrence, lookup,
+      previousStatus: claim.previousStatus || null, pendingId: pending.id,
+      sendClaimResult: "queued-for-reply"};
   } catch (error) {
     if (lastMinute) {
       await setTomorrowRunStatus(runRef, claim, "failed", {now, errorType: safeRunError(error)});

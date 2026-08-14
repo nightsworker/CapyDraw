@@ -209,7 +209,8 @@
         <div class="message" id="drawMessage"></div>
         <div class="current-result" id="currentResult"><p class="empty">尚未載入資料。</p></div>
         <div class="actions">
-          <button class="btn requires-auth requires-line-admin" id="sendLineBtn">發送到 LINE</button>
+          <button class="btn requires-auth requires-line-admin" id="sendLineBtn">強制立即推播到 LINE</button>
+          <span class="hint">會消耗 LINE 主動訊息額度。</span>
           <span class="message" id="lineSendMessage"></span>
         </div>
       </div>
@@ -220,7 +221,7 @@
       <button class="tab-btn" data-tab="historyPanel">歷史紀錄</button>
       <button class="tab-btn" data-tab="poolsPanel">池子狀態</button>
       <button class="tab-btn" data-tab="linePanel">LINE 設定</button>
-      <button class="tab-btn" data-tab="automationPanel" id="automationTabBtn" style="display:none">自動推播</button>
+      <button class="tab-btn" data-tab="automationPanel" id="automationTabBtn" style="display:none">自動公告</button>
       <button class="tab-btn" data-tab="toolsPanel">備份與重置</button>
       <button class="tab-btn" data-tab="setupPanel">Firebase 設定</button>
     </nav>
@@ -364,8 +365,8 @@
       <div class="card">
         <div class="schedule-card-head">
           <div>
-            <h2>LINE 自動推播中心</h2>
-            <p class="hint">所有排程使用 Asia/Taipei，目標固定為目前正式 LINE 群組。設定只能透過 Firebase Admin Functions 寫入。</p>
+            <h2>LINE 自動公告中心</h2>
+            <p class="hint">自動公告預設使用 LINE Reply 模式。排程到點後會等待群組下一則訊息再送出，不消耗主動推播額度，因此實際送達時間可能晚於設定時間。</p>
           </div>
           <button class="btn secondary requires-line-admin" id="refreshSchedulesBtn">重新整理</button>
         </div>
@@ -374,7 +375,7 @@
 
       <div class="card">
         <h2>明日抽籤自動發布</h2>
-        <p class="hint">每天指定時間嘗試發布隔天抽籤。尚未抽籤時每 5 分鐘檢查，最晚到當日 23:59；已手動發布或補登的紀錄不會重送。</p>
+        <p class="hint">每天指定時間準備隔天抽籤公告；準備完成後等待正式群組下一則訊息，以免費 Reply 發布。尚未抽籤時每 5 分鐘檢查，最晚到當日 23:59；已建立的待發公告可跨午夜等待。</p>
         <div class="grid-2">
           <label class="schedule-card"><input type="checkbox" id="tomorrowAutomationEnabled" /> 啟用明日抽籤自動發布</label>
           <div><label for="tomorrowAutomationTime">每天時間</label><input type="time" id="tomorrowAutomationTime" value="21:00" /></div>
@@ -387,8 +388,8 @@
 
       <div class="card">
         <div class="schedule-card-head">
-          <div><h2>固定訊息排程</h2><p class="hint">可建立任意多筆 daily / weekly / biweekly / monthly 公告。</p></div>
-          <button class="btn requires-line-admin" id="newScheduleBtn">＋ 新增自動推播</button>
+          <div><h2>固定訊息排程</h2><p class="hint">到點時先排入免費 Reply；可建立任意多筆 daily / weekly / biweekly / monthly 公告。</p></div>
+          <button class="btn requires-line-admin" id="newScheduleBtn">＋ 新增自動公告</button>
         </div>
         <div id="lineSchedulesWrap"><p class="empty">尚未載入排程。</p></div>
       </div>
@@ -1412,12 +1413,14 @@
         setMessage("lineSendMessage", "❌ 請先顯示一筆抽籤結果。", "danger");
         return;
       }
-      if ((Number(record.lineSendCount) || 0) > 0 || record.lineSentAt) {
-        if (!confirm("這筆結果已經發送過 LINE，確定要再次發送嗎？")) return;
-      }
+      const alreadySent = (Number(record.lineSendCount) || 0) > 0 || record.lineSentAt;
+      const confirmText = alreadySent ?
+        "這筆結果已經發布過。確定要再次強制立即推播到 LINE 嗎？\n\n此操作會消耗 LINE 主動訊息額度。" :
+        "確定要強制立即推播到 LINE 嗎？\n\n此操作會消耗 LINE 主動訊息額度；自動公告的免費 Reply 模式不需要按這個按鈕。";
+      if (!confirm(confirmText)) return;
       lineSending = true;
       updateAccessUi();
-      setMessage("lineSendMessage", "正在發送...", "warn");
+      setMessage("lineSendMessage", "正在強制推播...", "warn");
       try {
         const result = await callLineAdminFunction("sendDrawToLine", { body: { recordId: record.id } });
         await refreshFromCloud();
@@ -1426,7 +1429,7 @@
         if (result.unboundMembers && result.unboundMembers.length) {
           setMessage("lineSendMessage", `⚠️ 已發送，但有未綁定玩家：${result.unboundMembers.join("、")}`, "warn");
         } else {
-          setMessage("lineSendMessage", "✅ 已發送到 LINE", "ok");
+          setMessage("lineSendMessage", "✅ 已強制推播到 LINE", "ok");
         }
       } catch (error) {
         setMessage("lineSendMessage", `❌ LINE 發送失敗：${error.message}`, "danger");
@@ -1516,8 +1519,8 @@
 
     function renderRunHistory(runs) {
       if (!Array.isArray(runs) || !runs.length) return `<p class="empty">尚無執行紀錄。</p>`;
-      return `<div class="run-history"><table><thead><tr><th>排定時間</th><th>狀態</th><th>重試</th><th>警告 / 錯誤</th></tr></thead><tbody>${runs.map(run => `
-        <tr><td>${escapeHtml(formatDateTime(run.scheduledFor))}</td><td>${escapeHtml(runStatusLabel(run.status))}</td><td>${Number(run.retryCount) || 0}</td><td>${escapeHtml(run.warning || run.errorType || "-")}</td></tr>`).join("")}</tbody></table></div>`;
+      return `<div class="run-history"><table><thead><tr><th>排定時間</th><th>實際 Reply</th><th>狀態</th><th>重試</th><th>警告 / 錯誤</th></tr></thead><tbody>${runs.map(run => `
+        <tr><td>${escapeHtml(formatDateTime(run.scheduledFor))}</td><td>${escapeHtml(formatDateTime(run.sentAt))}${run.replyDelayMs !== null && run.replyDelayMs !== undefined && Number.isFinite(Number(run.replyDelayMs)) ? `<br>延遲 ${Math.round(Number(run.replyDelayMs) / 60000)} 分鐘` : ""}</td><td>${escapeHtml(runStatusLabel(run.status))}</td><td>${Number(run.retryCount) || 0}</td><td>${escapeHtml(run.warning || run.errorType || "-")}</td></tr>`).join("")}</tbody></table></div>`;
     }
 
     function renderLineSchedules() {
@@ -1555,7 +1558,7 @@
 
     async function loadLineSchedules() {
       if (!firebaseUser || !lineAdminAuthorized) return;
-      setMessage("automationMessage", "正在讀取自動推播設定...", "warn");
+      setMessage("automationMessage", "正在讀取自動公告設定...", "warn");
       try {
         const result = await callLineAdminFunction("getLineSchedules", {method: "GET"});
         lineSchedulesCache = Array.isArray(result.schedules) ? result.schedules : [];
@@ -1565,9 +1568,9 @@
         renderLineSchedules();
         renderScheduleMemberOptions();
         setMessage("automationMessage", result.hasDefaultGroup ?
-          "已載入；目標為正式 LINE 群組。" : "尚未設定正式 LINE 群組，排程不會發送。", result.hasDefaultGroup ? "ok" : "warn");
+          "已載入；目標為正式 LINE 群組。" : "尚未設定正式 LINE 群組，排程不會排入公告。", result.hasDefaultGroup ? "ok" : "warn");
       } catch (error) {
-        setMessage("automationMessage", `讀取自動推播失敗：${error.message}`, "danger");
+        setMessage("automationMessage", `讀取自動公告失敗：${error.message}`, "danger");
       }
     }
 
@@ -1637,11 +1640,11 @@
     }
 
     async function deleteLineSchedule(scheduleId, name) {
-      if (!confirm(`確定要刪除自動推播「${name}」嗎？\n\n此操作會一併移除該排程的有限 run history。`)) return;
+      if (!confirm(`確定要刪除自動公告「${name}」嗎？\n\n此操作會一併移除該排程的有限 run history。`)) return;
       try {
         await callLineAdminFunction("deleteLineSchedule", {body: {scheduleId}});
         await loadLineSchedules();
-        setMessage("automationMessage", "已刪除自動推播。", "ok");
+        setMessage("automationMessage", "已刪除自動公告。", "ok");
       } catch (error) {
         setMessage("automationMessage", `刪除失敗：${error.message}`, "danger");
       }

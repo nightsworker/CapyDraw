@@ -38,6 +38,8 @@ test("frontend recurrence and run status labels cover V1", () => {
   assert.equal(recurrenceLabel({recurrence: {type: "biweekly", weekdays: [2, 5]}}), "每雙週 二、五");
   assert.equal(recurrenceLabel({recurrence: {type: "monthly", dayOfMonth: 31}}), "每月 31 日（缺日取月底）");
   assert.equal(runStatusLabel("waiting-for-draw"), "⏳ 等待抽籤");
+  assert.equal(runStatusLabel("queued-for-reply"), "⏳ 等待群組訊息後免費回覆");
+  assert.equal(runStatusLabel("sent-via-reply"), "✅ 已透過 Reply 發布");
 });
 
 test("automation UI uses existing admin helper and never writes schedule RTDB directly", () => {
@@ -56,4 +58,13 @@ test("schedule page is hidden until existing Firebase admin authorization succee
   const source = fs.readFileSync(path.resolve(__dirname, "../../index.html"), "utf8");
   assert.match(source, /automationTabBtn[\s\S]*style="display:none"/u);
   assert.match(source, /automationTabBtn"\)\.style\.display = lineAdminAuthorized/u);
+});
+
+test("manual push UI explicitly warns quota use and automation explains Reply delay", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "../../index.html"), "utf8");
+  assert.match(source, />強制立即推播到 LINE</u);
+  assert.match(source, /會消耗 LINE 主動訊息額度/u);
+  assert.match(source, /自動公告預設使用 LINE Reply 模式/u);
+  assert.match(source, /實際送達時間可能晚於設定時間/u);
+  assert.match(source, /confirm\(confirmText\)/u);
 });

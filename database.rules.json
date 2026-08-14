@@ -27,6 +27,10 @@
         ".read": false,
         ".write": false
       },
+      "linePendingAnnouncements": {
+        ".read": false,
+        ".write": false
+      },
       "aiUsage": {
         ".read": false,
         ".write": false

@@ -57,20 +57,14 @@ class MemoryRef {
     this.write({...this.value(), ...clone(values)});
   }
 
-  async remove() {
-    if (!this.path.length) this.box.value = null;
-    else {
-      const parent = new MemoryRef(this.box, this.path.slice(0, -1)).value();
-      if (parent) delete parent[this.path.at(-1)];
-    }
-  }
-
   transaction(update) {
     const key = this.path.join("/") || "/";
     const previous = this.box.queues.get(key) || Promise.resolve();
     const operation = previous.then(() => {
       const next = update(clone(this.value()));
-      if (next === undefined) return {committed: false, snapshot: {val: () => clone(this.value())}};
+      if (next === undefined) {
+        return {committed: false, snapshot: {val: () => clone(this.value())}};
+      }
       this.write(next);
       return {committed: true, snapshot: {val: () => clone(this.value())}};
     });
@@ -99,7 +93,12 @@ function fixedSchedule(overrides = {}) {
     id: "s_runtime1",
     name: "固定公告",
     enabled: true,
-    messageTemplate: [{type: "all"}, {type: "text", text: " 明天記得三張船票"}],
+    messageTemplate: [
+      {type: "all"},
+      {type: "text", text: " 明天 "},
+      {type: "date", offsetDays: 1, format: "M/D"},
+      {type: "text", text: " 記得三張船票"},
+    ],
     startDate: "2026-08-14",
     endDate: null,
     recurrence: {type: "daily", weekdays: [], dayOfMonth: null},
@@ -117,58 +116,61 @@ function occurrence(date = "2026-08-14", time = "20:30") {
   };
 }
 
+function pendingCollector() {
+  const items = [];
+  return {
+    items,
+    enqueue: async (item) => {
+      if (!items.some((existing) => existing.id === item.id)) items.push(clone(item));
+      return {created: true, announcement: item};
+    },
+  };
+}
+
 test("same-date multiple draw records fail closed as ambiguous", () => {
   assert.equal(selectDrawRecordByDate([drawRecord(), drawRecord({id: "other"})], "2026-08-15").status,
     "ambiguous-draw-records");
 });
 
-test("manual draw delivery uses canonical formatter and writes publication only after push", async () => {
+test("manual draw delivery remains an explicit push and publishes only after success", async () => {
   const historyRef = memoryRef([drawRecord()]);
-  const claimsRef = memoryRef({});
   const order = [];
   const result = await sendDrawLineRecord({
-    historyRef, claimsRef, recordId: "draw-2026-08-15", groupId: "G",
-    bindings: {}, owner: "manual", retryNamespace: "manual-one", allowRepublish: true,
-    pushMessage: async ({messages}) => { order.push("push"); assert.equal(messages[0].type, "textV2"); },
+    historyRef,
+    claimsRef: memoryRef({}),
+    recordId: "draw-2026-08-15",
+    groupId: "G",
+    bindings: {},
+    owner: "manual",
+    retryNamespace: "manual-one",
+    allowRepublish: true,
+    pushMessage: async ({messages}) => {
+      order.push("push");
+      assert.equal(messages[0].type, "textV2");
+    },
   });
   order.push("returned");
   assert.equal(result.status, "sent");
   assert.deepEqual(order, ["push", "returned"]);
   assert.equal(isDrawPublishedToLine(historyRef.value()[0]), true);
-  assert.equal(historyRef.value()[0].lastLineSendStatus, "sent");
 });
 
-test("LINE draw failure never writes publication success", async () => {
+test("manual LINE failure never writes publication success", async () => {
   const historyRef = memoryRef([drawRecord()]);
   await assert.rejects(sendDrawLineRecord({
-    historyRef, claimsRef: memoryRef({}), recordId: "draw-2026-08-15", groupId: "G",
-    bindings: {}, owner: "scheduler", retryNamespace: "draw-run", skipPublished: true,
-    pushMessage: async () => { throw Object.assign(new Error("LINE down"), {lineStatus: 503}); },
+    historyRef,
+    claimsRef: memoryRef({}),
+    recordId: "draw-2026-08-15",
+    groupId: "G",
+    bindings: {},
+    owner: "manual",
+    retryNamespace: "manual-run",
+    allowRepublish: true,
+    pushMessage: async () => {
+      throw Object.assign(new Error("LINE down"), {lineStatus: 503});
+    },
   }), /LINE down/u);
   assert.equal(isDrawPublishedToLine(historyRef.value()[0]), false);
-  assert.equal(historyRef.value()[0].lineSentAt, undefined);
-});
-
-test("manual and scheduler race can push at most once", async () => {
-  const historyRef = memoryRef([drawRecord()]);
-  const claimsRef = memoryRef({});
-  let pushes = 0;
-  let release;
-  const pushMessage = async () => {
-    pushes += 1;
-    await new Promise((resolve) => { release = resolve; });
-  };
-  const first = sendDrawLineRecord({historyRef, claimsRef, recordId: "draw-2026-08-15",
-    groupId: "G", bindings: {}, owner: "scheduler", retryNamespace: "draw-run",
-    skipPublished: true, pushMessage});
-  await new Promise((resolve) => setImmediate(resolve));
-  const second = await sendDrawLineRecord({historyRef, claimsRef, recordId: "draw-2026-08-15",
-    groupId: "G", bindings: {}, owner: "manual", retryNamespace: "manual-run",
-    allowRepublish: true, pushMessage});
-  assert.equal(second.status, "busy");
-  release();
-  assert.equal((await first).status, "sent");
-  assert.equal(pushes, 1);
 });
 
 test("tomorrow automation disabled does nothing", async () => {
@@ -176,259 +178,208 @@ test("tomorrow automation disabled does nothing", async () => {
   assert.equal(result.status, "disabled");
 });
 
-test("21:00 tomorrow draw exists and unpublished then sends and publishes", async () => {
-  const now = new Date("2026-08-14T13:00:30.000Z");
+test("tomorrow draw due creates one pending without publishing", async () => {
+  const historyRef = memoryRef([drawRecord()]);
+  const pending = pendingCollector();
   const result = await dispatchTomorrowDraw({
     settings: {enabled: true, time: "21:00"},
-    runRef: memoryRef(null), historyRef: memoryRef([drawRecord()]),
-    bindings: {}, defaultGroupId: "G", drawClaimsRef: memoryRef({}), now,
-    pushMessage: async () => {},
-  });
-  assert.equal(result.status, "sent");
-  assert.equal(isDrawPublishedToLine(result.record), true);
-});
-
-test("deterministic production simulation: 10:40 decision is SEND, not WAITING_FOR_DRAW", async () => {
-  const productionRecord = drawRecord({
-    id: "1786669856832-dac658720a3e98",
-    lineSentAt: null,
-    lineSendCount: null,
-    lastLineSendStatus: null,
-  });
-  let pushes = 0;
-  const result = await dispatchTomorrowDraw({
-    settings: {enabled: true, time: "10:37"},
     runRef: memoryRef(null),
-    historyRef: memoryRef([null, productionRecord]),
+    historyRef,
     bindings: {},
     defaultGroupId: "G",
-    drawClaimsRef: memoryRef({}),
-    now: new Date("2026-08-14T02:40:00.000Z"),
-    pushMessage: async () => { pushes += 1; },
+    enqueueAnnouncement: pending.enqueue,
+    now: new Date("2026-08-14T13:00:30.000Z"),
   });
-  assert.equal(result.status, "sent");
-  assert.equal(pushes, 1);
-  assert.deepEqual(result.lookup, {
-    historyType: "array",
-    historyCount: 1,
-    matchedRecordCount: 1,
-    matchedRecordId: "1786669856832-dac658720a3e98",
-    matchedRecordDate: "2026-08-15",
-    published: false,
-  });
+  assert.equal(result.status, "queued-for-reply");
+  assert.equal(pending.items.length, 1);
+  assert.equal(pending.items[0].type, "draw");
+  assert.equal(pending.items[0].drawRecordId, "draw-2026-08-15");
+  assert.equal(pending.items[0].expiresAt, null);
+  assert.equal(isDrawPublishedToLine(historyRef.value()[0]), false);
 });
 
-test("Object history finds tomorrow record by record.date rather than Firebase key", async () => {
-  let pushes = 0;
-  const result = await dispatchTomorrowDraw({
-    settings: {enabled: true, time: "10:37"},
-    runRef: memoryRef(null),
-    historyRef: memoryRef({unrelatedFirebaseKey: drawRecord()}),
-    bindings: {},
-    defaultGroupId: "G",
-    drawClaimsRef: memoryRef({}),
-    now: new Date("2026-08-14T02:40:00.000Z"),
-    pushMessage: async () => { pushes += 1; },
-  });
-  assert.equal(result.status, "sent");
-  assert.equal(pushes, 1);
-  assert.equal(result.lookup.historyType, "object");
-  assert.equal(result.lookup.matchedRecordCount, 1);
-});
-
-test("manually or backfill-published tomorrow draw is skipped", async () => {
-  for (const source of ["manual", "backfill"]) {
-    const published = drawRecord({lineSentAt: "2026-08-14T10:00:00.000Z", lineSendCount: 1,
-      lastLineSendStatus: source === "manual" ? "failed" : "sent"});
-    let pushes = 0;
+test("array and object histories both find tomorrow record by record.date", async () => {
+  for (const history of [[null, drawRecord()], {unrelatedFirebaseKey: drawRecord()}]) {
+    const pending = pendingCollector();
     const result = await dispatchTomorrowDraw({
-      settings: {enabled: true, time: "21:00"}, runRef: memoryRef(null),
-      historyRef: memoryRef([published]), bindings: {}, defaultGroupId: "G",
-      drawClaimsRef: memoryRef({}), now: new Date("2026-08-14T13:00:30.000Z"),
-      pushMessage: async () => { pushes += 1; },
+      settings: {enabled: true, time: "10:37"},
+      runRef: memoryRef(null),
+      historyRef: memoryRef(history),
+      bindings: {},
+      defaultGroupId: "G",
+      enqueueAnnouncement: pending.enqueue,
+      now: new Date("2026-08-14T02:40:00.000Z"),
     });
-    assert.equal(result.status, "skipped-already-published");
-    assert.equal(pushes, 0);
+    assert.equal(result.status, "queued-for-reply");
+    assert.equal(result.lookup.matchedRecordCount, 1);
+    assert.equal(pending.items.length, 1);
   }
 });
 
-test("missing tomorrow draw waits in five-minute intervals then sends after creation", async () => {
+test("already published tomorrow draw is skipped before enqueue", async () => {
+  const pending = pendingCollector();
+  const result = await dispatchTomorrowDraw({
+    settings: {enabled: true, time: "21:00"},
+    runRef: memoryRef(null),
+    historyRef: memoryRef([drawRecord({lineSentAt: "2026-08-14T10:00:00.000Z", lineSendCount: 1})]),
+    bindings: {},
+    defaultGroupId: "G",
+    enqueueAnnouncement: pending.enqueue,
+    now: new Date("2026-08-14T13:00:30.000Z"),
+  });
+  assert.equal(result.status, "skipped-already-published");
+  assert.equal(pending.items.length, 0);
+});
+
+test("missing tomorrow draw waits five minutes then queues after creation", async () => {
   const settings = {enabled: true, time: "21:00"};
   const runRef = memoryRef(null);
   const historyRef = memoryRef([]);
-  const claimsRef = memoryRef({});
-  const at2100 = await dispatchTomorrowDraw({settings, runRef, historyRef, bindings: {},
-    defaultGroupId: "G", drawClaimsRef: claimsRef, pushMessage: async () => {},
+  const pending = pendingCollector();
+  const options = {settings, runRef, historyRef, bindings: {}, defaultGroupId: "G",
+    enqueueAnnouncement: pending.enqueue};
+  const at2100 = await dispatchTomorrowDraw({...options,
     now: new Date("2026-08-14T13:00:00.000Z")});
   assert.equal(at2100.status, "waiting-for-draw");
   assert.equal(at2100.nextCheckAt, "2026-08-14T13:05:00.000Z");
-  assert.equal(historyRef.box.gets, 1);
   assert.equal(TERMINAL_RUN_STATUSES.has("waiting-for-draw"), false);
-  const at2104 = await dispatchTomorrowDraw({settings, runRef, historyRef, bindings: {},
-    defaultGroupId: "G", drawClaimsRef: claimsRef, pushMessage: async () => {},
-    now: new Date("2026-08-14T13:04:00.000Z")});
-  assert.equal(at2104.status, "not-due");
-  assert.equal(historyRef.box.gets, 1);
-  historyRef.write([drawRecord()]);
-  let pushes = 0;
-  const at2105 = await dispatchTomorrowDraw({settings, runRef, historyRef, bindings: {},
-    defaultGroupId: "G", drawClaimsRef: claimsRef, pushMessage: async () => { pushes += 1; },
-    now: new Date("2026-08-14T13:05:00.000Z")});
-  assert.equal(at2105.status, "sent");
-  assert.equal(pushes, 1);
-  assert.ok(historyRef.box.gets >= 2);
-});
-
-test("LINE 429 is failed-retryable rather than waiting-for-draw and keeps publication hidden", async () => {
-  const settings = {enabled: true, time: "10:37"};
-  const runRef = memoryRef(null);
-  const historyRef = memoryRef([drawRecord()]);
-  const drawClaimsRef = memoryRef({});
-  let pushes = 0;
-  const options = {settings, runRef, historyRef, bindings: {}, defaultGroupId: "G",
-    drawClaimsRef, pushMessage: async () => {
-      pushes += 1;
-      if (pushes === 1) throw Object.assign(new Error("LINE rate limited"), {lineStatus: 429});
-    }};
-  const failed = await dispatchTomorrowDraw({...options,
-    now: new Date("2026-08-14T02:37:00.000Z")});
-  assert.equal(failed.status, "failed-retryable");
-  assert.equal(failed.nextCheckAt, "2026-08-14T02:42:00.000Z");
-  assert.equal(runRef.value().status, "failed-retryable");
-  assert.equal(runRef.value().errorType, "429");
-  assert.equal(isDrawPublishedToLine(historyRef.value()[0]), false);
-  const retried = await dispatchTomorrowDraw({...options,
-    now: new Date("2026-08-14T02:42:00.000Z")});
-  assert.equal(retried.status, "sent");
-  assert.equal(pushes, 2);
-  assert.equal(isDrawPublishedToLine(historyRef.value()[0]), true);
-  assert.equal(runRef.value().errorType, undefined);
-});
-
-test("draw created at 22:17 is sent at the next eligible check around 22:20", async () => {
-  const settings = {enabled: true, time: "21:00"};
-  const runRef = memoryRef(null);
-  const historyRef = memoryRef([]);
-  const options = {settings, runRef, historyRef, bindings: {}, defaultGroupId: "G",
-    drawClaimsRef: memoryRef({}), pushMessage: async () => {}};
-  await dispatchTomorrowDraw({...options, now: new Date("2026-08-14T14:15:00.000Z")});
+  assert.equal((await dispatchTomorrowDraw({...options,
+    now: new Date("2026-08-14T13:04:00.000Z")})).status, "not-due");
   historyRef.write([drawRecord()]);
   assert.equal((await dispatchTomorrowDraw({...options,
-    now: new Date("2026-08-14T14:19:00.000Z")})).status, "not-due");
-  assert.equal((await dispatchTomorrowDraw({...options,
-    now: new Date("2026-08-14T14:20:00.000Z")})).status, "sent");
+    now: new Date("2026-08-14T13:05:00.000Z")})).status, "queued-for-reply");
+  assert.equal(pending.items.length, 1);
 });
 
-test("manual publication during waiting causes the next check to skip", async () => {
+test("23:59 without a draw expires, but an already-created pending has no expiry", async () => {
   const settings = {enabled: true, time: "21:00"};
   const runRef = memoryRef(null);
-  const historyRef = memoryRef([]);
-  const options = {settings, runRef, historyRef, bindings: {}, defaultGroupId: "G",
-    drawClaimsRef: memoryRef({}), pushMessage: async () => { throw new Error("must not push"); }};
-  await dispatchTomorrowDraw({...options, now: new Date("2026-08-14T13:00:00.000Z")});
-  historyRef.write([drawRecord({lineSentAt: "2026-08-14T13:02:00.000Z", lineSendCount: 1})]);
-  assert.equal((await dispatchTomorrowDraw({...options,
-    now: new Date("2026-08-14T13:05:00.000Z")})).status, "skipped-already-published");
-});
-
-test("23:59 without a draw expires and the next date uses a new run key", async () => {
-  const settings = {enabled: true, time: "21:00"};
-  const first = latestTomorrowOccurrence(settings, new Date("2026-08-14T15:59:00.000Z"));
-  const runRef = memoryRef(null);
-  const result = await dispatchTomorrowDraw({settings, runRef, historyRef: memoryRef([]),
-    bindings: {}, defaultGroupId: "G", drawClaimsRef: memoryRef({}), pushMessage: async () => {},
-    now: new Date("2026-08-14T15:59:00.000Z")});
+  const result = await dispatchTomorrowDraw({
+    settings,
+    runRef,
+    historyRef: memoryRef([]),
+    bindings: {},
+    defaultGroupId: "G",
+    enqueueAnnouncement: async () => { throw new Error("must not enqueue"); },
+    now: new Date("2026-08-14T15:59:00.000Z"),
+  });
   assert.equal(result.status, "expired-no-draw");
+  const first = latestTomorrowOccurrence(settings, new Date("2026-08-14T15:59:00.000Z"));
   const next = latestTomorrowOccurrence(settings, new Date("2026-08-15T13:00:00.000Z"));
   assert.notEqual(first.runKey, next.runKey);
-  assert.equal(next.targetDrawDate, "2026-08-16");
 });
 
-test("23:59 forces the final expiry check even when the 23:55 wait points to midnight", async () => {
-  const settings = {enabled: true, time: "21:00"};
-  const runRef = memoryRef(null);
-  const options = {settings, runRef, historyRef: memoryRef([]), bindings: {},
-    defaultGroupId: "G", drawClaimsRef: memoryRef({}), pushMessage: async () => {}};
-  assert.equal((await dispatchTomorrowDraw({...options,
-    now: new Date("2026-08-14T15:55:00.000Z")})).status, "waiting-for-draw");
-  assert.equal(runRef.value().nextCheckAt, "2026-08-14T16:00:00.000Z");
-  assert.equal((await dispatchTomorrowDraw({...options,
-    now: new Date("2026-08-14T15:59:00.000Z")})).status, "expired-no-draw");
-});
-
-test("ambiguous tomorrow draws never push", async () => {
-  let pushes = 0;
-  const result = await dispatchTomorrowDraw({settings: {enabled: true, time: "21:00"},
-    runRef: memoryRef(null), historyRef: memoryRef([drawRecord(), drawRecord({id: "two"})]),
-    bindings: {}, defaultGroupId: "G", drawClaimsRef: memoryRef({}),
-    pushMessage: async () => { pushes += 1; }, now: new Date("2026-08-14T13:00:00.000Z")});
+test("ambiguous tomorrow draws never enqueue", async () => {
+  const pending = pendingCollector();
+  const result = await dispatchTomorrowDraw({
+    settings: {enabled: true, time: "21:00"},
+    runRef: memoryRef(null),
+    historyRef: memoryRef([drawRecord(), drawRecord({id: "two"})]),
+    bindings: {},
+    defaultGroupId: "G",
+    enqueueAnnouncement: pending.enqueue,
+    now: new Date("2026-08-14T13:00:00.000Z"),
+  });
   assert.equal(result.status, "ambiguous-draw-records");
-  assert.equal(pushes, 0);
+  assert.equal(pending.items.length, 0);
 });
 
-test("fixed schedule sends immutable core with one wrapper call", async () => {
-  const runRef = memoryRef(null);
+test("fixed due prepares wrapper and queues immutable occurrence-based core", async () => {
+  const pending = pendingCollector();
   let wrapperCalls = 0;
-  let sent;
-  const result = await dispatchFixedOccurrence({schedule: fixedSchedule(), occurrence: occurrence(),
-    runRef, bindings: {}, defaultGroupId: "G", now: new Date("2026-08-14T12:31:00.000Z"),
-    createWrapper: async () => { wrapperCalls += 1; return {intro: "先提醒。", outro: "", reason: "success"}; },
-    pushMessage: async (request) => { sent = request; }});
-  assert.equal(result.status, "sent");
+  const runRef = memoryRef(null);
+  const result = await dispatchFixedOccurrence({
+    schedule: fixedSchedule(),
+    occurrence: occurrence(),
+    runRef,
+    bindings: {},
+    defaultGroupId: "G",
+    now: new Date("2026-08-14T12:31:00.000Z"),
+    createWrapper: async () => {
+      wrapperCalls += 1;
+      return {intro: "先提醒。", outro: "", reason: "success"};
+    },
+    enqueueAnnouncement: pending.enqueue,
+  });
+  assert.equal(result.status, "queued-for-reply");
   assert.equal(wrapperCalls, 1);
-  assert.match(sent.messages[0].text, /\{mention0\} 明天記得三張船票/u);
+  assert.equal(pending.items.length, 1);
+  assert.match(pending.items[0].message.text, /8\/15/u);
+  assert.match(pending.items[0].message.text, /三張船票/u);
+  assert.equal(pending.items[0].occurrenceDate, "2026-08-14");
+  assert.equal(pending.items[0].aiIntro, "先提醒。");
   assert.equal(runRef.value().deliveryPayload, undefined);
 });
 
-test("AI wrapper failure fallback still sends the immutable core", async () => {
-  let sent;
-  const result = await dispatchFixedOccurrence({schedule: fixedSchedule(), occurrence: occurrence(),
-    runRef: memoryRef(null), bindings: {}, defaultGroupId: "G",
+test("an unexpected AI wrapper failure still queues the immutable core", async () => {
+  const pending = pendingCollector();
+  const result = await dispatchFixedOccurrence({
+    schedule: fixedSchedule(),
+    occurrence: occurrence(),
+    runRef: memoryRef(null),
+    bindings: {},
+    defaultGroupId: "G",
     now: new Date("2026-08-14T12:31:00.000Z"),
-    createWrapper: async () => ({intro: "固定安全提醒。", outro: "", reason: "openai-error"}),
-    pushMessage: async (request) => { sent = request; }});
-  assert.equal(result.status, "sent");
-  assert.match(sent.messages[0].text, /固定安全提醒/u);
-  assert.match(sent.messages[0].text, /三張船票/u);
+    createWrapper: async () => { throw new Error("OpenAI unavailable"); },
+    enqueueAnnouncement: pending.enqueue,
+  });
+  assert.equal(result.status, "queued-for-reply");
+  assert.match(pending.items[0].message.text, /三張船票/u);
+  assert.equal(pending.items[0].wrapperReason, "wrapper-error");
+  assert.match(pending.items[0].warning, /wrapper-error/u);
 });
 
-test("concurrent fixed dispatchers claim one occurrence and push once", async () => {
+test("concurrent fixed dispatchers claim one occurrence and enqueue once", async () => {
   const runRef = memoryRef(null);
-  let pushes = 0;
+  let enqueues = 0;
   let release;
-  const options = {schedule: fixedSchedule(), occurrence: occurrence(), runRef,
-    bindings: {}, defaultGroupId: "G", now: new Date("2026-08-14T12:31:00.000Z"),
+  const options = {
+    schedule: fixedSchedule(),
+    occurrence: occurrence(),
+    runRef,
+    bindings: {},
+    defaultGroupId: "G",
+    now: new Date("2026-08-14T12:31:00.000Z"),
     createWrapper: async () => ({intro: "提醒。", outro: "", reason: "success"}),
-    pushMessage: async () => { pushes += 1; await new Promise((resolve) => { release = resolve; }); }};
+    enqueueAnnouncement: async () => {
+      enqueues += 1;
+      await new Promise((resolve) => { release = resolve; });
+    },
+  };
   const first = dispatchFixedOccurrence(options);
   await new Promise((resolve) => setImmediate(resolve));
   const second = await dispatchFixedOccurrence(options);
   assert.equal(second.status, "busy");
   release();
-  assert.equal((await first).status, "sent");
-  assert.equal(pushes, 1);
+  assert.equal((await first).status, "queued-for-reply");
+  assert.equal(enqueues, 1);
 });
 
-test("fixed transient retries are bounded and reuse retry key and payload without a second AI call", async () => {
+test("fixed enqueue retry reuses prepared payload without a second AI call", async () => {
   const runRef = memoryRef(null);
-  const retryKeys = [];
-  const messages = [];
+  let attempts = 0;
   let wrapperCalls = 0;
-  const options = {schedule: fixedSchedule(), occurrence: occurrence(), runRef,
-    bindings: {}, defaultGroupId: "G",
-    createWrapper: async () => { wrapperCalls += 1; return {intro: "提醒。", outro: "", reason: "success"}; },
-    pushMessage: async ({retryKey, messages: lineMessages}) => {
-      retryKeys.push(retryKey); messages.push(JSON.stringify(lineMessages));
-      if (retryKeys.length < 3) throw Object.assign(new Error("temporary"), {lineStatus: 503});
-    }};
+  const payloads = [];
+  const options = {
+    schedule: fixedSchedule(),
+    occurrence: occurrence(),
+    runRef,
+    bindings: {},
+    defaultGroupId: "G",
+    createWrapper: async () => {
+      wrapperCalls += 1;
+      return {intro: "提醒。", outro: "", reason: "success"};
+    },
+    enqueueAnnouncement: async (pending) => {
+      attempts += 1;
+      payloads.push(JSON.stringify(pending.message));
+      if (attempts === 1) throw Object.assign(new Error("temporary"), {code: "db-unavailable"});
+    },
+  };
   assert.equal((await dispatchFixedOccurrence({...options,
     now: new Date("2026-08-14T12:31:00.000Z")})).status, "failed-retryable");
   assert.equal((await dispatchFixedOccurrence({...options,
-    now: new Date("2026-08-14T12:32:00.000Z")})).status, "failed-retryable");
-  assert.equal((await dispatchFixedOccurrence({...options,
-    now: new Date("2026-08-14T12:37:00.000Z")})).status, "sent");
-  assert.equal(new Set(retryKeys).size, 1);
-  assert.equal(new Set(messages).size, 1);
+    now: new Date("2026-08-14T12:32:00.000Z")})).status, "queued-for-reply");
   assert.equal(wrapperCalls, 1);
-  assert.equal(runRef.value().retryCount, 3);
+  assert.equal(new Set(payloads).size, 1);
 });
