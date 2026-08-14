@@ -89,32 +89,77 @@ class MemoryDb {
   }
 }
 
-class ColdCacheGroupRef {
-  constructor(serverRef) {
+class ColdCacheRef {
+  constructor(serverRef, state = {getCount: 0, firstTransactionValues: []}) {
     this.serverRef = serverRef;
-    this.warmed = false;
-    this.cachedValue = null;
-    this.getCount = 0;
-    this.firstTransactionValue = undefined;
+    this.state = state;
+  }
+
+  child(path) {
+    return new ColdCacheRef(this.serverRef.child(path), this.state);
+  }
+
+  value() {
+    return this.serverRef.value();
   }
 
   async get() {
-    this.getCount += 1;
-    const snapshot = await this.serverRef.get();
-    this.cachedValue = snapshot.val();
-    this.warmed = true;
-    return snapshot;
+    this.state.getCount += 1;
+    return this.serverRef.get();
+  }
+
+  async set(value) {
+    return this.serverRef.set(value);
+  }
+
+  async update(values) {
+    return this.serverRef.update(values);
   }
 
   async transaction(update) {
-    this.firstTransactionValue = this.warmed ? clone(this.cachedValue) : null;
-    if (!this.warmed) {
-      const next = update(null);
-      return {
-        committed: next !== undefined,
-        snapshot: {val: () => clone(this.serverRef.value())},
-      };
+    const path = this.serverRef.path.join("/") || "/";
+    this.state.firstTransactionValues.push({path, value: null});
+    const localProposal = update(null);
+    if (localProposal === undefined) {
+      return {committed: false, snapshot: {val: () => clone(this.serverRef.value())}};
     }
+    // Simulate the SDK receiving datastale/server state and rerunning the
+    // callback after the initial cold local-cache proposal.
+    return this.serverRef.transaction(update);
+  }
+}
+
+class ColdCacheDb {
+  constructor(serverDb) {
+    this.serverDb = serverDb;
+    this.state = {getCount: 0, firstTransactionValues: []};
+  }
+
+  ref(path) {
+    return new ColdCacheRef(this.serverDb.ref(path), this.state);
+  }
+}
+
+class BeforeTransactionRef {
+  constructor(serverRef, beforeTransaction) {
+    this.serverRef = serverRef;
+    this.beforeTransaction = beforeTransaction;
+  }
+
+  child(path) {
+    return new BeforeTransactionRef(this.serverRef.child(path), this.beforeTransaction);
+  }
+
+  async get() {
+    return this.serverRef.get();
+  }
+
+  async update(values) {
+    return this.serverRef.update(values);
+  }
+
+  async transaction(update) {
+    await this.beforeTransaction(this.serverRef);
     return this.serverRef.transaction(update);
   }
 }
@@ -209,27 +254,26 @@ test("eligible queue is oldest scheduledFor then createdAt", () => {
     .map((item) => item.id), ["oldA", "oldB", "later"]);
 });
 
-test("cold-cache claim pre-reads server state before the atomic transaction", async () => {
-  const db = new MemoryDb();
-  await addPending(db, fixedPending("cold-pending"));
-  const serverRef = pendingGroupRef(db, GROUP_ID);
-
-  const unwarmed = new ColdCacheGroupRef(serverRef);
-  const aborted = await unwarmed.transaction((current) => current || undefined);
-  assert.equal(unwarmed.firstTransactionValue, null);
-  assert.equal(aborted.committed, false);
-  assert.equal(pendingItem(db, "cold-pending").status, "pending");
-
-  const coldInstanceRef = new ColdCacheGroupRef(serverRef);
-  const claim = await claimPendingBatch(coldInstanceRef, {
+test("cold-cache server discovery claims two pending after initial null callbacks", async () => {
+  const serverDb = new MemoryDb();
+  await addPending(serverDb, fixedPending("cold-a", "2026-08-14T13:00:00.000Z"));
+  await addPending(serverDb, fixedPending("cold-b", "2026-08-14T13:01:00.000Z"));
+  const coldDb = new ColdCacheDb(serverDb);
+  const claim = await claimPendingBatch(pendingGroupRef(coldDb, GROUP_ID), {
     eventId: "evt-cold-start",
-    maxItems: 1,
+    maxItems: 2,
     now: new Date("2026-08-14T13:07:00.000Z"),
   });
-  assert.equal(coldInstanceRef.getCount, 1);
-  assert.equal(coldInstanceRef.firstTransactionValue.items["cold-pending"].status, "pending");
+  assert.equal(coldDb.state.getCount, 1);
+  assert.ok(coldDb.state.firstTransactionValues.length >= 3);
+  assert.equal(coldDb.state.firstTransactionValues.every((entry) => entry.value === null), true);
   assert.equal(claim.claimed, true);
-  assert.equal(claim.items[0].id, "cold-pending");
+  assert.equal(claim.serverCandidateCount, 2);
+  assert.equal(claim.claimedCount, 2);
+  assert.equal(claim.resultStatus, "claimed");
+  assert.deepEqual(claim.items.map((item) => item.id), ["cold-a", "cold-b"]);
+  assert.equal(pendingItem(serverDb, "cold-a").status, "claimed");
+  assert.equal(pendingItem(serverDb, "cold-b").status, "claimed");
 });
 
 test("claim reports empty only when server queue is genuinely empty", async () => {
@@ -241,6 +285,52 @@ test("claim reports empty only when server queue is genuinely empty", async () =
   });
   assert.equal(claim.claimed, false);
   assert.equal(claim.reason, "empty");
+  assert.equal(claim.serverCandidateCount, 0);
+  assert.equal(db.queues.size, 0);
+});
+
+test("candidate claimed after discovery is revalidated and reported as a lost race", async () => {
+  const db = new MemoryDb();
+  await addPending(db, fixedPending("race-claimed"));
+  let changed = false;
+  const groupRef = new BeforeTransactionRef(pendingGroupRef(db, GROUP_ID), async (serverRef) => {
+    if (changed || !serverRef.path.join("/").endsWith("items/race-claimed")) return;
+    changed = true;
+    serverRef.write({...serverRef.value(), status: "claimed",
+      claim: {eventKey: "other-event", claimedAt: SCHEDULED_AT,
+        leaseUntil: Date.parse("2026-08-14T14:00:00.000Z")}});
+  });
+  const claim = await claimPendingBatch(groupRef, {
+    eventId: "evt-race-claimed",
+    maxItems: 1,
+    now: new Date("2026-08-14T13:07:00.000Z"),
+  });
+  assert.equal(claim.claimed, false);
+  assert.equal(claim.reason, "lost-race");
+  assert.equal(claim.attemptedClaimCount, 1);
+  assert.equal(claim.raceLostCount, 1);
+  assert.equal(pendingItem(db, "race-claimed").claim.eventKey, "other-event");
+});
+
+test("candidate sent after discovery cannot be claimed or recreated", async () => {
+  const db = new MemoryDb();
+  await addPending(db, fixedPending("race-sent"));
+  let changed = false;
+  const groupRef = new BeforeTransactionRef(pendingGroupRef(db, GROUP_ID), async (serverRef) => {
+    if (changed || !serverRef.path.join("/").endsWith("items/race-sent")) return;
+    changed = true;
+    serverRef.write({...serverRef.value(), status: "sent", claim: null,
+      sentAt: "2026-08-14T13:06:30.000Z", sentVia: "reply"});
+  });
+  const claim = await claimPendingBatch(groupRef, {
+    eventId: "evt-race-sent",
+    maxItems: 1,
+    now: new Date("2026-08-14T13:07:00.000Z"),
+  });
+  assert.equal(claim.claimed, false);
+  assert.equal(claim.reason, "lost-race");
+  assert.equal(pendingItem(db, "race-sent").status, "sent");
+  assert.equal(pendingItem(db, "race-sent").claim, null);
 });
 
 test("active claims, expired announcements, and sent announcements are not claimable", async () => {
@@ -295,6 +385,24 @@ test("next formal-group text sends pending through one Reply call", async () => 
   assert.deepEqual(calls[0].map((message) => message.text), ["公告 one"]);
   assert.equal(pendingItem(db, "one").status, "sent");
   assert.equal(pendingItem(db, "one").sentVia, "reply");
+});
+
+test("production cold-cache simulation reaches Reply and settles the claimed item", async () => {
+  const serverDb = new MemoryDb();
+  await addPending(serverDb, fixedPending("production-cold", SCHEDULED_AT, "cold reply"));
+  const coldDb = new ColdCacheDb(serverDb);
+  const calls = [];
+  const outcome = await consumePendingAnnouncements({
+    db: coldDb,
+    event: event({webhookEventId: "evt-production-cold"}),
+    defaultGroupId: GROUP_ID,
+    sendReply: async (messages) => calls.push(messages),
+    now: new Date("2026-08-14T13:07:00.000Z"),
+  });
+  assert.equal(outcome.status, "sent-via-reply");
+  assert.deepEqual(calls, [[{type: "text", text: "cold reply"}]]);
+  assert.equal(pendingItem(serverDb, "production-cold").status, "sent");
+  assert.equal(pendingItem(serverDb, "production-cold").sentVia, "reply");
 });
 
 test("Reply consumption forwards claimed safe ids for error diagnostics", async () => {
@@ -402,6 +510,25 @@ test("two concurrent webhook events can claim a pending only once", async () => 
   release();
   await first;
   assert.equal(replyCalls, 1);
+});
+
+test("two concurrent claims safely split two candidates without duplicate ids", async () => {
+  const db = new MemoryDb();
+  await addPending(db, fixedPending("first", "2026-08-14T13:00:00.000Z"));
+  await addPending(db, fixedPending("second", "2026-08-14T13:01:00.000Z"));
+  const groupRef = pendingGroupRef(db, GROUP_ID);
+  const [left, right] = await Promise.all([
+    claimPendingBatch(groupRef, {eventId: "evt-left", maxItems: 1,
+      now: new Date("2026-08-14T13:07:00.000Z")}),
+    claimPendingBatch(groupRef, {eventId: "evt-right", maxItems: 1,
+      now: new Date("2026-08-14T13:07:00.000Z")}),
+  ]);
+  assert.equal(left.claimed, true);
+  assert.equal(right.claimed, true);
+  const claimedIds = [...left.items, ...right.items].map((item) => item.id).sort();
+  assert.deepEqual(claimedIds, ["first", "second"]);
+  assert.equal(new Set(claimedIds).size, 2);
+  assert.equal(left.raceLostCount + right.raceLostCount, 1);
 });
 
 test("Reply failure releases pending; redelivery is blocked but a new event recovers", async () => {

@@ -103,6 +103,10 @@ test("pending logs omit reply token and raw LINE identifiers", () => {
   const log = wrapper[0].match(/logger\.info\("LINE reply-first event"[\s\S]*?\n    \}\);/u);
   assert.ok(log);
   assert.match(log[0], /pendingIds|eventType|sentVia|status/u);
+  for (const field of ["serverCandidateCount", "attemptedClaimCount", "claimedCount",
+    "raceLostCount", "claimResult"]) {
+    assert.match(log[0], new RegExp(`\\b${field}\\b`, "u"));
+  }
   assert.doesNotMatch(log[0], /replyToken|groupId|userId|token/u);
 });
 

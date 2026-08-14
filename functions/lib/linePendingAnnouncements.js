@@ -97,12 +97,16 @@ function isClaimExpired(item, nowMs) {
     Number(item.claim && item.claim.leaseUntil) <= nowMs;
 }
 
-function eligiblePendingItems(items, now = new Date()) {
+function isEligiblePendingItem(item, now = new Date()) {
   const nowMs = now.getTime();
+  return Boolean(item && (item.status === "pending" || isClaimExpired(item, nowMs)) &&
+    (!item.expiresAt || Date.parse(item.expiresAt) > nowMs) &&
+    validLineMessage(item.message));
+}
+
+function eligiblePendingItems(items, now = new Date()) {
   return Object.values(items && typeof items === "object" ? items : {})
-    .filter((item) => item && (item.status === "pending" || isClaimExpired(item, nowMs)))
-    .filter((item) => !item.expiresAt || Date.parse(item.expiresAt) > nowMs)
-    .filter((item) => validLineMessage(item.message))
+    .filter((item) => isEligiblePendingItem(item, now))
     .sort((left, right) => String(left.scheduledFor || "").localeCompare(
       String(right.scheduledFor || "")) ||
       String(left.createdAt || "").localeCompare(String(right.createdAt || "")) ||
@@ -116,6 +120,73 @@ function trimEventHistory(events, limit = EVENT_HISTORY_LIMIT) {
     .slice(0, limit));
 }
 
+async function reservePendingEvent(eventsRef, eventKey, {claimedAt, leaseUntil} = {}) {
+  let reserved = false;
+  const transaction = await eventsRef.transaction((current) => {
+    const events = current && typeof current === "object" ? {...current} : {};
+    if (events[eventKey]) {
+      reserved = false;
+      return;
+    }
+    reserved = true;
+    events[eventKey] = {
+      status: "claiming",
+      claimedAt,
+      updatedAt: claimedAt,
+      leaseUntil,
+      pendingIds: [],
+    };
+    return trimEventHistory(events);
+  });
+  return transaction.committed && reserved;
+}
+
+function claimRaceReason(item, now) {
+  if (!item || typeof item !== "object") return "missing";
+  if (item.status === "sent" || item.status === "cancelled") return item.status;
+  if (item.status === "claimed" && !isClaimExpired(item, now.getTime())) {
+    return "active-claim";
+  }
+  if (item.expiresAt && Date.parse(item.expiresAt) <= now.getTime()) return "expired";
+  return "ineligible";
+}
+
+async function claimPendingItem(itemRef, {eventKey, now, leaseMs} = {}) {
+  let claimedItem = null;
+  let reason = "lost-race";
+  const claimedAt = now.toISOString();
+  const leaseUntil = now.getTime() + leaseMs;
+  const transaction = await itemRef.transaction((current) => {
+    if (current === null) {
+      claimedItem = null;
+      reason = "server-sync";
+      // Returning null, rather than undefined, keeps the transaction alive. If
+      // the server has this candidate it responds datastale and reruns this
+      // callback with authoritative state; if it is truly absent this is a
+      // committed no-op and the candidate remains lost.
+      return null;
+    }
+    if (!isEligiblePendingItem(current, now)) {
+      claimedItem = null;
+      reason = claimRaceReason(current, now);
+      return;
+    }
+    claimedItem = {
+      ...current,
+      status: "claimed",
+      claim: {eventKey, claimedAt, leaseUntil},
+      error: null,
+    };
+    reason = null;
+    return claimedItem;
+  });
+  return {
+    claimed: transaction.committed && Boolean(claimedItem),
+    item: transaction.committed ? claimedItem : null,
+    reason: transaction.committed && claimedItem ? null : reason || "lost-race",
+  };
+}
+
 async function claimPendingBatch(groupRef, {
   eventId,
   maxItems,
@@ -124,48 +195,114 @@ async function claimPendingBatch(groupRef, {
 } = {}) {
   const eventKey = pendingEventKey(eventId);
   const limit = Math.max(0, Math.min(5, Number(maxItems) || 0));
-  if (!eventId || !limit) return {claimed: false, reason: "ineligible", eventKey, items: []};
-  // A new Cloud Run instance has an empty RTDB client cache. Prime it from the
-  // server before starting the transaction; the transaction still re-reads and
-  // atomically decides the claim from its own current state.
-  await groupRef.get();
-  let decision = {claimed: false, reason: "empty", eventKey, items: []};
-  const transaction = await groupRef.transaction((current) => {
-    const state = current && typeof current === "object" ? current : {};
-    const events = trimEventHistory(state.events);
-    if (events[eventKey]) {
-      decision = {claimed: false, reason: "duplicate-event", eventKey, items: []};
-      return;
+  const base = {eventKey, items: [], serverCandidateCount: 0,
+    attemptedClaimCount: 0, claimedCount: 0, raceLostCount: 0};
+  if (!eventId || !limit) {
+    return {...base, claimed: false, reason: "ineligible", resultStatus: "ineligible"};
+  }
+
+  // The server snapshot is discovery only. Every mutation below revalidates
+  // the exact event or item path in a transaction before it can be committed.
+  const serverSnapshot = await groupRef.get();
+  const serverValue = serverSnapshot.val();
+  const serverState = serverValue && typeof serverValue === "object" ? serverValue : {};
+  const candidates = eligiblePendingItems(serverState.items, now);
+  base.serverCandidateCount = candidates.length;
+  if (serverState.events && serverState.events[eventKey]) {
+    return {...base, claimed: false, reason: "duplicate-event",
+      resultStatus: "duplicate-event"};
+  }
+  if (!candidates.length) {
+    return {...base, claimed: false, reason: "empty", resultStatus: "empty"};
+  }
+
+  const claimedAt = now.toISOString();
+  const leaseUntil = now.getTime() + leaseMs;
+  const eventsRef = groupRef.child("events");
+  const eventRef = eventsRef.child(eventKey);
+  const reserved = await reservePendingEvent(eventsRef, eventKey, {claimedAt, leaseUntil});
+  if (!reserved) {
+    return {...base, claimed: false, reason: "duplicate-event",
+      resultStatus: "duplicate-event"};
+  }
+
+  const items = [];
+  let attemptedClaimCount = 0;
+  let raceLostCount = 0;
+  try {
+    for (const candidate of candidates) {
+      if (items.length >= limit) break;
+      attemptedClaimCount += 1;
+      const result = await claimPendingItem(groupRef.child(`items/${candidate.id}`), {
+        eventKey,
+        now,
+        leaseMs,
+      });
+      if (result.claimed) items.push(result.item);
+      else raceLostCount += 1;
     }
-    const candidates = eligiblePendingItems(state.items, now).slice(0, limit);
-    if (!candidates.length) {
-      decision = {claimed: false, reason: "empty", eventKey, items: []};
-      return;
-    }
-    const claimedAt = now.toISOString();
-    const leaseUntil = now.getTime() + leaseMs;
-    const items = {...(state.items || {})};
-    candidates.forEach((item) => {
-      items[item.id] = {
-        ...item,
-        status: "claimed",
-        claim: {eventKey, claimedAt, leaseUntil},
-        error: null,
-      };
-    });
-    events[eventKey] = {
-      status: "claimed",
-      claimedAt,
-      updatedAt: claimedAt,
-      leaseUntil,
-      pendingIds: candidates.map((item) => item.id),
-    };
-    decision = {claimed: true, reason: null, eventKey,
-      items: candidates.map((item) => items[item.id])};
-    return {...state, items, events};
+  } catch (error) {
+    await Promise.allSettled(items.map((item) => settlePendingItem(
+      groupRef.child(`items/${item.id}`), eventKey, {released: true, error: "claim-failed"})));
+    await eventRef.update({status: "failed", updatedAt: new Date().toISOString(),
+      leaseUntil: 0, error: "claim-failed"});
+    throw error;
+  }
+
+  const resultStatus = items.length ? "claimed" : "lost-race";
+  await eventRef.update({
+    status: resultStatus,
+    updatedAt: claimedAt,
+    leaseUntil: items.length ? leaseUntil : 0,
+    pendingIds: items.map((item) => item.id),
+    serverCandidateCount: candidates.length,
+    attemptedClaimCount,
+    claimedCount: items.length,
+    raceLostCount,
   });
-  return transaction.committed ? decision : {...decision, claimed: false,
-    reason: decision.reason || "busy"};
+  return {
+    ...base,
+    claimed: items.length > 0,
+    reason: items.length ? null : "lost-race",
+    resultStatus,
+    items,
+    attemptedClaimCount,
+    claimedCount: items.length,
+    raceLostCount,
+  };
+}
+
+async function settlePendingItem(itemRef, eventKey, {
+  sent = false,
+  cancelled = false,
+  released = false,
+  sentAt = new Date().toISOString(),
+  error = null,
+} = {}) {
+  let settledItem = null;
+  const transaction = await itemRef.transaction((current) => {
+    if (current === null) {
+      settledItem = null;
+      return null;
+    }
+    if (!current || current.status !== "claimed" ||
+        !current.claim || current.claim.eventKey !== eventKey) {
+      settledItem = null;
+      return;
+    }
+    if (sent) {
+      settledItem = {...current, status: "sent", claim: null, sentAt,
+        sentVia: "reply", error: null};
+    } else if (cancelled) {
+      settledItem = {...current, status: "cancelled", claim: null,
+        cancelledAt: sentAt, error: null};
+    } else if (released || (!sent && !cancelled)) {
+      settledItem = {...current, status: "pending", claim: null,
+        error: error ? String(error).slice(0, 160) : null};
+    }
+    return settledItem;
+  });
+  return transaction.committed ? settledItem : null;
 }
 
 async function settlePendingBatch(groupRef, claim, {
@@ -179,38 +316,24 @@ async function settlePendingBatch(groupRef, claim, {
   const sent = new Set(sentIds);
   const cancelled = new Set(cancelledIds);
   const released = new Set(releasedIds);
-  const transaction = await groupRef.transaction((current) => {
-    if (!current || typeof current !== "object") return;
-    const items = {...(current.items || {})};
-    for (const itemId of claim.items.map((item) => item.id)) {
-      const item = items[itemId];
-      if (!item || item.status !== "claimed" ||
-          !item.claim || item.claim.eventKey !== claim.eventKey) continue;
-      if (sent.has(itemId)) {
-        items[itemId] = {...item, status: "sent", claim: null, sentAt,
-          sentVia: "reply", error: null};
-      } else if (cancelled.has(itemId)) {
-        items[itemId] = {...item, status: "cancelled", claim: null,
-          cancelledAt: sentAt, error: null};
-      } else if (released.has(itemId) || (!sent.has(itemId) && !cancelled.has(itemId))) {
-        items[itemId] = {...item, status: "pending", claim: null,
-          error: error ? String(error).slice(0, 160) : null};
-      }
-    }
-    const events = {...(current.events || {})};
-    events[claim.eventKey] = {
-      ...(events[claim.eventKey] || {}),
-      status: error ? "failed" : "sent",
-      updatedAt: sentAt,
-      sentAt: error ? null : sentAt,
-      sentIds: [...sent],
-      cancelledIds: [...cancelled],
-      error: error ? String(error).slice(0, 160) : null,
-      leaseUntil: 0,
-    };
-    return {...current, items, events: trimEventHistory(events)};
+  const settledItems = (await Promise.all(claim.items.map((item) =>
+    settlePendingItem(groupRef.child(`items/${item.id}`), claim.eventKey, {
+      sent: sent.has(item.id),
+      cancelled: cancelled.has(item.id),
+      released: released.has(item.id),
+      sentAt,
+      error,
+    })))).filter(Boolean);
+  await groupRef.child(`events/${claim.eventKey}`).update({
+    status: error ? "failed" : "sent",
+    updatedAt: sentAt,
+    sentAt: error ? null : sentAt,
+    sentIds: [...sent],
+    cancelledIds: [...cancelled],
+    error: error ? String(error).slice(0, 160) : null,
+    leaseUntil: 0,
   });
-  return transaction.snapshot.val();
+  return {settledItems};
 }
 
 async function releasePendingBatch(groupRef, claim, error, now = new Date()) {

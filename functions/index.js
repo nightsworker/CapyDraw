@@ -1424,6 +1424,11 @@ async function processLineWebhookEventWithPending(event, payload, token) {
       pendingCount: outcome.sentPending && outcome.sentPending.length || 0,
       pendingIds: (outcome.sentPending || []).map((item) => item.id),
       sentVia: outcome.sentPending && outcome.sentPending.length ? "reply" : null,
+      serverCandidateCount: outcome.claim && outcome.claim.serverCandidateCount || 0,
+      attemptedClaimCount: outcome.claim && outcome.claim.attemptedClaimCount || 0,
+      claimedCount: outcome.claim && outcome.claim.claimedCount || 0,
+      raceLostCount: outcome.claim && outcome.claim.raceLostCount || 0,
+      claimResult: outcome.claim && outcome.claim.resultStatus || null,
     });
   });
 }
