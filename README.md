@@ -303,6 +303,24 @@ Command 的原始結構化結果不變，再以 80% 機率加入簡短 opening�
 
 要擴充人格時，在 `MIAOBING_RESPONSES` 增加集中管理的 phrase pool，並在 ordered `INTENT_RULES` 加入 intent/keyword；需要 ambient 的 intent 再加入 `STRONG_INTENTS` 或 `CONTEXTUAL_INTENTS`。Contextual 機率由 `AMBIENT_CONTEXTUAL_PROBABILITY` 調整，cooldown 由 `AMBIENT_COOLDOWN_MS` 與 `DIRECT_MENTION_COOLDOWN_MS` 調整。未來若改接 AI，可以保留 routing 與 cooldown，只替換 `generateDirectMentionReply(context)`。
 
+## LINE 自動推播中心 V1
+
+網站的「自動推播」頁只對通過既有 Firebase `ADMIN_UID` allowlist 驗證的 Google 使用者顯示。前端沿用 `callLineAdminFunction` 取得 ID token，所有建立、修改、暫停、刪除都經過 `withAdminRequest`；browser 不直接讀寫排程 RTDB。資料放在 server-only `guildDraw/lineSchedules/items`、`runs`、`tomorrowDraw`、`tomorrowRuns` 與 `drawClaims`，現有 database root default deny 已使這些 path 保持 private，沒有放寬 `guildDraw/main` rules。Schedule 不保存 LINE token、OpenAI key、完整 groupId 或 LINE userId；成員 token 只保存 binding reference，執行當下才從正式群 binding 重新解析。
+
+`scheduleDispatcher` 是唯一的 Firebase Functions v2 `onSchedule` dispatcher，每分鐘以 `Asia/Taipei` 執行一次，並綁定既有 `LINE_CHANNEL_ACCESS_TOKEN` 與 `OPENAI_API_KEY` secrets。它不會替每筆網站 schedule 建 Cloud Scheduler job，也不會在非 due occurrence 呼叫 OpenAI。所有 V1 推播固定送到 `lineSettings/defaultGroupId`，網站不提供任意 groupId 欄位。
+
+明日抽籤設定在 `guildDraw/lineSchedules/tomorrowDraw`。每天設定時間只找隔天日期；沒有紀錄時將 occurrence 設為 `waiting-for-draw` 並以 `nextCheckAt` 每 5 分鐘重查，23:59 最後檢查仍不存在才標為 `expired-no-draw`，隔天使用全新的 runKey，不補送昨天 occurrence。同日期若找到多筆就 fail closed 為 `ambiguous-draw-records`。找到單筆後仍以 `isDrawPublishedToLine()` 判斷；手動發送、自動發送或人工 backfill 只要已有可信 publication metadata，就標為 `skipped-already-published`。自動發送沿用 manual `sendDrawToLine` 共用的 `sendDrawLineRecord()` 與 `buildDrawLineMessage()`，LINE push 成功後才寫 `lineSentAt`、增加 `lineSendCount` 並設 `lastLineSendStatus = sent`。
+
+Manual 與 scheduler 共用 record-level RTDB lease claim。兩邊同時處理 unpublished draw 時只有一邊可以 push；失敗 lease 可恢復，不會永久卡住。Scheduled push 的 occurrence runKey 不使用實際 execution time，並衍生 stable UUID `X-Line-Retry-Key`；若 Function 在 LINE 接受後中斷，同 occurrence 重試仍使用相同 retry key。固定公告 transient failure 最多 3 次，採 1 分鐘、5 分鐘 backoff，且不跨 occurrence calendar day。每筆 schedule 只保留最近 20 筆 sanitized run history；active retry 暫存相同 payload，terminal 後立即移除，不保存完整公告內容。
+
+固定公告 recurrence 支援 daily、每週多選 weekday、biweekly 與 monthly。Biweekly 以 `startDate` 所在 Taipei calendar week 的星期一作 week 0，不用 14 天毫秒差；monthly 指定 29～31 日遇到短月時在月底執行。`startDate`、`endDate` 都 inclusive，省略 endDate 代表永久。Backend 計算並保存 `nextRunAt`，dispatcher 即使晚一分鐘仍會處理尚未 claim 的 due occurrence。
+
+核心訊息以結構化 token 保存：plain text、member `bindingId`、`@ALL`、以及 occurrence date X 的整數 offset 與 `M/D`／`YYYY/MM/DD` format。Member 與 `@ALL` 執行時建立 LINE `textV2` substitution；失效或已搬群的 binding 只降級成原 display plain text並留下 warning，絕不 mention 到其他人。日期以 occurrence 的 Taipei calendar date 為 X，不使用稍晚執行時的 server UTC 日期。
+
+固定公告在 core 完整解析後，最多呼叫一次現有 `gpt-5-mini` Responses API，以 structured output 同時產生 0～1 句 intro 與 0～1 句 outro；使用 persona、相關 stable Canon、既有 AI daily/minute limits與 profanity guard，但不載入 Conversation 或 Admin Long-Term Memory。Mention substitution、日期、數字與 core 永遠由程式原樣組裝，不讓模型改寫。OpenAI timeout、empty output、rate limit、daily cap 或 API failure 時改用 deterministic 短 wrapper，核心仍照常發送。V1 不送 sticker-only，也不額外替 canonical draw message 加 AI wrapper。
+
+Admin endpoints：`getLineSchedules`、`createLineSchedule`、`updateLineSchedule`、`deleteLineSchedule`、`setLineScheduleEnabled`、`getAutomationSettings`、`updateTomorrowDrawAutomation`。所有 endpoint 都使用目前的 CORS、Firebase ID token 與 `ADMIN_UID` allowlist，沒有第二套權限系統。
+
 ## 發送與真正 @mention 測試
 
 1. 至少讓本次船長、守護天使及船艙 4 的玩家都完成綁定，而且綁定與推送使用同一 LINE 群組。

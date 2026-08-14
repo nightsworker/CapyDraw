@@ -1,6 +1,8 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const {onRequest} = require("firebase-functions/v2/https");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {defineSecret, defineString} = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const {initializeApp} = require("firebase-admin/app");
@@ -24,13 +26,15 @@ const {
   validateBackfillRecordId,
 } = require("./lib/drawPublicationBackfill");
 const {
+  sendDrawLineRecord,
+} = require("./lib/drawLineDelivery");
+const {
   buildAdminBindingSuccessText,
   buildAdminUnbindSuccessText,
   bindingKeyForGroup,
   buildBindingListText,
   buildBindingSuccessText,
   buildBotHelpText,
-  buildDrawLineMessage,
   buildMemberBindingRows,
   buildUnboundListText,
   buildUnbindSuccessText,
@@ -116,6 +120,29 @@ const {
   applyMiaobingStyleGuard,
   redactDisallowedProfanity,
 } = require("./lib/miaobingStyle");
+const {
+  SCHEDULE_TIMEZONE,
+  addCalendarDays,
+  findNextOccurrence,
+  fixedRunKey,
+  latestTomorrowOccurrence,
+  occurrenceTimestamp,
+  pruneRunHistory,
+  renderScheduleCore,
+  taipeiDateKey,
+  validateLineSchedule,
+  validateTomorrowAutomation,
+} = require("./lib/lineSchedule");
+const {
+  dispatchFixedOccurrence,
+  dispatchTomorrowDraw,
+  nextOccurrenceAfter,
+  pruneRunsRef,
+} = require("./lib/lineScheduleRuntime");
+const {
+  createScheduleWrapper,
+  generateMiaobingScheduleWrapper,
+} = require("./lib/miaobingScheduleWrapper");
 
 initializeApp();
 
@@ -179,24 +206,31 @@ async function withAdminRequest(req, res, methods, handler) {
   }
 }
 
-async function callLine(path, token, body, method = "POST") {
+async function callLine(path, token, body, method = "POST", {retryKey = null} = {}) {
   const response = await fetch(`${LINE_API_BASE}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
       ...(body ? {"Content-Type": "application/json"} : {}),
+      ...(retryKey ? {"X-Line-Retry-Key": retryKey} : {}),
     },
     ...(body ? {body: JSON.stringify(body)} : {}),
   });
+  if (response.status === 409 && retryKey && response.headers.get("x-line-accepted-request-id")) {
+    return {retryAccepted: true};
+  }
   if (!response.ok) {
-    const detail = await response.text();
-    logger.error("LINE Messaging API request failed", {path, status: response.status, detail});
+    logger.error("LINE Messaging API request failed", {path, status: response.status});
     const error = new Error(`LINE Messaging API 回傳 ${response.status}。`);
     error.lineStatus = response.status;
     throw error;
   }
   if (response.status === 204) return null;
   return response.json();
+}
+
+async function pushLineMessages({to, messages, retryKey} = {}) {
+  return callLine("/message/push", LINE_CHANNEL_ACCESS_TOKEN.value(), {to, messages}, "POST", {retryKey});
 }
 
 async function replyMessages(replyToken, lineMessages, token) {
@@ -1354,58 +1388,45 @@ exports.sendDrawToLine = onRequest({
   }
 
   const db = getDatabase();
-  const [historySnapshot, bindingsSnapshot, settingsSnapshot] = await Promise.all([
-    db.ref("guildDraw/main/history").get(),
+  const [bindingsSnapshot, settingsSnapshot] = await Promise.all([
     db.ref("guildDraw/lineBindings").get(),
     db.ref("guildDraw/lineSettings").get(),
   ]);
-  const rawHistory = historySnapshot.val();
-  const historyEntries = Array.isArray(rawHistory) ?
-    rawHistory.map((record, index) => ({record, key: String(index)})) :
-    Object.entries(rawHistory || {}).map(([key, record]) => ({record, key}));
-  const found = historyEntries.find(({record}) => record && record.id === recordId);
-  if (!found) {
-    json(res, 404, {ok: false, error: "找不到指定的抽籤紀錄。"});
-    return;
-  }
 
   const groupId = settingsSnapshot.child("defaultGroupId").val();
   if (!groupId) {
     json(res, 409, {ok: false, error: "尚未設定正式 LINE 群組，請先完成一筆有效綁定，或由管理員明確設定。"});
     return;
   }
-  const {message, unboundMembers} = buildDrawLineMessage(found.record, bindingsSnapshot.val() || {}, groupId);
-  await callLine("/message/push", LINE_CHANNEL_ACCESS_TOKEN.value(), {
-    to: groupId,
-    messages: [message],
+  const outcome = await sendDrawLineRecord({
+    historyRef: db.ref("guildDraw/main/history"),
+    bindings: bindingsSnapshot.val() || {},
+    groupId,
+    claimsRef: db.ref("guildDraw/lineSchedules/drawClaims"),
+    recordId,
+    owner: "manual",
+    retryNamespace: `manual:${recordId}:${crypto.randomUUID()}`,
+    skipPublished: false,
+    allowRepublish: true,
+    pushMessage: pushLineMessages,
   });
-
-  const sentAt = new Date().toISOString();
-  const historyRef = db.ref("guildDraw/main/history");
-  const transaction = await historyRef.transaction((currentHistory) => {
-    if (!currentHistory) return;
-    const nextHistory = Array.isArray(currentHistory) ? [...currentHistory] : {...currentHistory};
-    const currentEntry = Array.isArray(nextHistory) ?
-      nextHistory.findIndex((record) => record && record.id === recordId) :
-      Object.keys(nextHistory).find((key) => nextHistory[key] && nextHistory[key].id === recordId);
-    if (currentEntry === -1 || currentEntry === undefined) return;
-    const current = nextHistory[currentEntry];
-    nextHistory[currentEntry] = {
-      ...current,
-      lineSentAt: sentAt,
-      lineSendCount: (Number(current.lineSendCount) || 0) + 1,
-      lastLineSendStatus: "sent",
-    };
-    return nextHistory;
-  });
-  const updatedHistory = transaction.snapshot.val();
-  const updatedValues = Array.isArray(updatedHistory) ? updatedHistory : Object.values(updatedHistory || {});
-  const updated = updatedValues.find((record) => record && record.id === recordId) || found.record;
+  if (outcome.status === "not-found") {
+    json(res, 404, {ok: false, error: "找不到指定的抽籤紀錄。"});
+    return;
+  }
+  if (outcome.status === "busy") {
+    json(res, 409, {ok: false, error: "這筆抽籤正在由另一個發送程序處理，請稍後重新整理。"});
+    return;
+  }
+  if (outcome.status !== "sent") {
+    json(res, 409, {ok: false, error: "這筆抽籤目前無法發送，請稍後再試。"});
+    return;
+  }
   json(res, 200, {
     ok: true,
-    unboundMembers,
-    lineSentAt: updated.lineSentAt,
-    lineSendCount: updated.lineSendCount,
+    unboundMembers: outcome.unboundMembers,
+    lineSentAt: outcome.record.lineSentAt,
+    lineSendCount: outcome.record.lineSendCount,
   });
 }));
 
@@ -1451,6 +1472,197 @@ exports.backfillDrawLinePublished = onRequest({region: REGION}, async (req, res)
       recordDate: outcome.recordDate,
       publishedAt: outcome.publishedAt,
     });
+  }));
+
+function validateScheduleId(value) {
+  const scheduleId = String(value || "").trim();
+  return /^s_[A-Za-z0-9_-]{8,80}$/u.test(scheduleId) ? scheduleId : null;
+}
+
+function publicScheduleRun(run) {
+  if (!run || typeof run !== "object") return null;
+  return {
+    runKey: String(run.runKey || ""),
+    scheduledFor: run.scheduledFor || null,
+    sentAt: run.sentAt || null,
+    status: String(run.status || "unknown").slice(0, 80),
+    warning: run.warning || null,
+    errorType: run.errorType || null,
+    retryCount: Math.max(0, Number(run.retryCount) || 0),
+    targetDrawDate: run.targetDrawDate || null,
+  };
+}
+
+function publicRunList(value) {
+  return Object.values(pruneRunHistory(value || {}))
+    .map(publicScheduleRun)
+    .filter(Boolean);
+}
+
+function nextTomorrowAutomation(settings, now = new Date()) {
+  if (!settings || settings.enabled !== true) return null;
+  const today = taipeiDateKey(now);
+  const todayTimestamp = occurrenceTimestamp(today, settings.time);
+  if (!Number.isFinite(todayTimestamp)) return null;
+  const occurrenceDate = todayTimestamp > now.getTime() ? today : addCalendarDays(today, 1);
+  const timestamp = occurrenceTimestamp(occurrenceDate, settings.time);
+  if (!Number.isFinite(timestamp)) return null;
+  return {
+    scheduledFor: new Date(timestamp).toISOString(),
+    occurrenceDate,
+    targetDrawDate: addCalendarDays(occurrenceDate, 1),
+  };
+}
+
+async function getLineScheduleResponse() {
+  const db = getDatabase();
+  const [itemsSnapshot, runsSnapshot, tomorrowSnapshot, tomorrowRunsSnapshot,
+    bindingsSnapshot, settingsSnapshot] = await Promise.all([
+    db.ref("guildDraw/lineSchedules/items").get(),
+    db.ref("guildDraw/lineSchedules/runs").get(),
+    db.ref("guildDraw/lineSchedules/tomorrowDraw").get(),
+    db.ref("guildDraw/lineSchedules/tomorrowRuns").get(),
+    db.ref("guildDraw/lineBindings").get(),
+    db.ref("guildDraw/lineSettings").get(),
+  ]);
+  const items = itemsSnapshot.val() || {};
+  const runs = runsSnapshot.val() || {};
+  const bindings = bindingsSnapshot.val() || {};
+  const defaultGroupId = settingsSnapshot.child("defaultGroupId").val();
+  const schedules = Object.values(items).filter((item) => item && typeof item === "object")
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-Hant"))
+    .map((schedule) => {
+      let previewCore = "";
+      let previewWarnings = [];
+      if (schedule.nextRunAt) {
+        try {
+          const preview = renderScheduleCore(schedule.messageTemplate, {
+            occurrenceDate: taipeiDateKey(new Date(schedule.nextRunAt)), bindings, defaultGroupId,
+          });
+          previewCore = preview.plainText;
+          previewWarnings = preview.warnings;
+        } catch {
+          previewWarnings = ["invalid-template"];
+        }
+      }
+      return {
+        ...schedule,
+        createdByUid: undefined,
+        previewCore,
+        previewWarnings,
+        runs: publicRunList(runs[schedule.id]),
+      };
+    });
+  const tomorrowDraw = tomorrowSnapshot.val() || {
+    enabled: false, time: "21:00", timezone: SCHEDULE_TIMEZONE,
+    lastRunAt: null, lastRunStatus: null,
+  };
+  return {
+    schedules,
+    tomorrowDraw: {...tomorrowDraw, nextOccurrence: nextTomorrowAutomation(tomorrowDraw)},
+    tomorrowRuns: publicRunList(tomorrowRunsSnapshot.val()),
+    hasDefaultGroup: Boolean(defaultGroupId),
+  };
+}
+
+exports.getLineSchedules = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["GET"], async () => {
+    json(res, 200, {ok: true, ...await getLineScheduleResponse()});
+  }));
+
+exports.getAutomationSettings = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["GET"], async () => {
+    const data = await getLineScheduleResponse();
+    json(res, 200, {ok: true, tomorrowDraw: data.tomorrowDraw,
+      tomorrowRuns: data.tomorrowRuns, hasDefaultGroup: data.hasDefaultGroup});
+  }));
+
+exports.createLineSchedule = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["POST"], async (adminUser) => {
+    const scheduleId = `s_${crypto.randomUUID().replaceAll("-", "")}`;
+    const schedule = validateLineSchedule(req.body && req.body.schedule, {
+      id: scheduleId, uid: adminUser.uid, now: new Date(),
+    });
+    await getDatabase().ref(`guildDraw/lineSchedules/items/${scheduleId}`).set(schedule);
+    json(res, 201, {ok: true, schedule});
+  }));
+
+exports.updateLineSchedule = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["POST"], async (adminUser) => {
+    const scheduleId = validateScheduleId(req.body && req.body.scheduleId);
+    if (!scheduleId) {
+      json(res, 400, {ok: false, error: "scheduleId 格式不正確。"});
+      return;
+    }
+    const ref = getDatabase().ref(`guildDraw/lineSchedules/items/${scheduleId}`);
+    const existing = (await ref.get()).val();
+    if (!existing) {
+      json(res, 404, {ok: false, error: "找不到指定排程。"});
+      return;
+    }
+    const schedule = validateLineSchedule(req.body && req.body.schedule, {
+      id: scheduleId, uid: adminUser.uid, now: new Date(), existing,
+    });
+    await ref.set(schedule);
+    json(res, 200, {ok: true, schedule});
+  }));
+
+exports.deleteLineSchedule = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["POST"], async () => {
+    const scheduleId = validateScheduleId(req.body && req.body.scheduleId);
+    if (!scheduleId) {
+      json(res, 400, {ok: false, error: "scheduleId 格式不正確。"});
+      return;
+    }
+    const db = getDatabase();
+    const existing = (await db.ref(`guildDraw/lineSchedules/items/${scheduleId}`).get()).val();
+    if (!existing) {
+      json(res, 404, {ok: false, error: "找不到指定排程。"});
+      return;
+    }
+    await Promise.all([
+      db.ref(`guildDraw/lineSchedules/items/${scheduleId}`).remove(),
+      db.ref(`guildDraw/lineSchedules/runs/${scheduleId}`).remove(),
+    ]);
+    json(res, 200, {ok: true});
+  }));
+
+exports.setLineScheduleEnabled = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["POST"], async () => {
+    const scheduleId = validateScheduleId(req.body && req.body.scheduleId);
+    const enabled = req.body && req.body.enabled;
+    if (!scheduleId || typeof enabled !== "boolean") {
+      json(res, 400, {ok: false, error: "排程啟用設定格式不正確。"});
+      return;
+    }
+    const ref = getDatabase().ref(`guildDraw/lineSchedules/items/${scheduleId}`);
+    let updated = null;
+    const now = new Date();
+    const transaction = await ref.transaction((current) => {
+      if (!current || typeof current !== "object") return;
+      updated = {...current, enabled, updatedAt: now.toISOString()};
+      const next = enabled ? findNextOccurrence(updated, {after: now, inclusive: true}) : null;
+      updated.nextRunAt = next && next.scheduledFor || null;
+      return updated;
+    });
+    if (!transaction.committed || !updated) {
+      json(res, 404, {ok: false, error: "找不到指定排程。"});
+      return;
+    }
+    json(res, 200, {ok: true, schedule: updated});
+  }));
+
+exports.updateTomorrowDrawAutomation = onRequest({region: REGION}, async (req, res) =>
+  withAdminRequest(req, res, ["POST"], async (adminUser) => {
+    const ref = getDatabase().ref("guildDraw/lineSchedules/tomorrowDraw");
+    const existing = (await ref.get()).val();
+    const settings = validateTomorrowAutomation(req.body, {
+      uid: adminUser.uid, now: new Date(), existing,
+    });
+    await ref.set(settings);
+    json(res, 200, {ok: true, tomorrowDraw: {
+      ...settings, nextOccurrence: nextTomorrowAutomation(settings),
+    }});
   }));
 
 exports.getLineBindings = onRequest({region: REGION}, async (req, res) =>
@@ -1581,6 +1793,164 @@ exports.setDefaultLineGroup = onRequest({
       conflicts: migration.conflicts,
     });
   }));
+
+function fixedOccurrenceFromSchedule(schedule) {
+  const timestamp = Date.parse(schedule && schedule.nextRunAt);
+  if (!Number.isFinite(timestamp)) return null;
+  const occurrenceDate = taipeiDateKey(new Date(timestamp));
+  return {
+    occurrenceDate,
+    scheduledFor: new Date(timestamp).toISOString(),
+    timestamp,
+    runKey: fixedRunKey(schedule.id, occurrenceDate, schedule.time),
+  };
+}
+
+function fixedOccurrenceFromRun(run) {
+  const timestamp = Date.parse(run && run.scheduledFor);
+  if (!Number.isFinite(timestamp) || !run.runKey || !run.occurrenceDate) return null;
+  return {
+    occurrenceDate: run.occurrenceDate,
+    scheduledFor: new Date(timestamp).toISOString(),
+    timestamp,
+    runKey: run.runKey,
+  };
+}
+
+async function dispatchFixedSchedules({db, items, runs, bindings, defaultGroupId, now}) {
+  let dueCount = 0;
+  let claimedCount = 0;
+  const outcomes = [];
+  for (const schedule of Object.values(items || {})) {
+    if (!schedule || schedule.enabled === false || !schedule.id) continue;
+    const scheduleRuns = runs && runs[schedule.id] || {};
+    const processedRunKeys = new Set();
+    const createWrapper = (coreText) => createScheduleWrapper({
+      apiKey: OPENAI_API_KEY.value(),
+      coreText,
+      reserveUsage: () => reserveAiUsage(
+        db.ref("guildDraw/aiUsage"), `line-schedule:${schedule.id}`, new Date()),
+      generate: ({apiKey, coreText: safeCore}) =>
+        generateMiaobingScheduleWrapper({apiKey, coreText: safeCore}),
+    });
+
+    const retryRuns = Object.values(scheduleRuns)
+      .filter((run) => run && run.status === "failed-retryable" &&
+        (!run.nextAttemptAt || Date.parse(run.nextAttemptAt) <= now.getTime()))
+      .sort((a, b) => String(a.scheduledFor).localeCompare(String(b.scheduledFor)));
+    for (const run of retryRuns) {
+      const occurrence = fixedOccurrenceFromRun(run);
+      if (!occurrence) continue;
+      dueCount += 1;
+      const result = await dispatchFixedOccurrence({
+        schedule, occurrence,
+        runRef: db.ref(`guildDraw/lineSchedules/runs/${schedule.id}/${occurrence.runKey}`),
+        bindings, defaultGroupId, pushMessage: pushLineMessages, createWrapper, now,
+      });
+      processedRunKeys.add(occurrence.runKey);
+      if (!["busy", "not-due"].includes(result.status)) claimedCount += 1;
+      outcomes.push({scheduleId: schedule.id, runKey: occurrence.runKey,
+        status: result.status, retryCount: result.run && result.run.retryCount || 0});
+      await db.ref(`guildDraw/lineSchedules/items/${schedule.id}`).update({
+        lastRunAt: new Date().toISOString(),
+        lastRunStatus: result.status,
+      });
+    }
+
+    const occurrence = fixedOccurrenceFromSchedule(schedule);
+    if (!occurrence || occurrence.timestamp > now.getTime() ||
+        processedRunKeys.has(occurrence.runKey)) {
+      await pruneRunsRef(db.ref(`guildDraw/lineSchedules/runs/${schedule.id}`));
+      continue;
+    }
+    dueCount += 1;
+    const result = await dispatchFixedOccurrence({
+      schedule, occurrence,
+      runRef: db.ref(`guildDraw/lineSchedules/runs/${schedule.id}/${occurrence.runKey}`),
+      bindings, defaultGroupId, pushMessage: pushLineMessages, createWrapper, now,
+    });
+    if (!["busy", "not-due"].includes(result.status)) {
+      claimedCount += 1;
+      const next = nextOccurrenceAfter(schedule, occurrence);
+      await db.ref(`guildDraw/lineSchedules/items/${schedule.id}`).update({
+        lastRunAt: new Date().toISOString(),
+        lastRunStatus: result.status,
+        nextRunAt: next && next.scheduledFor || null,
+      });
+    }
+    outcomes.push({scheduleId: schedule.id, runKey: occurrence.runKey,
+      status: result.status, retryCount: result.run && result.run.retryCount || 0});
+    await pruneRunsRef(db.ref(`guildDraw/lineSchedules/runs/${schedule.id}`));
+  }
+  return {dueCount, claimedCount, outcomes};
+}
+
+exports.scheduleDispatcher = onSchedule({
+  region: REGION,
+  schedule: "every 1 minutes",
+  timeZone: SCHEDULE_TIMEZONE,
+  secrets: [LINE_CHANNEL_ACCESS_TOKEN, OPENAI_API_KEY],
+  timeoutSeconds: 120,
+}, async () => {
+  const db = getDatabase();
+  const now = new Date();
+  const [tomorrowSnapshot, itemsSnapshot, runsSnapshot, bindingsSnapshot,
+    settingsSnapshot] = await Promise.all([
+    db.ref("guildDraw/lineSchedules/tomorrowDraw").get(),
+    db.ref("guildDraw/lineSchedules/items").get(),
+    db.ref("guildDraw/lineSchedules/runs").get(),
+    db.ref("guildDraw/lineBindings").get(),
+    db.ref("guildDraw/lineSettings").get(),
+  ]);
+  const defaultGroupId = settingsSnapshot.child("defaultGroupId").val();
+  if (!defaultGroupId) {
+    logger.warn("LINE schedule dispatcher skipped", {status: "missing-default-group"});
+    return;
+  }
+  const bindings = bindingsSnapshot.val() || {};
+  let tomorrowStatus = "disabled";
+  const tomorrowSettings = tomorrowSnapshot.val();
+  const tomorrowOccurrence = latestTomorrowOccurrence(tomorrowSettings, now);
+  if (tomorrowOccurrence) {
+    const result = await dispatchTomorrowDraw({
+      settings: tomorrowSettings,
+      runRef: db.ref(`guildDraw/lineSchedules/tomorrowRuns/${tomorrowOccurrence.runKey}`),
+      historyRef: db.ref("guildDraw/main/history"),
+      bindings,
+      defaultGroupId,
+      drawClaimsRef: db.ref("guildDraw/lineSchedules/drawClaims"),
+      pushMessage: pushLineMessages,
+      now,
+    });
+    tomorrowStatus = result.status;
+    if (!["busy", "not-due"].includes(result.status)) {
+      await db.ref("guildDraw/lineSchedules/tomorrowDraw").update({
+        lastRunAt: new Date().toISOString(),
+        lastRunStatus: result.status,
+      });
+    }
+    await pruneRunsRef(db.ref("guildDraw/lineSchedules/tomorrowRuns"));
+    logger.info("Tomorrow draw automation", {
+      runKey: tomorrowOccurrence.runKey,
+      targetDrawDate: tomorrowOccurrence.targetDrawDate,
+      status: result.status,
+    });
+  }
+  const fixed = await dispatchFixedSchedules({
+    db,
+    items: itemsSnapshot.val() || {},
+    runs: runsSnapshot.val() || {},
+    bindings,
+    defaultGroupId,
+    now,
+  });
+  logger.info("LINE schedule dispatcher", {
+    dueCount: fixed.dueCount,
+    claimedCount: fixed.claimedCount,
+    tomorrowStatus,
+  });
+  fixed.outcomes.forEach((outcome) => logger.info("LINE scheduled message run", outcome));
+});
 
 exports.setLineBotAdmin = onRequest({region: REGION}, async (req, res) =>
   withAdminRequest(req, res, ["POST"], async () => {

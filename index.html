@@ -60,11 +60,11 @@
     .result-card { padding: 22px; display: flex; flex-direction: column; gap: 14px; }
     .draw-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
     label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 7px; }
-    input[type="date"], input[type="text"], input[type="password"], textarea, select {
+    input[type="date"], input[type="time"], input[type="number"], input[type="text"], input[type="password"], textarea, select {
       width: 100%; background: rgba(4, 12, 18, 0.72); border: 1px solid rgba(156, 183, 193, 0.25);
       color: var(--text); border-radius: 12px; outline: none; transition: border-color 0.16s, box-shadow 0.16s;
     }
-    input[type="date"], input[type="text"], input[type="password"], select { height: 42px; padding: 0 12px; }
+    input[type="date"], input[type="time"], input[type="number"], input[type="text"], input[type="password"], select { height: 42px; padding: 0 12px; }
     select { cursor: pointer; }
     select:disabled { opacity: 0.72; cursor: not-allowed; }
     .pool-controls { margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(156, 183, 193, 0.14); display: grid; gap: 10px; }
@@ -146,8 +146,23 @@
     .line-group-name { display: flex; align-items: center; gap: 10px; min-width: 180px; }
     .line-group-picture { width: 40px; height: 40px; border-radius: 12px; object-fit: cover; background: rgba(156, 183, 193, 0.12); }
     .line-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .schedule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .schedule-card { background: rgba(4, 12, 18, 0.48); border: 1px solid rgba(156, 183, 193, 0.16); border-radius: 16px; padding: 16px; }
+    .schedule-card-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+    .schedule-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .schedule-preview { white-space: pre-wrap; padding: 12px; border-radius: 12px; background: rgba(0, 172, 199, 0.08); border: 1px solid rgba(66, 217, 239, 0.18); line-height: 1.6; }
+    .template-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; margin-bottom: 10px; }
+    .template-token-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 50px; padding: 10px; border-radius: 12px; border: 1px dashed rgba(66, 217, 239, 0.35); background: rgba(4, 12, 18, 0.4); }
+    .template-token { display: inline-flex; align-items: center; gap: 7px; padding: 7px 9px; border-radius: 10px; background: rgba(0, 172, 199, 0.14); border: 1px solid rgba(66, 217, 239, 0.25); max-width: 100%; }
+    .template-token.text { white-space: pre-wrap; }
+    .template-token button { border: 0; background: none; color: var(--danger); cursor: pointer; font-weight: 900; }
+    .weekday-selector { display: flex; flex-wrap: wrap; gap: 8px; }
+    .weekday-selector label { display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 7px 9px; border-radius: 10px; background: rgba(156, 183, 193, 0.1); }
+    .run-history { margin-top: 12px; overflow-x: auto; }
+    .run-history table { min-width: 560px; }
+    #scheduleTextToken { min-height: 90px; }
     @media (max-width: 920px) {
-      .hero, .grid-2, .pool-grid, .history-tools, .compare-grid { grid-template-columns: 1fr; }
+      .hero, .grid-2, .pool-grid, .history-tools, .compare-grid, .schedule-grid, .schedule-meta { grid-template-columns: 1fr; }
       .status-grid { grid-template-columns: 1fr; }
       .draw-row { grid-template-columns: 1fr; }
       .result-line { grid-template-columns: 1fr; }
@@ -205,6 +220,7 @@
       <button class="tab-btn" data-tab="historyPanel">歷史紀錄</button>
       <button class="tab-btn" data-tab="poolsPanel">池子狀態</button>
       <button class="tab-btn" data-tab="linePanel">LINE 設定</button>
+      <button class="tab-btn" data-tab="automationPanel" id="automationTabBtn" style="display:none">自動推播</button>
       <button class="tab-btn" data-tab="toolsPanel">備份與重置</button>
       <button class="tab-btn" data-tab="setupPanel">Firebase 設定</button>
     </nav>
@@ -344,6 +360,82 @@
       </div>
     </section>
 
+    <section id="automationPanel" class="tab-panel">
+      <div class="card">
+        <div class="schedule-card-head">
+          <div>
+            <h2>LINE 自動推播中心</h2>
+            <p class="hint">所有排程使用 Asia/Taipei，目標固定為目前正式 LINE 群組。設定只能透過 Firebase Admin Functions 寫入。</p>
+          </div>
+          <button class="btn secondary requires-line-admin" id="refreshSchedulesBtn">重新整理</button>
+        </div>
+        <div class="message" id="automationMessage"></div>
+      </div>
+
+      <div class="card">
+        <h2>明日抽籤自動發布</h2>
+        <p class="hint">每天指定時間嘗試發布隔天抽籤。尚未抽籤時每 5 分鐘檢查，最晚到當日 23:59；已手動發布或補登的紀錄不會重送。</p>
+        <div class="grid-2">
+          <label class="schedule-card"><input type="checkbox" id="tomorrowAutomationEnabled" /> 啟用明日抽籤自動發布</label>
+          <div><label for="tomorrowAutomationTime">每天時間</label><input type="time" id="tomorrowAutomationTime" value="21:00" /></div>
+        </div>
+        <div class="schedule-meta" id="tomorrowAutomationStatus"></div>
+        <div class="actions">
+          <button class="btn requires-line-admin" id="saveTomorrowAutomationBtn">儲存明日抽籤設定</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="schedule-card-head">
+          <div><h2>固定訊息排程</h2><p class="hint">可建立任意多筆 daily / weekly / biweekly / monthly 公告。</p></div>
+          <button class="btn requires-line-admin" id="newScheduleBtn">＋ 新增自動推播</button>
+        </div>
+        <div id="lineSchedulesWrap"><p class="empty">尚未載入排程。</p></div>
+      </div>
+
+      <div class="card" id="scheduleEditorCard" style="display:none">
+        <div class="schedule-card-head">
+          <h2 id="scheduleEditorTitle">新增固定訊息排程</h2>
+          <button class="btn secondary small" id="cancelScheduleEditBtn">取消</button>
+        </div>
+        <div class="schedule-grid">
+          <div><label for="scheduleName">名稱</label><input type="text" id="scheduleName" maxlength="80" /></div>
+          <label class="schedule-card"><input type="checkbox" id="scheduleEnabled" checked /> 啟用</label>
+          <div><label for="scheduleStartDate">開始日期（包含）</label><input type="date" id="scheduleStartDate" /></div>
+          <div><label for="scheduleEndDate">結束日期（包含；留空為永久）</label><input type="date" id="scheduleEndDate" /></div>
+          <div><label for="scheduleRecurrence">循環</label><select id="scheduleRecurrence"><option value="daily">每天</option><option value="weekly">每週</option><option value="biweekly">每雙週</option><option value="monthly">每月</option></select></div>
+          <div><label for="scheduleTime">時間</label><input type="time" id="scheduleTime" value="20:30" /></div>
+        </div>
+        <div id="scheduleWeekdaysRow" style="display:none;margin-top:14px">
+          <label>執行星期</label>
+          <div class="weekday-selector" id="scheduleWeekdays">
+            <label><input type="checkbox" value="1" />一</label><label><input type="checkbox" value="2" />二</label><label><input type="checkbox" value="3" />三</label><label><input type="checkbox" value="4" />四</label><label><input type="checkbox" value="5" />五</label><label><input type="checkbox" value="6" />六</label><label><input type="checkbox" value="7" />日</label>
+          </div>
+        </div>
+        <div id="scheduleMonthDayRow" style="display:none;margin-top:14px"><label for="scheduleMonthDay">每月日期（缺日取月底）</label><input type="number" id="scheduleMonthDay" min="1" max="31" value="1" /></div>
+
+        <h3 style="margin-top:22px">核心訊息編輯器</h3>
+        <p class="hint">依序加入文字或 token。核心文字、日期、數字與 mention 不會交給 AI 改寫。</p>
+        <div class="template-toolbar"><div><label for="scheduleTextToken">文字區塊</label><textarea id="scheduleTextToken" placeholder="輸入核心文字；可包含換行"></textarea></div><button class="btn secondary" id="addScheduleTextBtn">加入文字</button></div>
+        <div class="schedule-grid">
+          <div><label for="scheduleMemberToken">@ 成員（執行時重新解析 binding）</label><select id="scheduleMemberToken"></select><button class="btn secondary small" id="addScheduleMemberBtn" style="margin-top:8px">插入 @成員</button></div>
+          <div><label>@ALL</label><button class="btn secondary small" id="addScheduleAllBtn">插入 @ALL</button></div>
+          <div><label for="scheduleDateOffset">日期 X+n</label><input type="number" id="scheduleDateOffset" min="-3660" max="3660" value="1" /></div>
+          <div><label for="scheduleDateFormat">日期格式</label><select id="scheduleDateFormat"><option value="M/D">M/D</option><option value="YYYY/MM/DD">YYYY/MM/DD</option></select><button class="btn secondary small" id="addScheduleDateBtn" style="margin-top:8px">插入日期</button></div>
+        </div>
+        <label style="margin-top:16px">Template chips（點 × 移除）</label>
+        <div class="template-token-list" id="scheduleTokenList"></div>
+        <div class="schedule-grid" style="margin-top:16px">
+          <div><label for="schedulePreviewDate">預覽 occurrence 日期</label><input type="date" id="schedulePreviewDate" /></div>
+          <div><label>預覽核心訊息（不呼叫 OpenAI）</label><div class="schedule-preview" id="scheduleCorePreview">尚未加入內容。</div></div>
+        </div>
+        <div class="actions">
+          <button class="btn requires-line-admin" id="saveLineScheduleBtn">儲存排程</button>
+          <span class="message" id="scheduleEditorMessage"></span>
+        </div>
+      </div>
+    </section>
+
     <section id="toolsPanel" class="tab-panel">
       <div class="card">
         <h2>備份 / 匯入</h2>
@@ -385,6 +477,7 @@
   </div>
 
   <script src="history-publication-ui.js"></script>
+  <script src="line-schedules-ui.js"></script>
   <script>
     window.addEventListener("error", function (event) {
       const el = document.getElementById("cloudStatus");
@@ -422,6 +515,13 @@
       buildLinePublicationBackfillRequest,
       getLinePublicationView
     } = window.CapyDrawHistoryPublicationUi;
+    const {
+      buildScheduleRequest,
+      previewTemplate,
+      recurrenceLabel,
+      runStatusLabel,
+      templateTokenLabel
+    } = window.CapyDrawLineSchedulesUi;
 
     const defaultState = {
       guildMembers: [],
@@ -449,6 +549,11 @@
     let lineGroupsCache = [];
     let lineAdminAuthorized = false;
     let lineAdminSaving = false;
+    let lineSchedulesCache = [];
+    let tomorrowAutomationCache = { enabled: false, time: "21:00" };
+    let tomorrowRunsCache = [];
+    let scheduleDraftTokens = [];
+    let editingScheduleId = null;
 
     const $ = (id) => document.getElementById(id);
 
@@ -668,6 +773,13 @@
       document.querySelectorAll(".requires-line-login").forEach(el => { el.disabled = !canUseLineLogin; });
       const canManageLine = canUseLineLogin && lineAdminAuthorized;
       document.querySelectorAll(".requires-line-admin").forEach(el => { el.disabled = !canManageLine; });
+      $("automationTabBtn").style.display = lineAdminAuthorized ? "inline-flex" : "none";
+      if (!lineAdminAuthorized && $("automationPanel").classList.contains("active")) {
+        document.querySelectorAll(".tab-btn").forEach(x => x.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach(x => x.classList.remove("active"));
+        document.querySelector('[data-tab="settingsPanel"]').classList.add("active");
+        $("settingsPanel").classList.add("active");
+      }
       $("guildMembersInput").disabled = !canWrite;
       $("highWarMembersInput").disabled = !canWrite;
       $("presidentName").disabled = !canWrite;
@@ -840,7 +952,7 @@
       if (!iso) return "";
       const d = new Date(iso);
       if (Number.isNaN(d.getTime())) return "";
-      return d.toLocaleString("zh-TW", { hour12: false });
+      return d.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
     }
 
     function renderRecord(record) {
@@ -1246,10 +1358,12 @@
         lineAdminAuthorized = true;
         lineBindingsCache = Array.isArray(result.members) ? result.members : [];
         renderLineBindings();
+        renderScheduleMemberOptions();
         renderHistory();
         setMessage("lineSettingsMessage", result.hasDefaultGroup ?
           "已取得綁定狀態；LINE 群組已登記。" :
           "已取得綁定狀態；尚未登記 LINE 群組，請先在正式群組完成一筆有效綁定。", result.hasDefaultGroup ? "ok" : "warn");
+        if ($("automationPanel").classList.contains("active")) loadLineSchedules();
       } catch (error) {
         lineAdminAuthorized = false;
         lineBindingsCache = [];
@@ -1319,6 +1433,217 @@
       } finally {
         lineSending = false;
         updateAccessUi();
+      }
+    }
+
+    function renderScheduleMemberOptions() {
+      const select = $("scheduleMemberToken");
+      const seen = new Set();
+      const rows = lineBindingsCache.filter(member => member.bound && member.bindingId &&
+        !seen.has(member.bindingId) && seen.add(member.bindingId));
+      select.innerHTML = rows.length ? rows.map(member =>
+        `<option value="${escapeHtml(member.bindingId)}" data-display="${escapeHtml(String(member.lineName).startsWith("@") ? member.lineName : "@" + member.lineName)}">${escapeHtml(member.lineName)} - ${escapeHtml(member.gameId)}</option>`
+      ).join("") : `<option value="">沒有可用的 LINE binding</option>`;
+    }
+
+    function renderScheduleTokens() {
+      const wrap = $("scheduleTokenList");
+      wrap.innerHTML = scheduleDraftTokens.length ? scheduleDraftTokens.map((token, index) =>
+        `<span class="template-token ${token.type === "text" ? "text" : ""}">${escapeHtml(templateTokenLabel(token))}<button type="button" data-remove-schedule-token="${index}" aria-label="移除">×</button></span>`
+      ).join("") : `<span class="empty">依序加入文字、成員、@ALL 或日期 token。</span>`;
+      wrap.querySelectorAll("[data-remove-schedule-token]").forEach(button => {
+        button.addEventListener("click", () => {
+          scheduleDraftTokens.splice(Number(button.dataset.removeScheduleToken), 1);
+          renderScheduleTokens();
+        });
+      });
+      const previewDate = $("schedulePreviewDate").value || $("scheduleStartDate").value || todayString();
+      $("scheduleCorePreview").textContent = scheduleDraftTokens.length ?
+        previewTemplate(scheduleDraftTokens, previewDate) : "尚未加入內容。";
+    }
+
+    function updateScheduleRecurrenceFields() {
+      const type = $("scheduleRecurrence").value;
+      $("scheduleWeekdaysRow").style.display = ["weekly", "biweekly"].includes(type) ? "block" : "none";
+      $("scheduleMonthDayRow").style.display = type === "monthly" ? "block" : "none";
+    }
+
+    function openScheduleEditor(scheduleId = null) {
+      const schedule = scheduleId ? lineSchedulesCache.find(item => item.id === scheduleId) : null;
+      editingScheduleId = schedule ? schedule.id : null;
+      scheduleDraftTokens = schedule ? clone(schedule.messageTemplate || []) : [];
+      $("scheduleEditorTitle").textContent = schedule ? `編輯：${schedule.name}` : "新增固定訊息排程";
+      $("scheduleName").value = schedule ? schedule.name : "";
+      $("scheduleEnabled").checked = schedule ? schedule.enabled !== false : true;
+      $("scheduleStartDate").value = schedule ? schedule.startDate : todayString();
+      $("scheduleEndDate").value = schedule && schedule.endDate || "";
+      $("scheduleRecurrence").value = schedule && schedule.recurrence.type || "daily";
+      $("scheduleTime").value = schedule ? schedule.time : "20:30";
+      $("scheduleMonthDay").value = schedule && schedule.recurrence.dayOfMonth || 1;
+      const weekdays = new Set(schedule && schedule.recurrence.weekdays || []);
+      $("scheduleWeekdays").querySelectorAll('input[type="checkbox"]').forEach(input => {
+        input.checked = weekdays.has(Number(input.value));
+      });
+      $("scheduleTextToken").value = "";
+      $("schedulePreviewDate").value = schedule && schedule.nextRunAt ?
+        new Intl.DateTimeFormat("en-CA", {timeZone: "Asia/Taipei"}).format(new Date(schedule.nextRunAt)) :
+        $("scheduleStartDate").value;
+      updateScheduleRecurrenceFields();
+      renderScheduleMemberOptions();
+      renderScheduleTokens();
+      setMessage("scheduleEditorMessage", "");
+      $("scheduleEditorCard").style.display = "block";
+      $("scheduleEditorCard").scrollIntoView({behavior: "smooth", block: "start"});
+    }
+
+    function closeScheduleEditor() {
+      editingScheduleId = null;
+      scheduleDraftTokens = [];
+      $("scheduleEditorCard").style.display = "none";
+    }
+
+    function renderTomorrowAutomation() {
+      $("tomorrowAutomationEnabled").checked = tomorrowAutomationCache.enabled === true;
+      $("tomorrowAutomationTime").value = tomorrowAutomationCache.time || "21:00";
+      const next = tomorrowAutomationCache.nextOccurrence;
+      const latest = tomorrowRunsCache[0];
+      $("tomorrowAutomationStatus").innerHTML = `
+        <div><strong>目標</strong><br>正式 LINE 群組</div>
+        <div><strong>下次執行</strong><br>${next ? `${escapeHtml(formatDateTime(next.scheduledFor))}<br>目標抽籤：${escapeHtml(next.targetDrawDate)}` : "已停用"}</div>
+        <div><strong>最近狀態</strong><br>${escapeHtml(runStatusLabel(latest && latest.status || tomorrowAutomationCache.lastRunStatus))}</div>
+        <div><strong>最近執行</strong><br>${escapeHtml(formatDateTime(latest && (latest.sentAt || latest.scheduledFor) || tomorrowAutomationCache.lastRunAt))}</div>`;
+    }
+
+    function renderRunHistory(runs) {
+      if (!Array.isArray(runs) || !runs.length) return `<p class="empty">尚無執行紀錄。</p>`;
+      return `<div class="run-history"><table><thead><tr><th>排定時間</th><th>狀態</th><th>重試</th><th>警告 / 錯誤</th></tr></thead><tbody>${runs.map(run => `
+        <tr><td>${escapeHtml(formatDateTime(run.scheduledFor))}</td><td>${escapeHtml(runStatusLabel(run.status))}</td><td>${Number(run.retryCount) || 0}</td><td>${escapeHtml(run.warning || run.errorType || "-")}</td></tr>`).join("")}</tbody></table></div>`;
+    }
+
+    function renderLineSchedules() {
+      if (!lineAdminAuthorized) {
+        $("lineSchedulesWrap").innerHTML = `<p class="empty">此頁僅供 Firebase 管理員使用。</p>`;
+        return;
+      }
+      if (!lineSchedulesCache.length) {
+        $("lineSchedulesWrap").innerHTML = `<p class="empty">目前沒有固定訊息排程。</p>`;
+        return;
+      }
+      $("lineSchedulesWrap").innerHTML = `<div class="schedule-grid">${lineSchedulesCache.map(schedule => `
+        <article class="schedule-card">
+          <div class="schedule-card-head"><div><h3>${escapeHtml(schedule.name)}</h3><span class="line-admin-badge ${schedule.enabled ? "active" : ""}">${schedule.enabled ? "啟用" : "暫停"}</span></div><span>${escapeHtml(runStatusLabel(schedule.lastRunStatus))}</span></div>
+          <p class="schedule-preview">${escapeHtml(schedule.previewCore || "尚無可預覽的下一次內容")}</p>
+          <div class="schedule-meta">
+            <div><strong>循環</strong><br>${escapeHtml(recurrenceLabel(schedule))}</div>
+            <div><strong>時間</strong><br>${escapeHtml(schedule.time)} Asia/Taipei</div>
+            <div><strong>日期範圍</strong><br>${escapeHtml(schedule.startDate)} ～ ${escapeHtml(schedule.endDate || "永久")}</div>
+            <div><strong>上次執行</strong><br>${escapeHtml(formatDateTime(schedule.lastRunAt))}</div>
+            <div><strong>下次執行</strong><br>${escapeHtml(formatDateTime(schedule.nextRunAt))}</div>
+          </div>
+          <div class="actions">
+            <button class="btn secondary small requires-line-admin" data-edit-schedule="${escapeHtml(schedule.id)}">編輯</button>
+            <button class="btn ${schedule.enabled ? "warning" : "secondary"} small requires-line-admin" data-toggle-schedule="${escapeHtml(schedule.id)}" data-enabled="${schedule.enabled ? "false" : "true"}">${schedule.enabled ? "暫停" : "啟用"}</button>
+            <button class="btn danger small requires-line-admin" data-delete-schedule="${escapeHtml(schedule.id)}" data-name="${escapeHtml(schedule.name)}">刪除</button>
+          </div>
+          <details><summary>最近 ${Math.min(20, (schedule.runs || []).length)} 次執行</summary>${renderRunHistory(schedule.runs)}</details>
+        </article>`).join("")}</div>`;
+      document.querySelectorAll("[data-edit-schedule]").forEach(button => button.addEventListener("click", () => openScheduleEditor(button.dataset.editSchedule)));
+      document.querySelectorAll("[data-toggle-schedule]").forEach(button => button.addEventListener("click", () => setScheduleEnabled(button.dataset.toggleSchedule, button.dataset.enabled === "true")));
+      document.querySelectorAll("[data-delete-schedule]").forEach(button => button.addEventListener("click", () => deleteLineSchedule(button.dataset.deleteSchedule, button.dataset.name)));
+      updateAccessUi();
+    }
+
+    async function loadLineSchedules() {
+      if (!firebaseUser || !lineAdminAuthorized) return;
+      setMessage("automationMessage", "正在讀取自動推播設定...", "warn");
+      try {
+        const result = await callLineAdminFunction("getLineSchedules", {method: "GET"});
+        lineSchedulesCache = Array.isArray(result.schedules) ? result.schedules : [];
+        tomorrowAutomationCache = result.tomorrowDraw || {enabled: false, time: "21:00"};
+        tomorrowRunsCache = Array.isArray(result.tomorrowRuns) ? result.tomorrowRuns : [];
+        renderTomorrowAutomation();
+        renderLineSchedules();
+        renderScheduleMemberOptions();
+        setMessage("automationMessage", result.hasDefaultGroup ?
+          "已載入；目標為正式 LINE 群組。" : "尚未設定正式 LINE 群組，排程不會發送。", result.hasDefaultGroup ? "ok" : "warn");
+      } catch (error) {
+        setMessage("automationMessage", `讀取自動推播失敗：${error.message}`, "danger");
+      }
+    }
+
+    async function saveTomorrowAutomation() {
+      lineAdminSaving = true;
+      updateAccessUi();
+      try {
+        const result = await callLineAdminFunction("updateTomorrowDrawAutomation", {body: {
+          enabled: $("tomorrowAutomationEnabled").checked,
+          time: $("tomorrowAutomationTime").value
+        }});
+        tomorrowAutomationCache = result.tomorrowDraw;
+        renderTomorrowAutomation();
+        setMessage("automationMessage", "✅ 已儲存明日抽籤自動發布設定。", "ok");
+      } catch (error) {
+        setMessage("automationMessage", `儲存失敗：${error.message}`, "danger");
+      } finally {
+        lineAdminSaving = false;
+        updateAccessUi();
+      }
+    }
+
+    async function saveLineSchedule() {
+      const pendingText = $("scheduleTextToken").value;
+      if (pendingText) {
+        scheduleDraftTokens.push({type: "text", text: pendingText});
+        $("scheduleTextToken").value = "";
+        renderScheduleTokens();
+      }
+      const weekdays = [...$("scheduleWeekdays").querySelectorAll('input[type="checkbox"]:checked')].map(input => Number(input.value));
+      const schedule = buildScheduleRequest({
+        name: $("scheduleName").value,
+        enabled: $("scheduleEnabled").checked,
+        messageTemplate: scheduleDraftTokens,
+        startDate: $("scheduleStartDate").value,
+        endDate: $("scheduleEndDate").value || null,
+        recurrenceType: $("scheduleRecurrence").value,
+        weekdays,
+        dayOfMonth: $("scheduleMonthDay").value,
+        time: $("scheduleTime").value
+      });
+      lineAdminSaving = true;
+      updateAccessUi();
+      try {
+        const endpoint = editingScheduleId ? "updateLineSchedule" : "createLineSchedule";
+        const body = editingScheduleId ? {scheduleId: editingScheduleId, schedule} : {schedule};
+        await callLineAdminFunction(endpoint, {body});
+        closeScheduleEditor();
+        await loadLineSchedules();
+        setMessage("automationMessage", "✅ 固定訊息排程已儲存。", "ok");
+      } catch (error) {
+        setMessage("scheduleEditorMessage", `儲存失敗：${error.message}`, "danger");
+      } finally {
+        lineAdminSaving = false;
+        updateAccessUi();
+      }
+    }
+
+    async function setScheduleEnabled(scheduleId, enabled) {
+      try {
+        await callLineAdminFunction("setLineScheduleEnabled", {body: {scheduleId, enabled}});
+        await loadLineSchedules();
+        setMessage("automationMessage", enabled ? "✅ 排程已啟用。" : "⏸️ 排程已暫停。", "ok");
+      } catch (error) {
+        setMessage("automationMessage", `更新排程失敗：${error.message}`, "danger");
+      }
+    }
+
+    async function deleteLineSchedule(scheduleId, name) {
+      if (!confirm(`確定要刪除自動推播「${name}」嗎？\n\n此操作會一併移除該排程的有限 run history。`)) return;
+      try {
+        await callLineAdminFunction("deleteLineSchedule", {body: {scheduleId}});
+        await loadLineSchedules();
+        setMessage("automationMessage", "已刪除自動推播。", "ok");
+      } catch (error) {
+        setMessage("automationMessage", `刪除失敗：${error.message}`, "danger");
       }
     }
 
@@ -1775,6 +2100,7 @@
           btn.classList.add("active");
           $(btn.dataset.tab).classList.add("active");
           if (btn.dataset.tab === "linePanel") Promise.all([loadLineGroups(), loadLineBindings()]);
+          if (btn.dataset.tab === "automationPanel") loadLineSchedules();
         });
       });
 
@@ -1794,6 +2120,42 @@
       $("sendLineBtn").addEventListener("click", sendCurrentRecordToLine);
       $("refreshLineBindingsBtn").addEventListener("click", () =>
         Promise.all([loadLineGroups(), loadLineBindings()]));
+      $("refreshSchedulesBtn").addEventListener("click", loadLineSchedules);
+      $("saveTomorrowAutomationBtn").addEventListener("click", saveTomorrowAutomation);
+      $("newScheduleBtn").addEventListener("click", () => openScheduleEditor());
+      $("cancelScheduleEditBtn").addEventListener("click", closeScheduleEditor);
+      $("saveLineScheduleBtn").addEventListener("click", saveLineSchedule);
+      $("scheduleRecurrence").addEventListener("change", updateScheduleRecurrenceFields);
+      $("schedulePreviewDate").addEventListener("change", renderScheduleTokens);
+      $("scheduleStartDate").addEventListener("change", () => {
+        if (!$("schedulePreviewDate").value) $("schedulePreviewDate").value = $("scheduleStartDate").value;
+        renderScheduleTokens();
+      });
+      $("addScheduleTextBtn").addEventListener("click", () => {
+        const text = $("scheduleTextToken").value;
+        if (!text) return setMessage("scheduleEditorMessage", "請先輸入文字區塊。", "warn");
+        scheduleDraftTokens.push({type: "text", text});
+        $("scheduleTextToken").value = "";
+        renderScheduleTokens();
+      });
+      $("addScheduleMemberBtn").addEventListener("click", () => {
+        const option = $("scheduleMemberToken").selectedOptions[0];
+        if (!option || !option.value) return setMessage("scheduleEditorMessage", "目前沒有可用 binding。", "warn");
+        scheduleDraftTokens.push({type: "member", bindingId: option.value, display: option.dataset.display});
+        renderScheduleTokens();
+      });
+      $("addScheduleAllBtn").addEventListener("click", () => {
+        scheduleDraftTokens.push({type: "all", display: "@ALL"});
+        renderScheduleTokens();
+      });
+      $("addScheduleDateBtn").addEventListener("click", () => {
+        const offsetDays = Number($("scheduleDateOffset").value);
+        if (!Number.isInteger(offsetDays) || Math.abs(offsetDays) > 3660) {
+          return setMessage("scheduleEditorMessage", "日期 offset 必須是 ±3660 以內整數。", "warn");
+        }
+        scheduleDraftTokens.push({type: "date", offsetDays, format: $("scheduleDateFormat").value});
+        renderScheduleTokens();
+      });
 
       $("unlockBtn").addEventListener("click", () => {
         if ($("authPassword").value === AUTH_PASSWORD) {
@@ -2025,8 +2387,11 @@
           lineAdminAuthorized = false;
           lineBindingsCache = [];
           lineGroupsCache = [];
+          lineSchedulesCache = [];
+          tomorrowRunsCache = [];
           renderLineBindings();
           renderLineGroups();
+          renderLineSchedules();
           renderHistory();
           updateAccessUi();
           if (firebaseUser) Promise.all([loadLineGroups(), loadLineBindings()]);
