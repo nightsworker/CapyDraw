@@ -89,6 +89,36 @@ class MemoryDb {
   }
 }
 
+class ColdCacheGroupRef {
+  constructor(serverRef) {
+    this.serverRef = serverRef;
+    this.warmed = false;
+    this.cachedValue = null;
+    this.getCount = 0;
+    this.firstTransactionValue = undefined;
+  }
+
+  async get() {
+    this.getCount += 1;
+    const snapshot = await this.serverRef.get();
+    this.cachedValue = snapshot.val();
+    this.warmed = true;
+    return snapshot;
+  }
+
+  async transaction(update) {
+    this.firstTransactionValue = this.warmed ? clone(this.cachedValue) : null;
+    if (!this.warmed) {
+      const next = update(null);
+      return {
+        committed: next !== undefined,
+        snapshot: {val: () => clone(this.serverRef.value())},
+      };
+    }
+    return this.serverRef.transaction(update);
+  }
+}
+
 const GROUP_ID = "C_FORMAL_GROUP";
 const OTHER_GROUP = "C_OTHER_GROUP";
 const SCHEDULED_AT = "2026-08-14T13:00:00.000Z";
@@ -179,6 +209,60 @@ test("eligible queue is oldest scheduledFor then createdAt", () => {
     .map((item) => item.id), ["oldA", "oldB", "later"]);
 });
 
+test("cold-cache claim pre-reads server state before the atomic transaction", async () => {
+  const db = new MemoryDb();
+  await addPending(db, fixedPending("cold-pending"));
+  const serverRef = pendingGroupRef(db, GROUP_ID);
+
+  const unwarmed = new ColdCacheGroupRef(serverRef);
+  const aborted = await unwarmed.transaction((current) => current || undefined);
+  assert.equal(unwarmed.firstTransactionValue, null);
+  assert.equal(aborted.committed, false);
+  assert.equal(pendingItem(db, "cold-pending").status, "pending");
+
+  const coldInstanceRef = new ColdCacheGroupRef(serverRef);
+  const claim = await claimPendingBatch(coldInstanceRef, {
+    eventId: "evt-cold-start",
+    maxItems: 1,
+    now: new Date("2026-08-14T13:07:00.000Z"),
+  });
+  assert.equal(coldInstanceRef.getCount, 1);
+  assert.equal(coldInstanceRef.firstTransactionValue.items["cold-pending"].status, "pending");
+  assert.equal(claim.claimed, true);
+  assert.equal(claim.items[0].id, "cold-pending");
+});
+
+test("claim reports empty only when server queue is genuinely empty", async () => {
+  const db = new MemoryDb();
+  const claim = await claimPendingBatch(pendingGroupRef(db, GROUP_ID), {
+    eventId: "evt-empty",
+    maxItems: 1,
+    now: new Date("2026-08-14T13:07:00.000Z"),
+  });
+  assert.equal(claim.claimed, false);
+  assert.equal(claim.reason, "empty");
+});
+
+test("active claims, expired announcements, and sent announcements are not claimable", async () => {
+  const db = new MemoryDb();
+  await addPending(db, {...fixedPending("active-claim"), status: "claimed",
+    claim: {eventKey: "evt_existing", leaseUntil: Date.parse("2026-08-14T14:00:00.000Z")}});
+  await addPending(db, {...fixedPending("expired"),
+    expiresAt: "2026-08-14T13:06:00.000Z"});
+  await addPending(db, {...fixedPending("sent"), status: "sent",
+    sentAt: "2026-08-14T13:06:00.000Z", sentVia: "reply"});
+  const claim = await claimPendingBatch(pendingGroupRef(db, GROUP_ID), {
+    eventId: "evt-ineligible-items",
+    maxItems: 3,
+    now: new Date("2026-08-14T13:07:00.000Z"),
+  });
+  assert.equal(claim.claimed, false);
+  assert.equal(claim.reason, "empty");
+  assert.equal(pendingItem(db, "active-claim").status, "claimed");
+  assert.equal(pendingItem(db, "expired").status, "pending");
+  assert.equal(pendingItem(db, "sent").status, "sent");
+});
+
 test("no webhook leaves pending untouched; wrong group and private DM cannot consume", async () => {
   const db = new MemoryDb();
   await addPending(db, fixedPending("one"));
@@ -211,6 +295,21 @@ test("next formal-group text sends pending through one Reply call", async () => 
   assert.deepEqual(calls[0].map((message) => message.text), ["公告 one"]);
   assert.equal(pendingItem(db, "one").status, "sent");
   assert.equal(pendingItem(db, "one").sentVia, "reply");
+});
+
+test("Reply consumption forwards claimed safe ids for error diagnostics", async () => {
+  const db = new MemoryDb();
+  await addPending(db, fixedPending("safe-id", SCHEDULED_AT, "pending text"));
+  const calls = [];
+  const outcome = await consumePendingAnnouncements({
+    db,
+    event: event({webhookEventId: "evt-safe-diagnostics"}),
+    defaultGroupId: GROUP_ID,
+    sendReply: async (messages, diagnostics) => calls.push({messages, diagnostics}),
+  });
+  assert.equal(outcome.status, "sent-via-reply");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].diagnostics, {pendingIds: ["safe-id"]});
 });
 
 test("normal reply and pending share one call and never reuse replyToken", async () => {

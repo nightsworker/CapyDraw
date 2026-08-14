@@ -125,6 +125,10 @@ async function claimPendingBatch(groupRef, {
   const eventKey = pendingEventKey(eventId);
   const limit = Math.max(0, Math.min(5, Number(maxItems) || 0));
   if (!eventId || !limit) return {claimed: false, reason: "ineligible", eventKey, items: []};
+  // A new Cloud Run instance has an empty RTDB client cache. Prime it from the
+  // server before starting the transaction; the transaction still re-reads and
+  // atomically decides the claim from its own current state.
+  await groupRef.get();
   let decision = {claimed: false, reason: "empty", eventKey, items: []};
   const transaction = await groupRef.transaction((current) => {
     const state = current && typeof current === "object" ? current : {};

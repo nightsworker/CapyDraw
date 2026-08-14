@@ -125,7 +125,9 @@ async function consumePendingAnnouncements({
 } = {}) {
   const normal = normalReplyMessages(normalMessages);
   if (!isPendingCarrierEvent(event, defaultGroupId)) {
-    if (normal.length && event && event.replyToken) await sendReply(normal);
+    if (normal.length && event && event.replyToken) {
+      await sendReply(normal, {pendingIds: []});
+    }
     return {status: normal.length ? "normal-only" : "ineligible", messages: normal,
       sentPending: []};
   }
@@ -137,7 +139,7 @@ async function consumePendingAnnouncements({
     now,
   });
   if (!claim.claimed) {
-    if (normal.length) await sendReply(normal);
+    if (normal.length) await sendReply(normal, {pendingIds: []});
     return {status: normal.length ? "normal-only" : claim.reason, claim, messages: normal,
       sentPending: []};
   }
@@ -160,7 +162,7 @@ async function consumePendingAnnouncements({
   }
 
   try {
-    await sendReply(messages);
+    await sendReply(messages, {pendingIds: prepared.ready.map((item) => item.id)});
   } catch (error) {
     await failDrawClaims(prepared.drawClaims, error, new Date());
     await settlePendingBatch(groupRef, claim, {

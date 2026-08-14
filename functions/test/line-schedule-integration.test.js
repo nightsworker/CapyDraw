@@ -75,7 +75,25 @@ test("webhook collects normal and pending messages before one direct Reply API c
   assert.match(wrapper[0], /normalMessages: collector\.messages/u);
   assert.match(wrapper[0], /sendReplyMessagesNow\(event\.replyToken/u);
   assert.doesNotMatch(wrapper[0], /pushLineMessages|\/message\/push/u);
-  assert.equal((pendingRuntime.match(/await sendReply\(messages\)/gu) || []).length, 1);
+  assert.equal((pendingRuntime.match(/await sendReply\(messages, \{pendingIds:/gu) || []).length, 1);
+});
+
+test("Reply API failures log safe LINE details without credentials or raw identifiers", () => {
+  const callLine = indexSource.match(/async function callLine[\s\S]*?(?=\nasync function pushLineMessages)/u);
+  const sendReply = indexSource.match(
+    /async function sendReplyMessagesNow[\s\S]*?(?=\nasync function replyMessages)/u);
+  assert.ok(callLine);
+  assert.ok(sendReply);
+  assert.match(callLine[0], /await response\.json\(\)/u);
+  assert.match(callLine[0], /buildLineErrorLog/u);
+  assert.match(callLine[0], /messageCount: diagnostics\.messageCount/u);
+  assert.match(callLine[0], /elapsedMs: Date\.now\(\) - startedAt/u);
+  assert.match(callLine[0], /pendingIds: diagnostics\.pendingIds/u);
+  assert.match(sendReply[0], /diagnostics: \{messageCount: messages\.length, pendingIds\}/u);
+  const errorLog = callLine[0].match(
+    /logger\.error\("LINE Messaging API request failed"[\s\S]*?\}\)\);/u);
+  assert.ok(errorLog);
+  assert.doesNotMatch(errorLog[0], /replyToken|Authorization|token|groupId|userId/u);
 });
 
 test("pending logs omit reply token and raw LINE identifiers", () => {

@@ -145,6 +145,7 @@ const {
   pendingGroupRef,
 } = require("./lib/linePendingAnnouncements");
 const {consumePendingAnnouncements} = require("./lib/linePendingRuntime");
+const {buildLineErrorLog} = require("./lib/lineApiDiagnostics");
 const {
   createScheduleWrapper,
   generateMiaobingScheduleWrapper,
@@ -213,7 +214,11 @@ async function withAdminRequest(req, res, methods, handler) {
   }
 }
 
-async function callLine(path, token, body, method = "POST", {retryKey = null} = {}) {
+async function callLine(path, token, body, method = "POST", {
+  retryKey = null,
+  diagnostics = {},
+} = {}) {
+  const startedAt = Date.now();
   const response = await fetch(`${LINE_API_BASE}${path}`, {
     method,
     headers: {
@@ -227,10 +232,20 @@ async function callLine(path, token, body, method = "POST", {retryKey = null} = 
     return {retryAccepted: true};
   }
   if (!response.ok) {
-    const safePath = String(path || "")
-      .replace(/\/group\/[^/]+\/member\/[^/?]+/gu, "/group/{group}/member/{member}")
-      .replace(/\/group\/[^/]+/gu, "/group/{group}");
-    logger.error("LINE Messaging API request failed", {path: safePath, status: response.status});
+    let errorBody = null;
+    try {
+      errorBody = await response.json();
+    } catch {
+      errorBody = null;
+    }
+    logger.error("LINE Messaging API request failed", buildLineErrorLog({
+      path,
+      status: response.status,
+      errorBody,
+      messageCount: diagnostics.messageCount,
+      elapsedMs: Date.now() - startedAt,
+      pendingIds: diagnostics.pendingIds,
+    }));
     const error = new Error(`LINE Messaging API 回傳 ${response.status}。`);
     error.lineStatus = response.status;
     throw error;
@@ -249,10 +264,12 @@ function normalizeReplyMessages(lineMessages) {
     .slice(0, 5);
 }
 
-async function sendReplyMessagesNow(replyToken, lineMessages, token) {
+async function sendReplyMessagesNow(replyToken, lineMessages, token, {pendingIds = []} = {}) {
   const messages = normalizeReplyMessages(lineMessages);
   if (!replyToken || !messages.length) return;
-  await callLine("/message/reply", token, {replyToken, messages});
+  await callLine("/message/reply", token, {replyToken, messages}, "POST", {
+    diagnostics: {messageCount: messages.length, pendingIds},
+  });
 }
 
 async function replyMessages(replyToken, lineMessages, token) {
@@ -1395,7 +1412,8 @@ async function processLineWebhookEventWithPending(event, payload, token) {
       event,
       defaultGroupId,
       normalMessages: collector.messages,
-      sendReply: (messages) => sendReplyMessagesNow(event.replyToken, messages, token),
+      sendReply: (messages, diagnostics) =>
+        sendReplyMessagesNow(event.replyToken, messages, token, diagnostics),
     });
     if (outcome.messages && outcome.messages.length) {
       await runReplySuccessHooks(collector.successHooks);
