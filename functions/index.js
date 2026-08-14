@@ -1930,10 +1930,25 @@ exports.scheduleDispatcher = onSchedule({
       });
     }
     await pruneRunsRef(db.ref("guildDraw/lineSchedules/tomorrowRuns"));
+    const lookup = result.lookup || {};
     logger.info("Tomorrow draw automation", {
       runKey: tomorrowOccurrence.runKey,
       targetDrawDate: tomorrowOccurrence.targetDrawDate,
       status: result.status,
+      occurrenceStatusBefore: result.previousStatus || null,
+      occurrenceStatusAfter: result.status,
+      nextCheckAt: result.nextCheckAt || null,
+      historyType: lookup.historyType || null,
+      historyCount: Number.isInteger(lookup.historyCount) ? lookup.historyCount : null,
+      matchedRecordCount: Number.isInteger(lookup.matchedRecordCount) ?
+        lookup.matchedRecordCount : null,
+      matchedRecordId: lookup.matchedRecordId || null,
+      matchedRecordDate: lookup.matchedRecordDate || null,
+      published: typeof lookup.published === "boolean" ? lookup.published : null,
+      sendClaimResult: result.sendClaimResult || null,
+      errorType: result.error && String(
+        result.error.lineStatus || result.error.code || result.error.name || "unknown-error",
+      ).slice(0, 80) || null,
     });
   }
   const fixed = await dispatchFixedSchedules({

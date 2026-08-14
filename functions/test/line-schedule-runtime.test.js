@@ -5,6 +5,7 @@ const test = require("node:test");
 const {isDrawPublishedToLine} = require("../lib/drawKnowledge");
 const {selectDrawRecordByDate, sendDrawLineRecord} = require("../lib/drawLineDelivery");
 const {
+  TERMINAL_RUN_STATUSES,
   dispatchFixedOccurrence,
   dispatchTomorrowDraw,
 } = require("../lib/lineScheduleRuntime");
@@ -43,6 +44,7 @@ class MemoryRef {
   }
 
   async get() {
+    this.box.gets += 1;
     const value = clone(this.value());
     return {val: () => value};
   }
@@ -78,7 +80,7 @@ class MemoryRef {
 }
 
 function memoryRef(value) {
-  return new MemoryRef({value: clone(value), queues: new Map()});
+  return new MemoryRef({value: clone(value), queues: new Map(), gets: 0});
 }
 
 function drawRecord(overrides = {}) {
@@ -186,6 +188,54 @@ test("21:00 tomorrow draw exists and unpublished then sends and publishes", asyn
   assert.equal(isDrawPublishedToLine(result.record), true);
 });
 
+test("deterministic production simulation: 10:40 decision is SEND, not WAITING_FOR_DRAW", async () => {
+  const productionRecord = drawRecord({
+    id: "1786669856832-dac658720a3e98",
+    lineSentAt: null,
+    lineSendCount: null,
+    lastLineSendStatus: null,
+  });
+  let pushes = 0;
+  const result = await dispatchTomorrowDraw({
+    settings: {enabled: true, time: "10:37"},
+    runRef: memoryRef(null),
+    historyRef: memoryRef([null, productionRecord]),
+    bindings: {},
+    defaultGroupId: "G",
+    drawClaimsRef: memoryRef({}),
+    now: new Date("2026-08-14T02:40:00.000Z"),
+    pushMessage: async () => { pushes += 1; },
+  });
+  assert.equal(result.status, "sent");
+  assert.equal(pushes, 1);
+  assert.deepEqual(result.lookup, {
+    historyType: "array",
+    historyCount: 1,
+    matchedRecordCount: 1,
+    matchedRecordId: "1786669856832-dac658720a3e98",
+    matchedRecordDate: "2026-08-15",
+    published: false,
+  });
+});
+
+test("Object history finds tomorrow record by record.date rather than Firebase key", async () => {
+  let pushes = 0;
+  const result = await dispatchTomorrowDraw({
+    settings: {enabled: true, time: "10:37"},
+    runRef: memoryRef(null),
+    historyRef: memoryRef({unrelatedFirebaseKey: drawRecord()}),
+    bindings: {},
+    defaultGroupId: "G",
+    drawClaimsRef: memoryRef({}),
+    now: new Date("2026-08-14T02:40:00.000Z"),
+    pushMessage: async () => { pushes += 1; },
+  });
+  assert.equal(result.status, "sent");
+  assert.equal(pushes, 1);
+  assert.equal(result.lookup.historyType, "object");
+  assert.equal(result.lookup.matchedRecordCount, 1);
+});
+
 test("manually or backfill-published tomorrow draw is skipped", async () => {
   for (const source of ["manual", "backfill"]) {
     const published = drawRecord({lineSentAt: "2026-08-14T10:00:00.000Z", lineSendCount: 1,
@@ -212,10 +262,13 @@ test("missing tomorrow draw waits in five-minute intervals then sends after crea
     now: new Date("2026-08-14T13:00:00.000Z")});
   assert.equal(at2100.status, "waiting-for-draw");
   assert.equal(at2100.nextCheckAt, "2026-08-14T13:05:00.000Z");
+  assert.equal(historyRef.box.gets, 1);
+  assert.equal(TERMINAL_RUN_STATUSES.has("waiting-for-draw"), false);
   const at2104 = await dispatchTomorrowDraw({settings, runRef, historyRef, bindings: {},
     defaultGroupId: "G", drawClaimsRef: claimsRef, pushMessage: async () => {},
     now: new Date("2026-08-14T13:04:00.000Z")});
   assert.equal(at2104.status, "not-due");
+  assert.equal(historyRef.box.gets, 1);
   historyRef.write([drawRecord()]);
   let pushes = 0;
   const at2105 = await dispatchTomorrowDraw({settings, runRef, historyRef, bindings: {},
@@ -223,6 +276,33 @@ test("missing tomorrow draw waits in five-minute intervals then sends after crea
     now: new Date("2026-08-14T13:05:00.000Z")});
   assert.equal(at2105.status, "sent");
   assert.equal(pushes, 1);
+  assert.ok(historyRef.box.gets >= 2);
+});
+
+test("LINE 429 is failed-retryable rather than waiting-for-draw and keeps publication hidden", async () => {
+  const settings = {enabled: true, time: "10:37"};
+  const runRef = memoryRef(null);
+  const historyRef = memoryRef([drawRecord()]);
+  const drawClaimsRef = memoryRef({});
+  let pushes = 0;
+  const options = {settings, runRef, historyRef, bindings: {}, defaultGroupId: "G",
+    drawClaimsRef, pushMessage: async () => {
+      pushes += 1;
+      if (pushes === 1) throw Object.assign(new Error("LINE rate limited"), {lineStatus: 429});
+    }};
+  const failed = await dispatchTomorrowDraw({...options,
+    now: new Date("2026-08-14T02:37:00.000Z")});
+  assert.equal(failed.status, "failed-retryable");
+  assert.equal(failed.nextCheckAt, "2026-08-14T02:42:00.000Z");
+  assert.equal(runRef.value().status, "failed-retryable");
+  assert.equal(runRef.value().errorType, "429");
+  assert.equal(isDrawPublishedToLine(historyRef.value()[0]), false);
+  const retried = await dispatchTomorrowDraw({...options,
+    now: new Date("2026-08-14T02:42:00.000Z")});
+  assert.equal(retried.status, "sent");
+  assert.equal(pushes, 2);
+  assert.equal(isDrawPublishedToLine(historyRef.value()[0]), true);
+  assert.equal(runRef.value().errorType, undefined);
 });
 
 test("draw created at 22:17 is sent at the next eligible check around 22:20", async () => {

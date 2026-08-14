@@ -14,7 +14,11 @@ const {
   taipeiDateKey,
 } = require("./lineSchedule");
 const {isDrawPublishedToLine} = require("./drawKnowledge");
-const {selectDrawRecordByDate, sendDrawLineRecord} = require("./drawLineDelivery");
+const {
+  listHistoryEntries,
+  selectDrawRecordByDate,
+  sendDrawLineRecord,
+} = require("./drawLineDelivery");
 
 const TERMINAL_RUN_STATUSES = new Set([
   "sent", "failed", "expired", "expired-no-draw", "ambiguous-draw-records",
@@ -24,6 +28,23 @@ const TERMINAL_RUN_STATUSES = new Set([
 function safeRunError(error) {
   return String(error && (error.code || error.lineStatus || error.name) || "unknown-error")
     .slice(0, 80);
+}
+
+function buildDrawLookupDiagnostics(rawHistory, selection) {
+  const historyType = rawHistory === null || rawHistory === undefined ? "null" :
+    (Array.isArray(rawHistory) ? "array" : typeof rawHistory === "object" ? "object" : "invalid");
+  const entries = listHistoryEntries(rawHistory)
+    .filter(({record}) => record && typeof record === "object");
+  const matched = selection && Array.isArray(selection.matches) ? selection.matches : [];
+  const record = matched.length === 1 ? matched[0].record : null;
+  return {
+    historyType,
+    historyCount: entries.length,
+    matchedRecordCount: matched.length,
+    matchedRecordId: record && String(record.id || "").slice(0, 200) || null,
+    matchedRecordDate: record && String(record.date || "").slice(0, 20) || null,
+    published: record ? isDrawPublishedToLine(record) : null,
+  };
 }
 
 async function claimScheduleRun(runRef, {
@@ -174,16 +195,17 @@ async function claimTomorrowCheck(runRef, occurrence, now = new Date(), {force =
   let decision = {claimed: false, reason: "busy"};
   const transaction = await runRef.transaction((current) => {
     const state = current && typeof current === "object" ? current : {};
+    const previousStatus = state.status || null;
     if (TERMINAL_RUN_STATUSES.has(state.status)) {
-      decision = {claimed: false, reason: state.status, state};
+      decision = {claimed: false, reason: state.status, state, previousStatus};
       return;
     }
     if (state.status === "checking" && Number(state.leaseUntil) > nowMs) {
-      decision = {claimed: false, reason: "busy", state};
+      decision = {claimed: false, reason: "busy", state, previousStatus};
       return;
     }
     if (!force && state.nextCheckAt && Date.parse(state.nextCheckAt) > nowMs) {
-      decision = {claimed: false, reason: "not-due", state};
+      decision = {claimed: false, reason: "not-due", state, previousStatus};
       return;
     }
     const next = {
@@ -195,7 +217,7 @@ async function claimTomorrowCheck(runRef, occurrence, now = new Date(), {force =
       startedAt: state.startedAt || now.toISOString(),
       updatedAt: now.toISOString(),
     };
-    decision = {claimed: true, state: next};
+    decision = {claimed: true, state: next, previousStatus};
     return next;
   });
   return transaction.committed ? decision : {...decision, claimed: false};
@@ -207,6 +229,7 @@ async function setTomorrowRunStatus(runRef, claim, status, {
   const next = {...claim.state, status, leaseUntil: 0, updatedAt: now.toISOString(),
     ...(nextCheckAt ? {nextCheckAt} : {}),
     ...(errorType ? {errorType: String(errorType).slice(0, 80)} : {})};
+  if (!errorType) delete next.errorType;
   if (TERMINAL_RUN_STATUSES.has(status)) delete next.nextCheckAt;
   if (status === "sent") next.sentAt = now.toISOString();
   await runRef.set(next);
@@ -234,25 +257,33 @@ async function dispatchTomorrowDraw({
   if (!occurrence) return {status: settings && settings.enabled ? "not-due" : "disabled"};
   const lastMinute = isTaipeiLastMinute(now);
   const claim = await claimTomorrowCheck(runRef, occurrence, now, {force: lastMinute});
-  if (!claim.claimed) return {status: claim.reason, occurrence};
+  if (!claim.claimed) {
+    return {status: claim.reason, occurrence, previousStatus: claim.previousStatus || null};
+  }
   const historySnapshot = await historyRef.get();
-  const selection = selectDrawRecordByDate(historySnapshot.val(), occurrence.targetDrawDate);
+  const rawHistory = historySnapshot.val();
+  const selection = selectDrawRecordByDate(rawHistory, occurrence.targetDrawDate);
+  const lookup = buildDrawLookupDiagnostics(rawHistory, selection);
   if (selection.status === "missing") {
     if (lastMinute) {
       await setTomorrowRunStatus(runRef, claim, "expired-no-draw", {now});
-      return {status: "expired-no-draw", occurrence};
+      return {status: "expired-no-draw", occurrence, lookup,
+        previousStatus: claim.previousStatus || null};
     }
     const nextCheckAt = new Date(now.getTime() + TOMORROW_CHECK_INTERVAL_MS).toISOString();
     await setTomorrowRunStatus(runRef, claim, "waiting-for-draw", {now, nextCheckAt});
-    return {status: "waiting-for-draw", occurrence, nextCheckAt};
+    return {status: "waiting-for-draw", occurrence, nextCheckAt, lookup,
+      previousStatus: claim.previousStatus || null};
   }
   if (selection.status === "ambiguous-draw-records") {
     await setTomorrowRunStatus(runRef, claim, "ambiguous-draw-records", {now});
-    return {status: "ambiguous-draw-records", occurrence};
+    return {status: "ambiguous-draw-records", occurrence, lookup,
+      previousStatus: claim.previousStatus || null};
   }
   if (isDrawPublishedToLine(selection.record)) {
     await setTomorrowRunStatus(runRef, claim, "skipped-already-published", {now});
-    return {status: "skipped-already-published", occurrence};
+    return {status: "skipped-already-published", occurrence, lookup,
+      previousStatus: claim.previousStatus || null};
   }
   try {
     const sent = await sendDrawLineRecord({
@@ -262,23 +293,34 @@ async function dispatchTomorrowDraw({
       allowRepublish: false, pushMessage, now,
     });
     const terminalStatus = sent.status === "sent" ? "sent" : sent.status;
-    if (["busy", "failed"].includes(terminalStatus)) {
+    if (terminalStatus === "not-found") {
       const nextCheckAt = new Date(now.getTime() + TOMORROW_CHECK_INTERVAL_MS).toISOString();
       await setTomorrowRunStatus(runRef, claim, "waiting-for-draw", {now, nextCheckAt});
-      return {status: "waiting-for-draw", occurrence, nextCheckAt};
+      return {status: "waiting-for-draw", occurrence, nextCheckAt, lookup,
+        previousStatus: claim.previousStatus || null, sendClaimResult: terminalStatus};
+    }
+    if (["busy", "failed"].includes(terminalStatus)) {
+      const nextCheckAt = new Date(now.getTime() + TOMORROW_CHECK_INTERVAL_MS).toISOString();
+      await setTomorrowRunStatus(runRef, claim, "failed-retryable", {now, nextCheckAt,
+        errorType: terminalStatus});
+      return {status: "failed-retryable", occurrence, nextCheckAt, lookup,
+        previousStatus: claim.previousStatus || null, sendClaimResult: terminalStatus};
     }
     await setTomorrowRunStatus(runRef, claim, terminalStatus, {now: new Date()});
-    return {...sent, occurrence};
+    return {...sent, occurrence, lookup, previousStatus: claim.previousStatus || null,
+      sendClaimResult: sent.status};
   } catch (error) {
     if (lastMinute) {
       await setTomorrowRunStatus(runRef, claim, "failed", {now, errorType: safeRunError(error)});
-      return {status: "failed", occurrence, error};
+      return {status: "failed", occurrence, error, lookup,
+        previousStatus: claim.previousStatus || null, sendClaimResult: "line-error"};
     }
     const nextCheckAt = new Date(now.getTime() + TOMORROW_CHECK_INTERVAL_MS).toISOString();
-    await setTomorrowRunStatus(runRef, claim, "waiting-for-draw", {
+    await setTomorrowRunStatus(runRef, claim, "failed-retryable", {
       now, nextCheckAt, errorType: safeRunError(error),
     });
-    return {status: "waiting-for-draw", occurrence, nextCheckAt, error};
+    return {status: "failed-retryable", occurrence, nextCheckAt, error, lookup,
+      previousStatus: claim.previousStatus || null, sendClaimResult: "line-error"};
   }
 }
 
@@ -292,6 +334,7 @@ function nextOccurrenceAfter(schedule, occurrence) {
 
 module.exports = {
   TERMINAL_RUN_STATUSES,
+  buildDrawLookupDiagnostics,
   claimScheduleRun,
   claimTomorrowCheck,
   dispatchFixedOccurrence,

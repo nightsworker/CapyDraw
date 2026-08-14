@@ -61,3 +61,14 @@ test("dispatcher never accepts a schedule-provided groupId", () => {
   assert.doesNotMatch(scheduleModule, /targetGroupId|schedule\.groupId/u);
   assert.match(indexSource, /settingsSnapshot\.child\("defaultGroupId"\)\.val\(\)/u);
 });
+
+test("tomorrow diagnostics log only safe lookup and delivery metadata", () => {
+  const handler = indexSource.match(/exports\.scheduleDispatcher = onSchedule\([\s\S]*?(?=\nexports\.|$)/u);
+  assert.ok(handler);
+  for (const field of ["historyType", "historyCount", "matchedRecordCount", "matchedRecordId",
+    "matchedRecordDate", "published", "occurrenceStatusBefore", "occurrenceStatusAfter",
+    "nextCheckAt", "sendClaimResult", "errorType"]) {
+    assert.match(handler[0], new RegExp(`\\b${field}\\b`, "u"));
+  }
+  assert.doesNotMatch(handler[0], /logger\.(?:info|warn|error)\([^\n]*historySnapshot/u);
+});
