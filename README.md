@@ -2,6 +2,12 @@
 
 這個專案維持單一 `index.html` 的 Vanilla HTML/CSS/JavaScript 架構。抽籤資料仍存放在 Firebase Realtime Database 的 `guildDraw/main`；LINE 憑證、群組 ID、玩家綁定與發送動作則只由 Firebase Cloud Functions 處理。
 
+## 抽籤角色排除
+
+`guildDraw/main` 以三個互相獨立的欄位保存未來抽籤資格：`captainExcludedMembers`、`guardianExcludedMembers`、`cabin4ExcludedMembers`。缺少欄位等同空名單，既有 `cabin4ExcludedMembers` 與手動維護的 pool 狀態保持相容。實際候選為角色原始來源與該角色 pool 的交集，再排除角色 exclusion 及當日已取得其他角色的人；加入 exclusion 不會把名字從 pool 永久刪除，取消後不需手動加回。
+
+船長與第四船艙的來源仍是 `guildMembers`，守護來源仍是 `highWarMembers`；三個 pool、抽籤人數、消耗與 history semantics 不變。會員改名時三份 exclusion 一起改名，離開對應來源時 stale exclusion 會被清除；重置 pool 不會清除 exclusion，舊 history 也不會因設定變動而改寫。特別日固定守護或第四船艙若命中 exclusion，抽籤會明確停止並要求管理者調整，不會繞過排除設定。
+
 ## 新增的後端
 
 Functions v2 部署在 `asia-southeast1`（新加坡），與目前 Realtime Database 位於同一區域：

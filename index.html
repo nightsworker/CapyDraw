@@ -243,18 +243,41 @@
       </div>
 
       <div class="card">
-        <h2>船艙 4 排除名單</h2>
-        <p class="hint">加入此名單的人仍可擔任船長，但不會被一般日抽進船艙 4。高戰成員不能加入。</p>
-        <div class="pool-control-row">
-          <div>
-            <label for="cabin4ExcludedAddSelect">選擇要排除的公會成員</label>
-            <select id="cabin4ExcludedAddSelect" class="requires-auth-control"></select>
+        <h2>角色排除設定</h2>
+        <p class="hint">三種排除彼此獨立，只影響未來抽籤資格，不會刪除池中名字或改寫歷史紀錄。</p>
+        <div class="grid-2">
+          <div class="schedule-card">
+            <h3>船長排除</h3>
+            <p class="hint">排除後仍可擔任守護或第四船艙。</p>
+            <div class="pool-control-row">
+              <div><label for="captainExcludedAddSelect">選擇公會成員</label><select id="captainExcludedAddSelect" class="requires-auth-control"></select></div>
+              <button class="btn small requires-auth" id="captainExcludedAddBtn">加入排除</button>
+            </div>
+            <div class="name-cloud" id="captainExcludedView"></div>
+            <div class="message" id="captainExcludedMessage"></div>
           </div>
-          <button class="btn small requires-auth" id="cabin4ExcludedAddBtn">加入排除</button>
+          <div class="schedule-card">
+            <h3>守護排除</h3>
+            <p class="hint">候選來源仍是高戰名單；排除後不影響船長或第四船艙。</p>
+            <div class="pool-control-row">
+              <div><label for="guardianExcludedAddSelect">選擇高戰成員</label><select id="guardianExcludedAddSelect" class="requires-auth-control"></select></div>
+              <button class="btn small requires-auth" id="guardianExcludedAddBtn">加入排除</button>
+            </div>
+            <div class="name-cloud" id="guardianExcludedView"></div>
+            <div class="message" id="guardianExcludedMessage"></div>
+          </div>
+          <div class="schedule-card">
+            <h3>第四船艙排除</h3>
+            <p class="hint">候選來源仍是公會名單；排除後不影響船長或守護。</p>
+            <div class="pool-control-row">
+              <div><label for="cabin4ExcludedAddSelect">選擇公會成員</label><select id="cabin4ExcludedAddSelect" class="requires-auth-control"></select></div>
+              <button class="btn small requires-auth" id="cabin4ExcludedAddBtn">加入排除</button>
+            </div>
+            <div class="name-cloud" id="cabin4ExcludedView"></div>
+            <div class="message" id="cabin4ExcludedMessage"></div>
+          </div>
         </div>
-        <p class="hint">解除排除後，將從船艙 4 下一輪開始恢復資格。</p>
-        <div class="name-cloud" id="cabin4ExcludedView"></div>
-        <div class="message" id="cabin4ExcludedMessage"></div>
+        <p class="hint">解除排除後會直接恢復該角色資格，不需要手動加回 pool。特別日的固定守護或第四船艙若碰到排除，抽籤會安全停止並提示調整。</p>
       </div>
 
       <div class="card">
@@ -478,6 +501,7 @@
 
   <script src="history-publication-ui.js"></script>
   <script src="line-schedules-ui.js"></script>
+  <script src="draw-role-exclusions.js"></script>
   <script>
     window.addEventListener("error", function (event) {
       const el = document.getElementById("cloudStatus");
@@ -523,6 +547,14 @@
       runStatusLabel,
       templateTokenLabel
     } = window.CapyDrawLineSchedulesUi;
+    const {
+      ROLE_EXCLUSION_CONFIG,
+      getRoleEligibleMembers,
+      getRoleExcludedMembers,
+      getRoleExclusionSet,
+      normalizeRoleExclusions,
+      renameRoleExclusions
+    } = window.CapyDrawRoleExclusions;
 
     const defaultState = {
       guildMembers: [],
@@ -531,6 +563,8 @@
       captainPool: [],
       guardianPool: [],
       cabin4Pool: [],
+      captainExcludedMembers: [],
+      guardianExcludedMembers: [],
       cabin4ExcludedMembers: [],
       history: []
     };
@@ -638,20 +672,15 @@
     }
 
     function getCabin4EligibleMembers(workingState) {
-      const source = workingState && typeof workingState === "object" ? workingState : {};
-      const excluded = new Set(uniqueStrings(source.cabin4ExcludedMembers || []));
-      return uniqueStrings(source.guildMembers || []).filter(name => !excluded.has(name));
+      return getRoleEligibleMembers(workingState, "cabin4");
     }
 
     function normalizeState(input) {
       const parsed = input && typeof input === "object" ? input : {};
       const guildMembers = uniqueStrings(parsed.guildMembers || []);
       const highWarMembers = uniqueStrings(parsed.highWarMembers || []);
-      const guildSet = new Set(guildMembers);
-      const highWarSet = new Set(highWarMembers);
-      const cabin4ExcludedMembers = uniqueStrings(parsed.cabin4ExcludedMembers || [])
-        .filter(name => guildSet.has(name) && !highWarSet.has(name));
-      const normalized = {
+      const exclusions = normalizeRoleExclusions({...parsed, guildMembers, highWarMembers});
+      return {
         ...clone(defaultState),
         ...parsed,
         guildMembers,
@@ -659,13 +688,12 @@
         presidentName: standardizeName(parsed.presidentName || "Chia - 嘻嘻不嘻嘻") || "Chia - 嘻嘻不嘻嘻",
         captainPool: uniqueStrings(parsed.captainPool || []),
         guardianPool: uniqueStrings(parsed.guardianPool || []),
-        cabin4Pool: [],
-        cabin4ExcludedMembers,
+        cabin4Pool: uniqueStrings(parsed.cabin4Pool || []),
+        captainExcludedMembers: exclusions.captainExcludedMembers,
+        guardianExcludedMembers: exclusions.guardianExcludedMembers,
+        cabin4ExcludedMembers: exclusions.cabin4ExcludedMembers,
         history: Array.isArray(parsed.history) ? parsed.history.map(normalizeRecord).filter(Boolean) : []
       };
-      const cabin4Eligible = new Set(getCabin4EligibleMembers(normalized));
-      normalized.cabin4Pool = uniqueStrings(parsed.cabin4Pool || []).filter(name => cabin4Eligible.has(name));
-      return normalized;
     }
 
     function buildRenameMap(oldList, newList) {
@@ -702,7 +730,10 @@
       working.captainPool = renameList(working.captainPool, renameMap);
       working.guardianPool = renameList(working.guardianPool, renameMap);
       working.cabin4Pool = renameList(working.cabin4Pool, renameMap);
-      working.cabin4ExcludedMembers = renameList(working.cabin4ExcludedMembers || [], renameMap);
+      const renamedExclusions = renameRoleExclusions(working, renameMap);
+      Object.values(ROLE_EXCLUSION_CONFIG).forEach(config => {
+        working[config.exclusionField] = renamedExclusions[config.exclusionField];
+      });
       working.presidentName = renameName(working.presidentName, renameMap) || working.presidentName;
       working.history = (working.history || []).map(record => {
         const renamed = normalizeRecord({
@@ -860,7 +891,7 @@
       if (!record || !record.consumed) return;
       addBackToPool(working, "captainPool", record.consumed.captain || [], working.guildMembers);
       addBackToPool(working, "guardianPool", record.consumed.guardian || [], working.highWarMembers);
-      addBackToPool(working, "cabin4Pool", record.consumed.cabin4 || [], getCabin4EligibleMembers(working));
+      addBackToPool(working, "cabin4Pool", record.consumed.cabin4 || [], working.guildMembers);
     }
 
     function sanitizePool(working, poolKey, allowedList) {
@@ -890,7 +921,11 @@
       if (working.guildMembers.length < 7) errors.push("公會成員至少需要 7 人，才能抽出船長、守護天使、5 位船艙 4 並避免同日重複。");
       if (working.highWarMembers.length !== 6) errors.push(`高戰成員請剛好設定 6 人。目前是 ${working.highWarMembers.length} 人。`);
       if (!working.presidentName.trim()) errors.push("請設定會長名稱，特別日時會用作固定守護天使。");
+      const captainEligibleCount = getRoleEligibleMembers(working, "captain").length;
+      const guardianEligibleCount = getRoleEligibleMembers(working, "guardian").length;
       const cabin4EligibleCount = getCabin4EligibleMembers(working).length;
+      if (captainEligibleCount < 1) errors.push("船長有效成員不足，請減少船長排除名單或增加公會成員。");
+      if (guardianEligibleCount < 1) errors.push("守護有效成員不足，請減少守護排除名單或增加高戰成員。");
       if (cabin4EligibleCount < 7) errors.push(`船艙 4 有效成員不足。目前可抽 ${cabin4EligibleCount} 人，至少需要 7 人。請減少排除名單或增加公會成員。`);
       const guildSet = new Set(working.guildMembers);
       const missingHighWar = working.highWarMembers.filter(name => !guildSet.has(name));
@@ -909,7 +944,8 @@
       }
       const before = poolSnapshot(working);
       const highWarSet = new Set(working.highWarMembers);
-      const captain = pickOneFromPool(working, "captainPool", working.guildMembers);
+      const captain = pickOneFromPool(working, "captainPool", working.guildMembers,
+        getRoleExclusionSet(working, "captain"));
       const specialDay = highWarSet.has(captain);
       let guardian;
       let cabin4;
@@ -917,18 +953,28 @@
       if (specialDay) {
         guardian = working.presidentName.trim();
         cabin4 = working.highWarMembers.filter(name => name !== captain);
+        if (getRoleExclusionSet(working, "guardian").has(guardian)) {
+          addBackToPool(working, "captainPool", [captain], working.guildMembers);
+          throw new Error("特別日固定守護目前在守護排除名單中，請先調整排除設定。");
+        }
+        const cabin4Excluded = getRoleExclusionSet(working, "cabin4");
+        const excludedCabin4 = cabin4.filter(name => cabin4Excluded.has(name));
+        if (excludedCabin4.length) {
+          addBackToPool(working, "captainPool", [captain], working.guildMembers);
+          throw new Error(`特別日固定船艙 4 包含已排除成員：${excludedCabin4.join("、")}。請先調整排除設定。`);
+        }
         if (cabin4.length !== 5) {
           addBackToPool(working, "captainPool", [captain], working.guildMembers);
           throw new Error("特別日需要高戰名單剛好 6 人，且船長之外要能留下 5 位高戰作為船艙 4。");
         }
         consumed = { captain: [captain], guardian: [], cabin4: [] };
       } else {
-        guardian = pickOneFromPool(working, "guardianPool", working.highWarMembers, new Set([captain]));
+        guardian = pickOneFromPool(working, "guardianPool", working.highWarMembers,
+          getRoleExclusionSet(working, "guardian", [captain]));
         cabin4 = [];
-        const cabin4EligibleMembers = getCabin4EligibleMembers(working);
         for (let i = 0; i < 5; i++) {
-          const exclude = new Set([captain, guardian, ...cabin4]);
-          cabin4.push(pickOneFromPool(working, "cabin4Pool", cabin4EligibleMembers, exclude));
+          const exclude = getRoleExclusionSet(working, "cabin4", [captain, guardian, ...cabin4]);
+          cabin4.push(pickOneFromPool(working, "cabin4Pool", working.guildMembers, exclude));
         }
         consumed = { captain: [captain], guardian: [guardian], cabin4: [...cabin4] };
       }
@@ -1061,7 +1107,6 @@
 
     function getPoolAllowedMembers(poolKey) {
       if (poolKey === "guardianPool") return state.highWarMembers;
-      if (poolKey === "cabin4Pool") return getCabin4EligibleMembers(state);
       return state.guildMembers;
     }
 
@@ -1104,31 +1149,34 @@
       });
     }
 
-    function renderCabin4Exclusions() {
-      const excluded = uniqueStrings(state.cabin4ExcludedMembers || []);
+    function renderRoleExclusions(role) {
+      const config = ROLE_EXCLUSION_CONFIG[role];
+      const prefix = role;
+      const excluded = getRoleExcludedMembers(state, role);
       const excludedSet = new Set(excluded);
-      const highWarSet = new Set(state.highWarMembers);
-      const candidates = state.guildMembers.filter(name => !highWarSet.has(name) && !excludedSet.has(name));
+      const candidates = uniqueStrings(state[config.sourceField] || [])
+        .filter(name => !excludedSet.has(name));
       setSelectOptions(
-        "cabin4ExcludedAddSelect",
+        `${prefix}ExcludedAddSelect`,
         candidates,
         candidates.length ? "選擇要加入排除名單的成員" : "沒有可加入排除名單的成員"
       );
 
-      const view = $("cabin4ExcludedView");
+      const view = $(`${prefix}ExcludedView`);
       if (excluded.length === 0) {
-        view.innerHTML = `<span class="empty">目前沒有船艙 4 排除成員。</span>`;
+        view.innerHTML = `<span class="empty">目前沒有${escapeHtml(config.label)}排除成員。</span>`;
         return;
       }
 
       view.innerHTML = excluded.map(name => `
         <span class="name-token excluded-chip">
           ${escapeHtml(name)}
-          <button class="btn danger small requires-auth cabin4-unexclude-btn" data-excluded-name="${escapeHtml(name)}">解除排除</button>
+          <button class="btn danger small requires-auth role-unexclude-btn" data-role="${escapeHtml(role)}" data-excluded-name="${escapeHtml(name)}">解除排除</button>
         </span>
       `).join("");
-      view.querySelectorAll(".cabin4-unexclude-btn").forEach(btn => {
-        btn.addEventListener("click", () => removeCabin4ExcludedMember(btn.dataset.excludedName));
+      view.querySelectorAll(".role-unexclude-btn").forEach(btn => {
+        btn.addEventListener("click", () =>
+          removeRoleExcludedMember(btn.dataset.role, btn.dataset.excludedName));
       });
     }
 
@@ -1148,7 +1196,7 @@
       renderPoolView("guardianPoolView", state.guardianPool);
       renderPoolView("cabin4PoolView", state.cabin4Pool);
       renderPoolControls();
-      renderCabin4Exclusions();
+      Object.keys(ROLE_EXCLUSION_CONFIG).forEach(renderRoleExclusions);
       const selectedDate = $("drawDate").value || todayString();
       const record = state.history.find(x => x.date === selectedDate) || state.history[0];
       setCurrentRecord(record);
@@ -1737,44 +1785,52 @@
       }
     }
 
-    async function addCabin4ExcludedMember() {
-      const selectedName = standardizeName($("cabin4ExcludedAddSelect").value);
+    async function addRoleExcludedMember(role) {
+      const config = ROLE_EXCLUSION_CONFIG[role];
+      const selectedName = standardizeName($(`${role}ExcludedAddSelect`).value);
       if (!selectedName) {
-        setMessage("cabin4ExcludedMessage", "請先選擇要加入排除名單的成員。", "warn");
+        setMessage(`${role}ExcludedMessage`, "請先選擇要加入排除名單的成員。", "warn");
         return;
       }
 
       try {
         await refreshFromCloud();
-        if (!state.guildMembers.includes(selectedName)) throw new Error(`${selectedName} 不在公會成員名單中。`);
-        if (state.highWarMembers.includes(selectedName)) throw new Error("高戰成員不能加入船艙 4 排除名單。");
-        if (state.cabin4ExcludedMembers.includes(selectedName)) throw new Error(`${selectedName} 已在船艙 4 排除名單中。`);
-
-        state.cabin4ExcludedMembers.push(selectedName);
-        state.cabin4Pool = uniqueStrings(state.cabin4Pool).filter(name => name !== selectedName);
+        const sourceMembers = uniqueStrings(state[config.sourceField] || []);
+        if (!sourceMembers.includes(selectedName)) {
+          throw new Error(`${selectedName} 不在${config.label}候選來源中。`);
+        }
+        if (getRoleExcludedMembers(state, role).includes(selectedName)) {
+          throw new Error(`${selectedName} 已在${config.label}排除名單中。`);
+        }
+        state[config.exclusionField].push(selectedName);
         state = normalizeState(state);
         await saveCloud(state);
-        setMessage("cabin4ExcludedMessage", `已將 ${selectedName} 加入船艙 4 排除名單，並從目前船艙 4 池移除。`, "ok");
+        setMessage(`${role}ExcludedMessage`,
+          `已將 ${selectedName} 加入${config.label}排除名單；原 pool 保持不變。`, "ok");
       } catch (error) {
-        setMessage("cabin4ExcludedMessage", error.message, "danger");
+        setMessage(`${role}ExcludedMessage`, error.message, "danger");
       }
     }
 
-    async function removeCabin4ExcludedMember(name) {
+    async function removeRoleExcludedMember(role, name) {
+      const config = ROLE_EXCLUSION_CONFIG[role];
       const selectedName = standardizeName(name);
       if (!selectedName) return;
-      if (!confirm(`確定要解除「${selectedName}」的船艙 4 排除嗎？\n\n解除後將從船艙 4 下一輪開始恢復資格。`)) return;
+      if (!confirm(`確定要解除「${selectedName}」的${config.label}排除嗎？\n\n解除後會恢復資格，既有 pool 輪替保持不變。`)) return;
 
       try {
         await refreshFromCloud();
-        if (!state.cabin4ExcludedMembers.includes(selectedName)) throw new Error(`${selectedName} 已不在船艙 4 排除名單中。`);
-
-        state.cabin4ExcludedMembers = state.cabin4ExcludedMembers.filter(member => member !== selectedName);
+        if (!getRoleExcludedMembers(state, role).includes(selectedName)) {
+          throw new Error(`${selectedName} 已不在${config.label}排除名單中。`);
+        }
+        state[config.exclusionField] = state[config.exclusionField]
+          .filter(member => member !== selectedName);
         state = normalizeState(state);
         await saveCloud(state);
-        setMessage("cabin4ExcludedMessage", `已解除 ${selectedName} 的排除；將從船艙 4 下一輪開始恢復資格。`, "ok");
+        setMessage(`${role}ExcludedMessage`,
+          `已解除 ${selectedName} 的${config.label}排除；資格已恢復，pool 輪替保持不變。`, "ok");
       } catch (error) {
-        setMessage("cabin4ExcludedMessage", error.message, "danger");
+        setMessage(`${role}ExcludedMessage`, error.message, "danger");
       }
     }
 
@@ -2194,24 +2250,25 @@
           const guildRenameMap = buildRenameMap(oldGuild, nextGuild);
           const highWarRenameMap = buildRenameMap(oldHighWar, nextHighWar);
           applyRenameMapToState(working, mergeRenameMaps(guildRenameMap, highWarRenameMap));
+          const exclusionsBeforeCleanup = Object.fromEntries(
+            Object.values(ROLE_EXCLUSION_CONFIG).map(config =>
+              [config.role, [...(working[config.exclusionField] || [])]]),
+          );
           const oldGuildAfterRename = renameList(oldGuild, guildRenameMap);
           const oldHighWarAfterRename = renameList(oldHighWar, highWarRenameMap);
           working.guildMembers = nextGuild;
           working.highWarMembers = nextHighWar;
           working.presidentName = nextPresident;
-          const nextGuildSet = new Set(nextGuild);
-          const nextHighWarSet = new Set(nextHighWar);
-          const autoRemovedExcluded = uniqueStrings(working.cabin4ExcludedMembers || [])
-            .filter(name => nextHighWarSet.has(name));
-          working.cabin4ExcludedMembers = uniqueStrings(working.cabin4ExcludedMembers || [])
-            .filter(name => nextGuildSet.has(name) && !nextHighWarSet.has(name));
+          const normalizedExclusions = normalizeRoleExclusions(working);
+          Object.values(ROLE_EXCLUSION_CONFIG).forEach(config => {
+            working[config.exclusionField] = normalizedExclusions[config.exclusionField];
+          });
           addNewNamesToPool(working, "captainPool", oldGuildAfterRename, nextGuild);
           addNewNamesToPool(working, "cabin4Pool", oldGuildAfterRename, nextGuild);
           addNewNamesToPool(working, "guardianPool", oldHighWarAfterRename, nextHighWar);
-          sanitizePool(working, "cabin4Pool", getCabin4EligibleMembers(working));
+          sanitizePool(working, "cabin4Pool", nextGuild);
           if (working.captainPool.length === 0 && nextGuild.length > 0) working.captainPool = shuffle(nextGuild);
-          const cabin4EligibleMembers = getCabin4EligibleMembers(working);
-          if (working.cabin4Pool.length === 0 && cabin4EligibleMembers.length > 0) working.cabin4Pool = shuffle(cabin4EligibleMembers);
+          if (working.cabin4Pool.length === 0 && nextGuild.length > 0) working.cabin4Pool = shuffle(nextGuild);
           if (working.guardianPool.length === 0 && nextHighWar.length > 0) working.guardianPool = shuffle(nextHighWar);
           state = normalizeState(working);
           await saveCloud(state);
@@ -2220,7 +2277,14 @@
           const guildSet = new Set(nextGuild);
           const missing = nextHighWar.filter(name => !guildSet.has(name));
           if (missing.length) warnings.push(`高戰不在公會名單中：${missing.join("、")}。`);
-          if (autoRemovedExcluded.length) warnings.push(`以下成員因成為高戰，已自動解除船艙 4 排除：${autoRemovedExcluded.join("、")}。`);
+          Object.values(ROLE_EXCLUSION_CONFIG).forEach(config => {
+            const retained = new Set(working[config.exclusionField] || []);
+            const removed = exclusionsBeforeCleanup[config.role]
+              .filter(name => !retained.has(name));
+            if (removed.length) {
+              warnings.push(`以下已離開${config.label}候選來源的排除項目已清除：${removed.join("、")}。`);
+            }
+          });
           setMessage("settingsMessage", warnings.length ? `已儲存。${warnings.join(" ")}` : "已儲存到 Firebase 雲端。", warnings.length ? "warn" : "ok");
         } catch (error) {
           setMessage("settingsMessage", error.message, "danger");
@@ -2295,7 +2359,9 @@
       $("guardianPoolRemoveBtn").addEventListener("click", () => removeSelectedMemberFromPool("guardianPool", "guardianPoolRemoveSelect"));
       $("cabin4PoolAddBtn").addEventListener("click", () => addSelectedMemberToPool("cabin4Pool", "cabin4PoolAddSelect"));
       $("cabin4PoolRemoveBtn").addEventListener("click", () => removeSelectedMemberFromPool("cabin4Pool", "cabin4PoolRemoveSelect"));
-      $("cabin4ExcludedAddBtn").addEventListener("click", addCabin4ExcludedMember);
+      Object.keys(ROLE_EXCLUSION_CONFIG).forEach(role => {
+        $(`${role}ExcludedAddBtn`).addEventListener("click", () => addRoleExcludedMember(role));
+      });
 
       $("resetPoolsBtn").addEventListener("click", async () => {
         if (!confirm("確定要重置所有池子嗎？歷史紀錄會保留，但抽籤池會重新洗牌補滿。")) return;
@@ -2303,7 +2369,7 @@
           await refreshFromCloud();
           state.captainPool = shuffle(state.guildMembers);
           state.guardianPool = shuffle(state.highWarMembers);
-          state.cabin4Pool = shuffle(getCabin4EligibleMembers(state));
+          state.cabin4Pool = shuffle(state.guildMembers);
           await saveCloud(state);
           alert("池子已重置。");
         } catch (error) { alert(error.message); }
