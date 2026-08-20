@@ -5,9 +5,11 @@ const test = require("node:test");
 const {
   addCalendarDays,
   buildScheduledLineMessage,
+  calendarDayDifference,
   findNextOccurrence,
   formatDateToken,
   occurrenceTimestamp,
+  normalizeLineScheduleRecurrence,
   pruneRunHistory,
   recurrenceMatchesDate,
   renderScheduleCore,
@@ -32,6 +34,18 @@ function schedule(overrides = {}) {
   };
 }
 
+function occurrenceDates(value, count, after = "2026-08-09T16:00:00.000Z") {
+  const dates = [];
+  let cursor = new Date(after);
+  while (dates.length < count) {
+    const next = findNextOccurrence(value, {after: cursor, inclusive: true});
+    if (!next) break;
+    dates.push(next.occurrenceDate);
+    cursor = new Date(next.timestamp + 1);
+  }
+  return dates;
+}
+
 test("daily recurrence honors inclusive start and end dates", () => {
   const value = schedule({startDate: "2026-08-14", endDate: "2026-08-15"});
   assert.equal(recurrenceMatchesDate(value, "2026-08-13"), false);
@@ -40,22 +54,158 @@ test("daily recurrence honors inclusive start and end dates", () => {
   assert.equal(recurrenceMatchesDate(value, "2026-08-16"), false);
 });
 
-test("weekly recurrence supports one or multiple weekdays", () => {
-  const value = schedule({recurrence: {type: "weekly", weekdays: [2, 5]}});
+test("every one week recurrence supports one or multiple weekdays", () => {
+  const value = schedule({
+    recurrence: {type: "every_n_weeks", weekInterval: 1, weekdays: [2, 5]},
+  });
   assert.equal(recurrenceMatchesDate(value, "2026-08-18"), true);
   assert.equal(recurrenceMatchesDate(value, "2026-08-21"), true);
   assert.equal(recurrenceMatchesDate(value, "2026-08-19"), false);
 });
 
-test("biweekly recurrence anchors week zero to the startDate calendar week", () => {
+test("every two weeks anchors week zero to the startDate calendar week", () => {
   const value = schedule({
     startDate: "2026-08-12",
-    recurrence: {type: "biweekly", weekdays: [2, 5]},
+    recurrence: {type: "every_n_weeks", weekInterval: 2, weekdays: [2, 5]},
   });
   assert.equal(recurrenceMatchesDate(value, "2026-08-14"), true);
   assert.equal(recurrenceMatchesDate(value, "2026-08-18"), false);
   assert.equal(recurrenceMatchesDate(value, "2026-08-25"), true);
   assert.equal(recurrenceMatchesDate(value, "2026-08-28"), true);
+});
+
+test("every three weeks activates only calendar weeks 0, 3, 6", () => {
+  const value = schedule({
+    startDate: "2026-08-10",
+    recurrence: {type: "every_n_weeks", weekInterval: 3, weekdays: [2]},
+  });
+  assert.equal(recurrenceMatchesDate(value, "2026-08-11"), true);
+  assert.equal(recurrenceMatchesDate(value, "2026-08-18"), false);
+  assert.equal(recurrenceMatchesDate(value, "2026-08-25"), false);
+  assert.equal(recurrenceMatchesDate(value, "2026-09-01"), true);
+});
+
+test("every four weeks supports multiple weekdays", () => {
+  const value = schedule({
+    startDate: "2026-08-10",
+    recurrence: {type: "every_n_weeks", weekInterval: 4, weekdays: [1, 7]},
+  });
+  assert.equal(recurrenceMatchesDate(value, "2026-08-10"), true);
+  assert.equal(recurrenceMatchesDate(value, "2026-08-16"), true);
+  assert.equal(recurrenceMatchesDate(value, "2026-08-17"), false);
+  assert.equal(recurrenceMatchesDate(value, "2026-09-07"), true);
+});
+
+test("disabled schedules never match an otherwise active week", () => {
+  const value = schedule({
+    enabled: false,
+    startDate: "2026-08-10",
+    recurrence: {type: "every_n_weeks", weekInterval: 1, weekdays: [1]},
+  });
+  assert.equal(recurrenceMatchesDate(value, "2026-08-10"), false);
+});
+
+test("startDate calendar week is week zero", () => {
+  const value = schedule({
+    startDate: "2026-08-12",
+    recurrence: {type: "every_n_weeks", weekInterval: 5, weekdays: [3]},
+  });
+  assert.equal(recurrenceMatchesDate(value, "2026-08-12"), true);
+});
+
+test("week zero never runs a selected weekday before startDate", () => {
+  const value = schedule({
+    startDate: "2026-08-13",
+    recurrence: {type: "every_n_weeks", weekInterval: 2, weekdays: [1, 5]},
+  });
+  assert.equal(recurrenceMatchesDate(value, "2026-08-10"), false);
+  assert.equal(recurrenceMatchesDate(value, "2026-08-14"), true);
+});
+
+test("endDate is inclusive for an every-n-weeks occurrence", () => {
+  const value = schedule({
+    startDate: "2026-08-10", endDate: "2026-08-25",
+    recurrence: {type: "every_n_weeks", weekInterval: 2, weekdays: [2]},
+  });
+  assert.equal(recurrenceMatchesDate(value, "2026-08-25"), true);
+  assert.equal(recurrenceMatchesDate(value, "2026-09-08"), false);
+});
+
+test("an absent endDate keeps every-n-weeks recurrence permanent", () => {
+  const value = schedule({
+    startDate: "2026-08-10",
+    recurrence: {type: "every_n_weeks", weekInterval: 52, weekdays: [1]},
+  });
+  assert.ok(findNextOccurrence(value, {
+    after: new Date("2031-01-01T00:00:00.000Z"), inclusive: true,
+  }));
+});
+
+test("calendar-week recurrence crosses month boundaries", () => {
+  const value = schedule({
+    startDate: "2026-08-24",
+    recurrence: {type: "every_n_weeks", weekInterval: 2, weekdays: [1]},
+  });
+  assert.equal(recurrenceMatchesDate(value, "2026-08-24"), true);
+  assert.equal(recurrenceMatchesDate(value, "2026-09-07"), true);
+});
+
+test("calendar-week recurrence crosses year boundaries", () => {
+  const value = schedule({
+    startDate: "2026-12-28",
+    recurrence: {type: "every_n_weeks", weekInterval: 2, weekdays: [1]},
+  });
+  assert.equal(recurrenceMatchesDate(value, "2026-12-28"), true);
+  assert.equal(recurrenceMatchesDate(value, "2027-01-04"), false);
+  assert.equal(recurrenceMatchesDate(value, "2027-01-11"), true);
+});
+
+test("calendar week arithmetic uses civil dates across leap years", () => {
+  assert.equal(calendarDayDifference("2028-03-06", "2028-02-28"), 7);
+  assert.equal(calendarDayDifference("2027-01-04", "2026-12-28"), 7);
+});
+
+test("deterministic A: every week Tuesday and Friday next six dates", () => {
+  const value = schedule({
+    startDate: "2026-08-10",
+    recurrence: {type: "every_n_weeks", weekInterval: 1, weekdays: [2, 5]},
+  });
+  assert.deepEqual(occurrenceDates(value, 6), [
+    "2026-08-11", "2026-08-14", "2026-08-18",
+    "2026-08-21", "2026-08-25", "2026-08-28",
+  ]);
+});
+
+test("deterministic B: every two weeks Tuesday and Friday next six dates", () => {
+  const value = schedule({
+    startDate: "2026-08-10",
+    recurrence: {type: "every_n_weeks", weekInterval: 2, weekdays: [2, 5]},
+  });
+  assert.deepEqual(occurrenceDates(value, 6), [
+    "2026-08-11", "2026-08-14", "2026-08-25",
+    "2026-08-28", "2026-09-08", "2026-09-11",
+  ]);
+});
+
+test("deterministic C: every three weeks Tuesday and Friday next six dates", () => {
+  const value = schedule({
+    startDate: "2026-08-10",
+    recurrence: {type: "every_n_weeks", weekInterval: 3, weekdays: [2, 5]},
+  });
+  assert.deepEqual(occurrenceDates(value, 6), [
+    "2026-08-11", "2026-08-14", "2026-09-01",
+    "2026-09-04", "2026-09-22", "2026-09-25",
+  ]);
+});
+
+test("deterministic D: Thursday start excludes Monday and first runs Friday", () => {
+  const value = schedule({
+    startDate: "2026-08-13",
+    recurrence: {type: "every_n_weeks", weekInterval: 2, weekdays: [1, 5]},
+  });
+  assert.deepEqual(occurrenceDates(value, 4), [
+    "2026-08-14", "2026-08-24", "2026-08-28", "2026-09-07",
+  ]);
 });
 
 test("monthly day 15 runs on the 15th", () => {
@@ -160,17 +310,121 @@ test("AI wrapper surrounds but cannot mutate core text, numbers, dates, or menti
   assert.deepEqual(message.substitution, core.substitutions);
 });
 
-test("schedule validation preserves structured tokens and rejects invalid recurrence", () => {
+test("schedule validation preserves structured tokens and the formal recurrence schema", () => {
   const created = validateLineSchedule({
     name: "每週提醒", enabled: true,
     messageTemplate: [{type: "text", text: "請集合"}],
     startDate: "2026-08-14", endDate: "", time: "20:30",
-    recurrence: {type: "weekly", weekdays: [2, 5]},
+    recurrence: {type: "every_n_weeks", weekInterval: 2, weekdays: [2, 5]},
   }, {id: "s_test1234", uid: "UID_A", now: new Date("2026-08-14T00:00:00.000Z")});
   assert.deepEqual(created.messageTemplate, [{type: "text", text: "請集合"}]);
   assert.equal(created.timezone, "Asia/Taipei");
-  assert.throws(() => validateLineSchedule({...created,
-    recurrence: {type: "weekly", weekdays: []}}, {id: created.id}), /至少要選/u);
+  assert.deepEqual(created.recurrence,
+    {type: "every_n_weeks", weekInterval: 2, weekdays: [2, 5]});
+});
+
+function validScheduleInput(recurrence) {
+  return {
+    name: "循環測試", enabled: true,
+    messageTemplate: [{type: "text", text: "請集合"}],
+    startDate: "2026-08-10", endDate: null, time: "20:30", recurrence,
+  };
+}
+
+test("weekInterval boundaries 1 and 52 are valid", () => {
+  for (const weekInterval of [1, 52]) {
+    const value = validateLineSchedule(validScheduleInput({
+      type: "every_n_weeks", weekInterval, weekdays: [1],
+    }), {id: "s_test1234", uid: "UID_A", now: new Date("2026-08-01T00:00:00.000Z")});
+    assert.equal(value.recurrence.weekInterval, weekInterval);
+  }
+});
+
+test("weekInterval rejects zero, negative, decimal, over 52, missing, and strings", () => {
+  for (const weekInterval of [0, -1, 1.5, 53, undefined, "2", "garbage"]) {
+    assert.throws(() => validateLineSchedule(validScheduleInput({
+      type: "every_n_weeks", weekInterval, weekdays: [1],
+    }), {id: "s_test1234"}), /1～52 的整數/u);
+  }
+});
+
+test("every-n-weeks rejects an empty weekday selection", () => {
+  assert.throws(() => validateLineSchedule(validScheduleInput({
+    type: "every_n_weeks", weekInterval: 2, weekdays: [],
+  }), {id: "s_test1234"}), /至少要選/u);
+});
+
+test("every-n-weeks rejects invalid weekday numbers and string values", () => {
+  for (const weekdays of [[0], [8], [1.5], ["2"], "2"]) {
+    assert.throws(() => validateLineSchedule(validScheduleInput({
+      type: "every_n_weeks", weekInterval: 2, weekdays,
+    }), {id: "s_test1234"}), /有效星期/u);
+  }
+});
+
+test("valid weekdays are sorted and de-duplicated", () => {
+  const value = validateLineSchedule(validScheduleInput({
+    type: "every_n_weeks", weekInterval: 2, weekdays: [5, 2, 5],
+  }), {id: "s_test1234", now: new Date("2026-08-01T00:00:00.000Z")});
+  assert.deepEqual(value.recurrence.weekdays, [2, 5]);
+});
+
+test("daily ignores irrelevant week interval and weekdays", () => {
+  const value = validateLineSchedule(validScheduleInput({
+    type: "daily", weekInterval: "garbage", weekdays: [99],
+  }), {id: "s_test1234", now: new Date("2026-08-01T00:00:00.000Z")});
+  assert.equal(value.recurrence.type, "daily");
+  assert.equal(Object.hasOwn(value.recurrence, "weekdays"), false);
+  assert.equal(Object.hasOwn(value.recurrence, "weekInterval"), false);
+});
+
+test("legacy weekly normalizes to every one week without changing weekdays", () => {
+  const normalized = normalizeLineScheduleRecurrence(schedule({
+    recurrence: {type: "weekly", weekdays: [2, 5]},
+  }));
+  assert.deepEqual(normalized.recurrence,
+    {type: "every_n_weeks", weekInterval: 1, weekdays: [2, 5]});
+  assert.equal(normalized.legacyRecurrenceType, "weekly");
+});
+
+test("legacy biweekly normalizes to every two weeks without changing weekdays", () => {
+  const normalized = normalizeLineScheduleRecurrence(schedule({
+    recurrence: {type: "biweekly", weekdays: [2, 5]},
+  }));
+  assert.deepEqual(normalized.recurrence,
+    {type: "every_n_weeks", weekInterval: 2, weekdays: [2, 5]});
+  assert.equal(normalized.legacyRecurrenceType, "biweekly");
+});
+
+test("legacy monthly is never converted into a four-week recurrence", () => {
+  const normalized = normalizeLineScheduleRecurrence(schedule({
+    recurrence: {type: "monthly", dayOfMonth: 31},
+  }));
+  assert.equal(normalized.recurrence.type, "monthly");
+  assert.equal(normalized.recurrence.weekInterval, undefined);
+  assert.equal(normalized.legacyRecurrenceNeedsReview, true);
+});
+
+test("new validation rejects legacy weekly, biweekly, and monthly writes", () => {
+  for (const type of ["weekly", "biweekly", "monthly"]) {
+    assert.throws(() => validateLineSchedule(validScheduleInput({
+      type, weekdays: [2], dayOfMonth: 15,
+    }), {id: "s_test1234"}), /循環類型不支援/u);
+  }
+});
+
+test("backend nextRunAt is calculated for every one through four weeks", () => {
+  const expected = ["2026-08-18", "2026-08-25", "2026-09-01", "2026-09-08"];
+  for (const weekInterval of [1, 2, 3, 4]) {
+    const value = schedule({
+      startDate: "2026-08-10",
+      recurrence: {type: "every_n_weeks", weekInterval, weekdays: [2]},
+    });
+    const next = findNextOccurrence(value, {
+      after: new Date("2026-08-14T13:00:00.000Z"), inclusive: true,
+    });
+    assert.equal(next.occurrenceDate, expected[weekInterval - 1]);
+  }
 });
 
 test("tomorrow automation validation is backwards-safe and timezone-fixed", () => {

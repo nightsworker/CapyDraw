@@ -8,6 +8,7 @@ const {
   TERMINAL_RUN_STATUSES,
   dispatchFixedOccurrence,
   dispatchTomorrowDraw,
+  nextOccurrenceAfter,
 } = require("../lib/lineScheduleRuntime");
 const {fixedRunKey, latestTomorrowOccurrence} = require("../lib/lineSchedule");
 
@@ -309,6 +310,15 @@ test("fixed due prepares wrapper and queues immutable occurrence-based core", as
   assert.equal(pending.items[0].occurrenceDate, "2026-08-14");
   assert.equal(pending.items[0].aiIntro, "先提醒。");
   assert.equal(runRef.value().deliveryPayload, undefined);
+});
+
+test("dispatcher next occurrence follows normalized every-two-week calendar cadence", () => {
+  const next = nextOccurrenceAfter(fixedSchedule({
+    startDate: "2026-08-10",
+    recurrence: {type: "every_n_weeks", weekInterval: 2, weekdays: [2, 5]},
+  }), occurrence("2026-08-14"));
+  assert.equal(next.occurrenceDate, "2026-08-25");
+  assert.equal(next.runKey, fixedRunKey("s_runtime1", "2026-08-25", "20:30"));
 });
 
 test("an unexpected AI wrapper failure still queues the immutable core", async () => {

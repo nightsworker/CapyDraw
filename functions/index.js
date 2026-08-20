@@ -127,6 +127,7 @@ const {
   findNextOccurrence,
   fixedRunKey,
   latestTomorrowOccurrence,
+  normalizeLineScheduleRecurrence,
   occurrenceTimestamp,
   pruneRunHistory,
   renderScheduleCore,
@@ -1626,7 +1627,8 @@ async function getLineScheduleResponse() {
   const defaultGroupId = settingsSnapshot.child("defaultGroupId").val();
   const schedules = Object.values(items).filter((item) => item && typeof item === "object")
     .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-Hant"))
-    .map((schedule) => {
+    .map((storedSchedule) => {
+      const schedule = normalizeLineScheduleRecurrence(storedSchedule);
       let previewCore = "";
       let previewWarnings = [];
       if (schedule.nextRunAt) {
@@ -1736,7 +1738,8 @@ exports.setLineScheduleEnabled = onRequest({region: REGION}, async (req, res) =>
     const transaction = await ref.transaction((current) => {
       if (!current || typeof current !== "object") return;
       updated = {...current, enabled, updatedAt: now.toISOString()};
-      const next = enabled ? findNextOccurrence(updated, {after: now, inclusive: true}) : null;
+      const next = enabled ? findNextOccurrence(
+        normalizeLineScheduleRecurrence(updated), {after: now, inclusive: true}) : null;
       updated.nextRunAt = next && next.scheduledFor || null;
       return updated;
     });
@@ -1919,7 +1922,8 @@ async function dispatchFixedSchedules({db, items, runs, bindings, defaultGroupId
   const groupPendingRef = pendingGroupRef(db, defaultGroupId);
   const enqueueAnnouncement = (announcement) =>
     enqueuePendingAnnouncement(groupPendingRef, announcement);
-  for (const schedule of Object.values(items || {})) {
+  for (const storedSchedule of Object.values(items || {})) {
+    const schedule = normalizeLineScheduleRecurrence(storedSchedule);
     if (!schedule || schedule.enabled === false || !schedule.id) continue;
     const scheduleRuns = runs && runs[schedule.id] || {};
     const processedRunKeys = new Set();

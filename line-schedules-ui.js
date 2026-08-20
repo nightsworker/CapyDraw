@@ -60,13 +60,40 @@
   function recurrenceLabel(schedule) {
     const recurrence = schedule && schedule.recurrence || {};
     if (recurrence.type === "daily") return "每天";
+    if (recurrence.type === "every_n_weeks") {
+      const weekdays = (recurrence.weekdays || []).map((day) => WEEKDAY_LABELS[Number(day) - 1])
+        .filter(Boolean).map((label) => `週${label}`).join("、");
+      const interval = Number(recurrence.weekInterval);
+      return `${interval === 1 ? "每週" : `每 ${interval} 週`}・${weekdays}`;
+    }
     if (["weekly", "biweekly"].includes(recurrence.type)) {
       const weekdays = (recurrence.weekdays || []).map((day) => WEEKDAY_LABELS[Number(day) - 1])
         .filter(Boolean).join("、");
       return `${recurrence.type === "weekly" ? "每週" : "每雙週"} ${weekdays}`;
     }
-    if (recurrence.type === "monthly") return `每月 ${recurrence.dayOfMonth} 日（缺日取月底）`;
+    if (recurrence.type === "monthly") return "舊版每月排程，請重新設定循環";
     return "未知";
+  }
+
+  function normalizeRecurrenceForEditor(schedule) {
+    const recurrence = schedule && schedule.recurrence || {};
+    if (recurrence.type === "weekly" || recurrence.type === "biweekly") {
+      return {
+        type: "every_n_weeks",
+        weekInterval: recurrence.type === "weekly" ? 1 : 2,
+        weekdays: Array.isArray(recurrence.weekdays) ? recurrence.weekdays.map(Number) : [],
+        needsReview: false,
+      };
+    }
+    if (recurrence.type === "monthly") {
+      return {type: "every_n_weeks", weekInterval: 1, weekdays: [], needsReview: true};
+    }
+    return {
+      type: recurrence.type === "every_n_weeks" ? "every_n_weeks" : "daily",
+      weekInterval: Number(recurrence.weekInterval) || 1,
+      weekdays: Array.isArray(recurrence.weekdays) ? recurrence.weekdays.map(Number) : [],
+      needsReview: false,
+    };
   }
 
   function runStatusLabel(status) {
@@ -89,6 +116,12 @@
 
   function buildScheduleRequest(values) {
     const source = values && typeof values === "object" ? values : {};
+    const recurrenceType = String(source.recurrenceType || "daily");
+    const recurrence = recurrenceType === "every_n_weeks" ? {
+      type: recurrenceType,
+      weekInterval: Number(source.weekInterval),
+      weekdays: (Array.isArray(source.weekdays) ? source.weekdays : []).map(Number),
+    } : {type: "daily"};
     return {
       name: String(source.name || "").trim(),
       enabled: source.enabled !== false,
@@ -96,12 +129,7 @@
         .map((token) => ({...token})),
       startDate: String(source.startDate || ""),
       endDate: source.endDate ? String(source.endDate) : null,
-      recurrence: {
-        type: String(source.recurrenceType || "daily"),
-        weekdays: (Array.isArray(source.weekdays) ? source.weekdays : []).map(Number),
-        dayOfMonth: source.dayOfMonth === null || source.dayOfMonth === undefined ?
-          null : Number(source.dayOfMonth),
-      },
+      recurrence,
       time: String(source.time || ""),
     };
   }
@@ -111,6 +139,7 @@
     addDays,
     buildScheduleRequest,
     formatDateToken,
+    normalizeRecurrenceForEditor,
     previewTemplate,
     recurrenceLabel,
     runStatusLabel,

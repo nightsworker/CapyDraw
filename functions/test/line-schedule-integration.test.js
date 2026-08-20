@@ -66,6 +66,13 @@ test("dispatcher only targets defaultGroupId and never accepts schedule groupId"
   assert.match(indexSource, /pendingGroupRef\(db, defaultGroupId\)/u);
 });
 
+test("schedule reads and dispatcher normalize legacy recurrence before runtime use", () => {
+  assert.match(indexSource,
+    /\.map\(\(storedSchedule\) => \{\s*const schedule = normalizeLineScheduleRecurrence/u);
+  assert.match(indexSource,
+    /for \(const storedSchedule of Object\.values\(items \|\| \{\}\)\) \{\s*const schedule = normalizeLineScheduleRecurrence/u);
+});
+
 test("webhook collects normal and pending messages before one direct Reply API call", () => {
   const wrapper = indexSource.match(
     /async function processLineWebhookEventWithPending[\s\S]*?(?=\nexports\.lineWebhook)/u);

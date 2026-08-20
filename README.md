@@ -313,7 +313,9 @@ Command 的原始結構化結果不變，再以 80% 機率加入簡短 opening�
 
 Pending 以 deterministic occurrence id 去重，並用 RTDB transaction 由 webhook event claim；短 lease 到期後可由下一個 event 恢復。同一 `webhookEventId` 會留下有限的 backend event ledger，redelivery 不會再次消費。Reply 失敗會明確 release，manual Push 與 pending draw 另共用 record-level draw claim，避免同一 draw 同時送兩次。一次 Reply 最多 5 個 message objects：一般使用者要求的回覆優先，若有 pending 至少保留 1 個 slot 給最舊公告，其餘 pending 繼續排隊。每筆 schedule 只保留最近 20 筆 sanitized run history，並分開記錄排定時間、`sent-via-reply` 實際時間與 reply delay。
 
-固定公告 recurrence 支援 daily、每週多選 weekday、biweekly 與 monthly。Biweekly 以 `startDate` 所在 Taipei calendar week 的星期一作 week 0，不用 14 天毫秒差；monthly 指定 29～31 日遇到短月時在月底執行。`startDate`、`endDate` 都 inclusive，省略 endDate 代表永久。Backend 計算並保存 `nextRunAt`，dispatcher 即使晚一分鐘仍會處理尚未 claim 的 due occurrence。
+固定公告的新 recurrence schema 僅支援 `daily` 與 `every_n_weeks`。每 X 週可設定 1～52 的整數 `weekInterval` 並多選 `weekdays`；`startDate` 所在 Asia/Taipei 週一至週日的 calendar week 是 week 0，只有 calendar week difference 可整除 `weekInterval` 時才執行，不使用固定毫秒數推算週期。`startDate`、`endDate` 都 inclusive，省略 endDate 代表永久；week 0 中早於 `startDate` 的 weekday 不執行。Backend 是 `nextRunAt` 的唯一計算來源，dispatcher 即使晚一分鐘仍會處理尚未 claim 的 due occurrence。
+
+舊資料相容：`weekly` 讀取時正規化為 `every_n_weeks` + `weekInterval: 1`，`biweekly` 正規化為 `weekInterval: 2`，不會自動寫回 RTDB；管理員日後從 UI 編輯儲存時才改用新 schema。舊版 `monthly` 不會錯誤換算成每 4 週，UI 會顯示「舊版每月排程，請重新設定循環」，而新建與更新 API 不再接受 monthly。
 
 核心訊息以結構化 token 保存：plain text、member `bindingId`、`@ALL`、以及 occurrence date X 的整數 offset 與 `M/D`／`YYYY/MM/DD` format。Member 與 `@ALL` 執行時建立 LINE `textV2` substitution；失效或已搬群的 binding 只降級成原 display plain text 並留下 warning，絕不 mention 到其他人。日期以 occurrence 的 Taipei calendar date 為 X，不使用稍晚執行時的 server UTC 日期。
 

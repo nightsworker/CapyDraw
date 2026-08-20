@@ -388,7 +388,7 @@
 
       <div class="card">
         <div class="schedule-card-head">
-          <div><h2>固定訊息排程</h2><p class="hint">到點時先排入免費 Reply；可建立任意多筆 daily / weekly / biweekly / monthly 公告。</p></div>
+          <div><h2>固定訊息排程</h2><p class="hint">到點時先排入免費 Reply；可建立任意多筆每天或每 X 週的公告。</p></div>
           <button class="btn requires-line-admin" id="newScheduleBtn">＋ 新增自動公告</button>
         </div>
         <div id="lineSchedulesWrap"><p class="empty">尚未載入排程。</p></div>
@@ -404,17 +404,16 @@
           <label class="schedule-card"><input type="checkbox" id="scheduleEnabled" checked /> 啟用</label>
           <div><label for="scheduleStartDate">開始日期（包含）</label><input type="date" id="scheduleStartDate" /></div>
           <div><label for="scheduleEndDate">結束日期（包含；留空為永久）</label><input type="date" id="scheduleEndDate" /></div>
-          <div><label for="scheduleRecurrence">循環</label><select id="scheduleRecurrence"><option value="daily">每天</option><option value="weekly">每週</option><option value="biweekly">每雙週</option><option value="monthly">每月</option></select></div>
+          <div><label for="scheduleRecurrence">循環</label><select id="scheduleRecurrence"><option value="daily">每天</option><option value="every_n_weeks">每 X 週</option></select></div>
           <div><label for="scheduleTime">時間</label><input type="time" id="scheduleTime" value="20:30" /></div>
         </div>
         <div id="scheduleWeekdaysRow" style="display:none;margin-top:14px">
+          <div style="max-width:220px;margin-bottom:12px"><label for="scheduleWeekInterval">每幾週</label><input type="number" id="scheduleWeekInterval" min="1" max="52" step="1" value="1" /></div>
           <label>執行星期</label>
           <div class="weekday-selector" id="scheduleWeekdays">
             <label><input type="checkbox" value="1" />一</label><label><input type="checkbox" value="2" />二</label><label><input type="checkbox" value="3" />三</label><label><input type="checkbox" value="4" />四</label><label><input type="checkbox" value="5" />五</label><label><input type="checkbox" value="6" />六</label><label><input type="checkbox" value="7" />日</label>
           </div>
         </div>
-        <div id="scheduleMonthDayRow" style="display:none;margin-top:14px"><label for="scheduleMonthDay">每月日期（缺日取月底）</label><input type="number" id="scheduleMonthDay" min="1" max="31" value="1" /></div>
-
         <h3 style="margin-top:22px">核心訊息編輯器</h3>
         <p class="hint">依序加入文字或 token。核心文字、日期、數字與 mention 不會交給 AI 改寫。</p>
         <div class="template-toolbar"><div><label for="scheduleTextToken">文字區塊</label><textarea id="scheduleTextToken" placeholder="輸入核心文字；可包含換行"></textarea></div><button class="btn secondary" id="addScheduleTextBtn">加入文字</button></div>
@@ -518,6 +517,7 @@
     } = window.CapyDrawHistoryPublicationUi;
     const {
       buildScheduleRequest,
+      normalizeRecurrenceForEditor,
       previewTemplate,
       recurrenceLabel,
       runStatusLabel,
@@ -1467,12 +1467,12 @@
 
     function updateScheduleRecurrenceFields() {
       const type = $("scheduleRecurrence").value;
-      $("scheduleWeekdaysRow").style.display = ["weekly", "biweekly"].includes(type) ? "block" : "none";
-      $("scheduleMonthDayRow").style.display = type === "monthly" ? "block" : "none";
+      $("scheduleWeekdaysRow").style.display = type === "every_n_weeks" ? "block" : "none";
     }
 
     function openScheduleEditor(scheduleId = null) {
       const schedule = scheduleId ? lineSchedulesCache.find(item => item.id === scheduleId) : null;
+      const editorRecurrence = normalizeRecurrenceForEditor(schedule);
       editingScheduleId = schedule ? schedule.id : null;
       scheduleDraftTokens = schedule ? clone(schedule.messageTemplate || []) : [];
       $("scheduleEditorTitle").textContent = schedule ? `編輯：${schedule.name}` : "新增固定訊息排程";
@@ -1480,10 +1480,10 @@
       $("scheduleEnabled").checked = schedule ? schedule.enabled !== false : true;
       $("scheduleStartDate").value = schedule ? schedule.startDate : todayString();
       $("scheduleEndDate").value = schedule && schedule.endDate || "";
-      $("scheduleRecurrence").value = schedule && schedule.recurrence.type || "daily";
+      $("scheduleRecurrence").value = editorRecurrence.type;
       $("scheduleTime").value = schedule ? schedule.time : "20:30";
-      $("scheduleMonthDay").value = schedule && schedule.recurrence.dayOfMonth || 1;
-      const weekdays = new Set(schedule && schedule.recurrence.weekdays || []);
+      $("scheduleWeekInterval").value = editorRecurrence.weekInterval;
+      const weekdays = new Set(editorRecurrence.weekdays);
       $("scheduleWeekdays").querySelectorAll('input[type="checkbox"]').forEach(input => {
         input.checked = weekdays.has(Number(input.value));
       });
@@ -1494,7 +1494,9 @@
       updateScheduleRecurrenceFields();
       renderScheduleMemberOptions();
       renderScheduleTokens();
-      setMessage("scheduleEditorMessage", "");
+      setMessage("scheduleEditorMessage", editorRecurrence.needsReview ?
+        "⚠️ 這是舊版每月排程，請重新選擇每 X 週與執行星期後儲存。" : "",
+      editorRecurrence.needsReview ? "warn" : "");
       $("scheduleEditorCard").style.display = "block";
       $("scheduleEditorCard").scrollIntoView({behavior: "smooth", block: "start"});
     }
@@ -1608,8 +1610,8 @@
         startDate: $("scheduleStartDate").value,
         endDate: $("scheduleEndDate").value || null,
         recurrenceType: $("scheduleRecurrence").value,
+        weekInterval: $("scheduleWeekInterval").value,
         weekdays,
-        dayOfMonth: $("scheduleMonthDay").value,
         time: $("scheduleTime").value
       });
       lineAdminSaving = true;

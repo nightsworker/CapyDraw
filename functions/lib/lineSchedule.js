@@ -3,7 +3,7 @@
 const crypto = require("node:crypto");
 
 const SCHEDULE_TIMEZONE = "Asia/Taipei";
-const SCHEDULE_TYPES = Object.freeze(["daily", "weekly", "biweekly", "monthly"]);
+const SCHEDULE_TYPES = Object.freeze(["daily", "every_n_weeks"]);
 const FIXED_RETRY_LIMIT = 3;
 const RUN_HISTORY_LIMIT = 20;
 const RUN_LEASE_MS = 2 * 60 * 1000;
@@ -87,8 +87,17 @@ function calendarDayDifference(left, right) {
   const a = parseDateKey(left);
   const b = parseDateKey(right);
   if (!a || !b) return null;
-  return Math.round((Date.UTC(a.year, a.month - 1, a.day) -
-    Date.UTC(b.year, b.month - 1, b.day)) / 86_400_000);
+  const civilDayNumber = ({year, month, day}) => {
+    const adjustedYear = year - (month <= 2 ? 1 : 0);
+    const era = Math.floor(adjustedYear / 400);
+    const yearOfEra = adjustedYear - era * 400;
+    const shiftedMonth = month + (month > 2 ? -3 : 9);
+    const dayOfYear = Math.floor((153 * shiftedMonth + 2) / 5) + day - 1;
+    const dayOfEra = yearOfEra * 365 + Math.floor(yearOfEra / 4) -
+      Math.floor(yearOfEra / 100) + dayOfYear;
+    return era * 146097 + dayOfEra;
+  };
+  return civilDayNumber(a) - civilDayNumber(b);
 }
 
 function normalizeWeekdays(value) {
@@ -97,13 +106,43 @@ function normalizeWeekdays(value) {
     .sort((a, b) => a - b);
 }
 
+function normalizeLineScheduleRecurrence(schedule) {
+  if (!schedule || typeof schedule !== "object") return schedule;
+  const recurrence = schedule.recurrence && typeof schedule.recurrence === "object" ?
+    schedule.recurrence : {};
+  if (recurrence.type === "weekly" || recurrence.type === "biweekly") {
+    return {
+      ...schedule,
+      recurrence: {
+        type: "every_n_weeks",
+        weekInterval: recurrence.type === "weekly" ? 1 : 2,
+        weekdays: normalizeWeekdays(recurrence.weekdays),
+      },
+      legacyRecurrenceType: recurrence.type,
+    };
+  }
+  if (recurrence.type === "monthly") {
+    return {...schedule, legacyRecurrenceType: "monthly", legacyRecurrenceNeedsReview: true};
+  }
+  return {...schedule};
+}
+
 function recurrenceMatchesDate(schedule, occurrenceDate) {
+  schedule = normalizeLineScheduleRecurrence(schedule);
   const date = parseDateKey(occurrenceDate);
   if (!date || !schedule || schedule.enabled === false) return false;
   if (occurrenceDate < schedule.startDate ||
       (schedule.endDate && occurrenceDate > schedule.endDate)) return false;
   const recurrence = schedule.recurrence || {};
   if (recurrence.type === "daily") return true;
+  if (recurrence.type === "every_n_weeks") {
+    const difference = calendarDayDifference(
+      mondayForDate(occurrenceDate), mondayForDate(schedule.startDate));
+    const calendarWeekDifference = difference === null ? null : difference / 7;
+    return Number.isInteger(calendarWeekDifference) && calendarWeekDifference >= 0 &&
+      calendarWeekDifference % recurrence.weekInterval === 0 &&
+      normalizeWeekdays(recurrence.weekdays).includes(weekdayForDate(occurrenceDate));
+  }
   if (recurrence.type === "weekly") {
     return normalizeWeekdays(recurrence.weekdays).includes(weekdayForDate(occurrenceDate));
   }
@@ -131,6 +170,7 @@ function tomorrowRunKey(date, time) {
 }
 
 function findNextOccurrence(schedule, {after = new Date(), inclusive = false} = {}) {
+  schedule = normalizeLineScheduleRecurrence(schedule);
   const afterMs = after instanceof Date ? after.getTime() : Number(after);
   if (!Number.isFinite(afterMs) || !schedule || schedule.enabled === false) return null;
   let candidate = taipeiDateKey(new Date(afterMs));
@@ -215,6 +255,17 @@ function validateLineSchedule(input, {id, uid, now = new Date(), existing = null
   if (!time) throw scheduleError("時間必須是 HH:mm。");
   if (!SCHEDULE_TYPES.includes(type)) throw scheduleError("循環類型不支援。");
   const weekdays = normalizeWeekdays(source.recurrence && source.recurrence.weekdays);
+  const rawWeekdays = source.recurrence && source.recurrence.weekdays;
+  const weekInterval = source.recurrence && source.recurrence.weekInterval;
+  if (type === "every_n_weeks" &&
+      (!Number.isInteger(weekInterval) || weekInterval < 1 || weekInterval > 52)) {
+    throw scheduleError("週期必須是 1～52 的整數。");
+  }
+  if (type === "every_n_weeks" &&
+      (!Array.isArray(rawWeekdays) || !rawWeekdays.length ||
+       rawWeekdays.some((day) => !Number.isInteger(day) || day < 1 || day > 7))) {
+    throw scheduleError("每 X 週排程至少要選一個有效星期。");
+  }
   if (["weekly", "biweekly"].includes(type) && !weekdays.length) {
     throw scheduleError("每週／雙週排程至少要選一個星期。");
   }
@@ -234,8 +285,9 @@ function validateLineSchedule(input, {id, uid, now = new Date(), existing = null
     endDate,
     recurrence: {
       type,
-      weekdays: ["weekly", "biweekly"].includes(type) ? weekdays : [],
-      dayOfMonth: type === "monthly" ? dayOfMonth : null,
+      ...(type === "every_n_weeks" ? {weekInterval, weekdays} : {}),
+      ...(["weekly", "biweekly"].includes(type) ? {weekdays} : {}),
+      ...(type === "monthly" ? {dayOfMonth} : {}),
     },
     time,
     timezone: SCHEDULE_TIMEZONE,
@@ -376,6 +428,7 @@ module.exports = {
   formatDateToken,
   latestTomorrowOccurrence,
   mondayForDate,
+  normalizeLineScheduleRecurrence,
   normalizeTemplateTokens,
   normalizeTime,
   occurrenceDayExpired,

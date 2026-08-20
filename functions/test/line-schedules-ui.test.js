@@ -6,6 +6,7 @@ const path = require("node:path");
 const test = require("node:test");
 const {
   buildScheduleRequest,
+  normalizeRecurrenceForEditor,
   previewTemplate,
   recurrenceLabel,
   runStatusLabel,
@@ -26,20 +27,62 @@ test("frontend schedule request remains structured and has no LINE userId", () =
   const request = buildScheduleRequest({
     name: "每週提醒", enabled: true,
     messageTemplate: [{type: "member", bindingId: "binding_a", display: "@A"}],
-    startDate: "2026-08-14", endDate: "", recurrenceType: "weekly",
-    weekdays: [2, 5], dayOfMonth: null, time: "20:30",
+    startDate: "2026-08-14", endDate: "", recurrenceType: "every_n_weeks",
+    weekInterval: "3", weekdays: [2, 5], time: "20:30",
   });
-  assert.equal(request.recurrence.type, "weekly");
+  assert.equal(request.recurrence.type, "every_n_weeks");
+  assert.equal(request.recurrence.weekInterval, 3);
   assert.deepEqual(request.recurrence.weekdays, [2, 5]);
   assert.equal(JSON.stringify(request).includes("lineUserId"), false);
 });
 
-test("frontend recurrence and run status labels cover V1", () => {
-  assert.equal(recurrenceLabel({recurrence: {type: "biweekly", weekdays: [2, 5]}}), "每雙週 二、五");
-  assert.equal(recurrenceLabel({recurrence: {type: "monthly", dayOfMonth: 31}}), "每月 31 日（缺日取月底）");
+test("frontend daily request omits weekly-only fields", () => {
+  const request = buildScheduleRequest({
+    name: "每天", messageTemplate: [{type: "text", text: "提醒"}],
+    startDate: "2026-08-14", recurrenceType: "daily",
+    weekInterval: "garbage", weekdays: [99], time: "20:30",
+  });
+  assert.deepEqual(request.recurrence, {type: "daily"});
+});
+
+test("frontend recurrence and run status labels cover generalized weeks", () => {
+  assert.equal(recurrenceLabel({recurrence: {
+    type: "every_n_weeks", weekInterval: 1, weekdays: [2, 5],
+  }}), "每週・週二、週五");
+  assert.equal(recurrenceLabel({recurrence: {
+    type: "every_n_weeks", weekInterval: 2, weekdays: [2, 5],
+  }}), "每 2 週・週二、週五");
+  assert.equal(recurrenceLabel({recurrence: {type: "monthly", dayOfMonth: 31}}),
+    "舊版每月排程，請重新設定循環");
   assert.equal(runStatusLabel("waiting-for-draw"), "⏳ 等待抽籤");
   assert.equal(runStatusLabel("queued-for-reply"), "⏳ 等待群組訊息後免費回覆");
   assert.equal(runStatusLabel("sent-via-reply"), "✅ 已透過 Reply 發布");
+});
+
+test("legacy weekly and biweekly edit into the new formal schema", () => {
+  assert.deepEqual(normalizeRecurrenceForEditor({recurrence: {
+    type: "weekly", weekdays: [2, 5],
+  }}), {type: "every_n_weeks", weekInterval: 1, weekdays: [2, 5], needsReview: false});
+  assert.deepEqual(normalizeRecurrenceForEditor({recurrence: {
+    type: "biweekly", weekdays: [2, 5],
+  }}), {type: "every_n_weeks", weekInterval: 2, weekdays: [2, 5], needsReview: false});
+});
+
+test("legacy monthly opens as an explicit recurrence reset", () => {
+  assert.deepEqual(normalizeRecurrenceForEditor({recurrence: {
+    type: "monthly", dayOfMonth: 31,
+  }}), {type: "every_n_weeks", weekInterval: 1, weekdays: [], needsReview: true});
+});
+
+test("automation editor exposes only daily and every-n-weeks creation options", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "../../index.html"), "utf8");
+  const select = source.match(/<select id="scheduleRecurrence">[\s\S]*?<\/select>/u);
+  assert.ok(select);
+  assert.match(select[0], /value="daily"/u);
+  assert.match(select[0], /value="every_n_weeks"/u);
+  assert.doesNotMatch(select[0], /value="(?:weekly|biweekly|monthly)"/u);
+  assert.match(source, /id="scheduleWeekInterval"[^>]*min="1"[^>]*max="52"/u);
+  assert.doesNotMatch(source, /id="scheduleMonthDay"/u);
 });
 
 test("automation UI uses existing admin helper and never writes schedule RTDB directly", () => {
