@@ -5,10 +5,11 @@ const {MIAOBING_LORE, SENDER_ROLES} = require("./miaobing-personality");
 
 function matchingLoreBindings(bindings, groupId, lorePerson) {
   const gameIds = new Set(lorePerson.gameIds || [lorePerson.gameId]);
+  const memberIds = new Set(lorePerson.memberIds || []);
   return listBindingRecords(bindings).filter((binding) =>
     binding.lineGroupId === groupId &&
-    binding.lineName === lorePerson.lineName &&
-    gameIds.has(binding.gameId) &&
+    (memberIds.has(binding.memberId) ||
+      (binding.lineName === lorePerson.lineName && gameIds.has(binding.gameId))) &&
     binding.lineUserId);
 }
 
@@ -19,6 +20,7 @@ function resolveLorePerson(bindings, groupId, lorePerson) {
   return {
     lineUserId: userIds[0],
     lineName: lorePerson.lineName,
+    memberIds: [...new Set(matches.map((binding) => binding.memberId).filter(Boolean))],
     gameIds: [...new Set(matches.map((binding) => binding.gameId))],
   };
 }

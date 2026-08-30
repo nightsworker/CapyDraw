@@ -16,10 +16,12 @@ const COMMAND_FLAVOR_PROBABILITY = 0.8;
 const MIAOBING_LORE = Object.freeze({
   owner: Object.freeze({
     lineName: "Chia",
+    memberIds: Object.freeze(["852177", "849633"]),
     gameIds: Object.freeze(["嘻嘻不嘻嘻", "CC x CC"]),
     aliases: Object.freeze(["嘻嘻", "嘻嘻不嘻嘻", "Chia", "CC"]),
   }),
-  guildLeader: Object.freeze({lineName: "@Hank", gameId: "挖系小嗨"}),
+  guildLeader: Object.freeze({lineName: "@Hank", gameId: "挖系小嗨",
+    memberIds: Object.freeze(["1443678"])}),
   plateTarget: Object.freeze({lineName: "貳零陸", gameId: "九章伏藏"}),
 });
 

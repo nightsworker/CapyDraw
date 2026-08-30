@@ -1,6 +1,12 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const {
+  memberPlayerName,
+  normalizeMemberId,
+  normalizeMembersMaster,
+  resolveCanonicalMember,
+} = require("./memberIdentity");
 
 function standardizeName(value) {
   return String(value || "")
@@ -36,20 +42,40 @@ function memberValues(memberNames) {
   return [];
 }
 
+function normalizeLineMember(value) {
+  if (typeof value === "string") return parseMemberName(value);
+  const record = value && typeof value === "object" ? value : {};
+  const memberId = normalizeMemberId(record.memberId);
+  const gameId = standardizeName(record.gameName || record.nameSnapshot || record.gameId || "");
+  const lineName = standardizeName(record.lineNameHint || record.lineNameSnapshot ||
+    record.lineName || "");
+  if (memberId && gameId) {
+    const fullName = memberPlayerName({memberId, gameName: gameId, lineNameHint: lineName});
+    return {fullName, lineName: lineName || gameId, gameId, memberId,
+      active: record.active !== false};
+  }
+  return parseMemberName(record.fullName || record.playerName || "");
+}
+
 function uniqueMembers(members) {
   const seen = new Set();
   return members.filter((member) => {
-    const key = normalizeMemberName(member.fullName);
+    const key = member.memberId ? `id:${member.memberId}` : normalizeMemberName(member.fullName);
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 }
 
+function normalizeGuildMembers(memberNames) {
+  const master = normalizeMembersMaster(memberNames);
+  const values = Object.keys(master).length ? Object.values(master) : memberValues(memberNames);
+  return uniqueMembers(values.map(normalizeLineMember)
+    .filter((member) => member.fullName && member.active !== false));
+}
+
 function findMembersByLineName(memberNames, lineName) {
-  const members = uniqueMembers(memberValues(memberNames)
-    .map(parseMemberName)
-    .filter((member) => member.fullName));
+  const members = normalizeGuildMembers(memberNames);
   const exactQuery = String(lineName || "").trim();
   if (!exactQuery) return [];
   return members.filter((member) => member.lineName === exactQuery);
@@ -82,6 +108,16 @@ function bindingKeyForGroup(playerName, groupId) {
     .digest("base64url")
     .slice(0, 16);
   return `${bindingKey(playerName)}_${groupDigest}`;
+}
+
+function bindingKeyForMemberId(memberId, groupId) {
+  const normalizedId = normalizeMemberId(memberId);
+  if (!normalizedId) throw new Error("memberId 格式不正確。");
+  const memberDigest = crypto.createHash("sha256")
+    .update(`member:${normalizedId}`, "utf8").digest("base64url");
+  const groupDigest = crypto.createHash("sha256")
+    .update(String(groupId || "").trim(), "utf8").digest("base64url").slice(0, 16);
+  return `p_${memberDigest}_${groupDigest}`;
 }
 
 const PREFIX_COMMANDS = new Map([
@@ -262,12 +298,13 @@ function resolveBindingLineName(command, profileDisplayName) {
 }
 
 function createBindingRecord({member, userId, displayName, groupId, now, boundAt}) {
-  const parsed = typeof member === "string" ? parseMemberName(member) : member;
+  const parsed = normalizeLineMember(member);
   return {
     playerName: parsed.fullName,
     normalizedPlayerName: normalizeMemberName(parsed.fullName),
     lineName: parsed.lineName,
     gameId: parsed.gameId,
+    ...(parsed.memberId ? {memberId: parsed.memberId} : {}),
     lineUserId: userId,
     lineDisplayName: displayName || parsed.lineName,
     lineGroupId: groupId,
@@ -280,7 +317,10 @@ function listBindingRecords(bindings) {
   return Object.entries(bindings && typeof bindings === "object" ? bindings : {})
     .filter(([, value]) => value && typeof value === "object")
     .map(([id, value]) => {
-      const parsed = parseMemberName(value.playerName || "");
+      const parsed = normalizeLineMember(value);
+      const inferred = resolveCanonicalMember(value.playerName || value.gameId || "");
+      const memberId = normalizeMemberId(value.memberId) ||
+        (inferred.status === "mapped" ? inferred.member.memberId : null);
       return {
         id,
         ...value,
@@ -288,6 +328,7 @@ function listBindingRecords(bindings) {
         normalizedPlayerName: normalizeMemberName(parsed.fullName),
         lineName: parsed.lineName,
         gameId: parsed.gameId,
+        memberId,
       };
     })
     .filter((binding) => binding.playerName);
@@ -297,11 +338,23 @@ function bindingIsInGroup(binding, groupId) {
   return Boolean(binding.lineUserId && (!groupId || binding.lineGroupId === groupId));
 }
 
-function findBindingForMember(memberName, bindings, groupId) {
-  const member = parseMemberName(memberName);
-  const records = listBindingRecords(bindings).filter((binding) => bindingIsInGroup(binding, groupId));
-  const exact = records.find((binding) =>
+function bindingMatchesMember(binding, memberValue) {
+  const member = normalizeLineMember(memberValue);
+  if (member.memberId && binding && binding.memberId) {
+    return member.memberId === binding.memberId;
+  }
+  return Boolean(binding && member.fullName &&
     binding.normalizedPlayerName === normalizeMemberName(member.fullName));
+}
+
+function findBindingForMember(memberName, bindings, groupId) {
+  const member = normalizeLineMember(memberName);
+  const records = listBindingRecords(bindings).filter((binding) => bindingIsInGroup(binding, groupId));
+  if (member.memberId) {
+    const byMemberId = records.find((binding) => binding.memberId === member.memberId);
+    if (byMemberId) return byMemberId;
+  }
+  const exact = records.find((binding) => bindingMatchesMember(binding, member));
   if (exact) return exact;
 
   const sameLineName = records.filter((binding) =>
@@ -311,10 +364,11 @@ function findBindingForMember(memberName, bindings, groupId) {
 }
 
 function buildMemberBindingRows(memberNames, bindings, groupId) {
-  return uniqueMembers(memberValues(memberNames).map(parseMemberName).filter((member) => member.fullName))
+  return normalizeGuildMembers(memberNames)
     .map((member) => {
-      const binding = findBindingForMember(member.fullName, bindings, groupId);
+      const binding = findBindingForMember(member, bindings, groupId);
       return {
+        memberId: member.memberId,
         playerName: member.fullName,
         lineName: member.lineName,
         gameId: member.gameId,
@@ -366,8 +420,7 @@ function buildUnboundListText(memberNames, bindings, groupId) {
 
 function buildBindingResultText(title, entries, footer) {
   const members = (Array.isArray(entries) ? entries : [])
-    .map((entry) => parseMemberName(typeof entry === "string" ?
-      entry : entry.fullName || entry.playerName || ""))
+    .map(normalizeLineMember)
     .filter((member) => member.fullName);
   const lineNames = [...new Set(members.map((member) => member.lineName))];
   const lines = [
@@ -395,7 +448,7 @@ function buildUnbindSuccessText(bindings) {
 
 function buildAdminBindingSuccessText(members, sourceLineName) {
   const parsedMembers = (Array.isArray(members) ? members : [])
-    .map((member) => parseMemberName(typeof member === "string" ? member : member.fullName || ""))
+    .map(normalizeLineMember)
     .filter((member) => member.fullName);
   const targetGuildLineName = parsedMembers[0] ? parsedMembers[0].lineName : "";
   const actualLineName = String(sourceLineName || targetGuildLineName).trim();
@@ -470,8 +523,8 @@ function buildDrawLineMessage(record, bindings, groupId) {
   let mentionIndex = 0;
 
   const renderMember = (memberName, includeGameId) => {
-    const member = parseMemberName(memberName);
-    const binding = findBindingForMember(member.fullName, bindings, groupId);
+    const member = normalizeLineMember(memberName);
+    const binding = findBindingForMember(member, bindings, groupId);
     let mentionText;
     if (binding) {
       const key = `mention${mentionIndex++}`;
@@ -487,10 +540,15 @@ function buildDrawLineMessage(record, bindings, groupId) {
     return includeGameId ? `${escapeTextV2Literal(member.gameId)} ${mentionText}` : mentionText;
   };
 
-  const cabinMembers = Array.isArray(record.cabin4) ? record.cabin4 : [];
+  const identity = record.memberIdentity && typeof record.memberIdentity === "object" ?
+    record.memberIdentity : null;
+  const captainMember = identity && identity.captain || record.captain;
+  const guardianMember = identity && identity.guardian || record.guardian;
+  const cabinMembers = identity && Array.isArray(identity.cabin4) ? identity.cabin4 :
+    Array.isArray(record.cabin4) ? record.cabin4 : [];
   const lines = [
-    `${escapeTextV2Literal(formatDrawDate(record.date))}船長：${renderMember(record.captain, true)}`,
-    `守護天使：${renderMember(record.guardian, true)}`,
+    `${escapeTextV2Literal(formatDrawDate(record.date))}船長：${renderMember(captainMember, true)}`,
+    `守護天使：${renderMember(guardianMember, true)}`,
     `第四船艙：${cabinMembers.map((name) => renderMember(name, false)).join(" ")}`,
     "",
     "船長如果要指定發船時間，請提早告知我。",
@@ -557,6 +615,8 @@ function maskLineUserId(value) {
 module.exports = {
   bindingKey,
   bindingKeyForGroup,
+  bindingKeyForMemberId,
+  bindingMatchesMember,
   buildAdminBindingSuccessText,
   buildAdminUnbindSuccessText,
   buildBindingSuccessText,
@@ -577,6 +637,8 @@ module.exports = {
   isGroupJoinEvent,
   listBindingRecords,
   maskLineUserId,
+  normalizeGuildMembers,
+  normalizeLineMember,
   normalizeMemberName,
   parseAdminBindArguments,
   parseBotCommand,

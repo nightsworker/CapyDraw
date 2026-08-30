@@ -3,10 +3,12 @@
 const crypto = require("node:crypto");
 const {
   bindingKeyForGroup,
+  bindingKeyForMemberId,
+  bindingMatchesMember,
   createBindingRecord,
   listBindingRecords,
+  normalizeGuildMembers,
   normalizeMemberName,
-  parseMemberName,
 } = require("./line");
 
 const FALLBACK_GROUP_NAME = "LINE 群組";
@@ -103,17 +105,13 @@ function buildLineGroupAdminRows(lineGroups, defaultGroupId) {
   });
 }
 
-function memberValues(memberNames) {
-  if (Array.isArray(memberNames)) return memberNames;
-  if (memberNames && typeof memberNames === "object") return Object.values(memberNames);
-  return [];
-}
-
 function buildLineBindingMigrationPlan({memberNames, bindings, oldGroupId, newGroupId, profiles, now}) {
-  const members = new Map(memberValues(memberNames)
-    .map(parseMemberName)
-    .filter((member) => member.fullName)
+  const memberList = normalizeGuildMembers(memberNames);
+  const members = new Map(memberList
     .map((member) => [normalizeMemberName(member.fullName), member]));
+  const membersById = new Map(memberList
+    .filter((member) => member.memberId)
+    .map((member) => [member.memberId, member]));
   const profileByUserId = new Map((profiles || [])
     .filter((profile) => profile && profile.userId)
     .map((profile) => [profile.userId, profile]));
@@ -127,13 +125,16 @@ function buildLineBindingMigrationPlan({memberNames, bindings, oldGroupId, newGr
   let conflicts = 0;
 
   oldBindings.forEach((oldBinding) => {
-    const normalized = oldBinding.normalizedPlayerName;
-    if (seenPlayers.has(normalized)) {
+    const identityKey = oldBinding.memberId ? `id:${oldBinding.memberId}` :
+      oldBinding.normalizedPlayerName;
+    if (seenPlayers.has(identityKey)) {
       skippedBindings += 1;
       return;
     }
-    seenPlayers.add(normalized);
-    const member = members.get(normalized);
+    seenPlayers.add(identityKey);
+    const member = oldBinding.memberId ?
+      membersById.get(oldBinding.memberId) || members.get(oldBinding.normalizedPlayerName) :
+      members.get(oldBinding.normalizedPlayerName);
     const profile = profileByUserId.get(oldBinding.lineUserId);
     if (!member || !oldBinding.lineUserId || !profile ||
         profile.userId !== oldBinding.lineUserId || profile.displayName !== member.lineName) {
@@ -141,8 +142,7 @@ function buildLineBindingMigrationPlan({memberNames, bindings, oldGroupId, newGr
       return;
     }
 
-    const samePlayer = newBindings.find((binding) =>
-      binding.normalizedPlayerName === normalized);
+    const samePlayer = newBindings.find((binding) => bindingMatchesMember(binding, member));
     if (samePlayer) {
       if (samePlayer.lineUserId === oldBinding.lineUserId) skippedBindings += 1;
       else conflicts += 1;
@@ -154,7 +154,8 @@ function buildLineBindingMigrationPlan({memberNames, bindings, oldGroupId, newGr
       return;
     }
 
-    const id = bindingKeyForGroup(member.fullName, newGroupId);
+    const id = member.memberId ? bindingKeyForMemberId(member.memberId, newGroupId) :
+      bindingKeyForGroup(member.fullName, newGroupId);
     const created = createBindingRecord({
       member,
       userId: oldBinding.lineUserId,
@@ -164,7 +165,8 @@ function buildLineBindingMigrationPlan({memberNames, bindings, oldGroupId, newGr
       boundAt: oldBinding.boundAt,
     });
     updates[id] = created;
-    newBindings.push({id, ...created, normalizedPlayerName: normalized});
+    newBindings.push({id, ...created,
+      normalizedPlayerName: normalizeMemberName(member.fullName)});
     migratedBindings += 1;
   });
 

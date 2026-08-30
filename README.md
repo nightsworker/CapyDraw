@@ -2,11 +2,54 @@
 
 這個專案維持單一 `index.html` 的 Vanilla HTML/CSS/JavaScript 架構。抽籤資料仍存放在 Firebase Realtime Database 的 `guildDraw/main`；LINE 憑證、群組 ID、玩家綁定與發送動作則只由 Firebase Cloud Functions 處理。
 
+## Stable Member Identity
+
+完成明確 migration 後，會員的永久 identity 是純數字字串 `memberId`，不是名單順序或可變動的遊戲名稱：
+
+```text
+guildDraw/main/members/{memberId} = {
+  memberId: "1443678",
+  gameName: "挖系小嗨",
+  lineNameHint: "@Hank",
+  active: true
+}
+```
+
+`members` 是會員 master；`gameName` 可以改名，`active=false` 代表 soft delete。停用不會刪除 history 或 LINE binding，重新啟用同一 `memberId` 後可恢復抽籤資格。網站的會員設定頁只允許新增 numeric ID、修改遊戲名稱、停用與重新啟用，不提供 hard delete，也不會依 array index 推測誰改名。
+
+`highWarMemberIds`、`captainPool`、`guardianPool`、`cabin4Pool`、`captainExcludedMembers`、`guardianExcludedMembers`、`cabin4ExcludedMembers` 與 `presidentMemberId` 都以 `memberId` 保存。UI 顯示 `gameName (#memberId)`；高戰名單的重新排序或替換不會改動任何舊 history 身份。
+
+新 history 同時保留舊版角色文字欄位供既有後端相容，並新增 immutable identity snapshot：
+
+```text
+memberIdentity: {
+  captain: { memberId, nameSnapshot, lineNameSnapshot },
+  guardian: { memberId, nameSnapshot, lineNameSnapshot },
+  cabin4: [{ memberId, nameSnapshot, lineNameSnapshot }]
+}
+```
+
+畫面與 LINE 發布優先讀 `memberIdentity`；`memberId` 用於身份與 mention lookup，`nameSnapshot` 用於永久呈現當次抽籤時的名字。之後改名只影響新抽籤，不能改寫舊 history。
+
+LINE binding 在新 schema 以 `memberId` 為 source of truth，同一 LINE user 可綁定多個 `memberId`（例如同一玩家的多個角色）。舊 binding 仍以完全相符的 canonical 名稱 fallback，因此部署相容程式碼不要求既有玩家重新綁定；會員停用也不會自動移除 binding。
+
+### Migration safety
+
+Production 尚未出現 `guildDraw/main/members` 時，網站維持 legacy read/write 相容模式，但會員 master CRUD 與新高戰設定會停用，避免瀏覽器隱式建立或猜測 identity。migration 必須先做唯讀 dry-run；任一未對應或多義會員、LINE binding 或 history role 都會使 proposal fail closed，程式不會 fuzzy match、依 index 配對或局部寫入。
+
+先以 Firebase CLI 將唯讀資料輸出到本機暫存檔，再執行：
+
+```powershell
+node functions/scripts/memberIdentityDryRun.js <main.json> <lineBindings.json>
+```
+
+工具只產生 sanitized report 與記憶體內 migration proposal，不連線 Firebase、不寫 RTDB，也不輸出 raw LINE userId、完整 groupId、token 或 Secret。只有 dry-run 完全安全並人工處理所有 ambiguity 後，才可另行規劃 Production migration；本 repo 不會在啟動、部署或一般儲存時自動 migration。
+
 ## 抽籤角色排除
 
-`guildDraw/main` 以三個互相獨立的欄位保存未來抽籤資格：`captainExcludedMembers`、`guardianExcludedMembers`、`cabin4ExcludedMembers`。缺少欄位等同空名單，既有 `cabin4ExcludedMembers` 與手動維護的 pool 狀態保持相容。實際候選為角色原始來源與該角色 pool 的交集，再排除角色 exclusion 及當日已取得其他角色的人；加入 exclusion 不會把名字從 pool 永久刪除，取消後不需手動加回。
+`guildDraw/main` 以三個互相獨立的欄位保存未來抽籤資格：`captainExcludedMembers`、`guardianExcludedMembers`、`cabin4ExcludedMembers`。identity schema 下各欄位保存 `memberId`；legacy schema 的名稱陣列仍可讀寫。缺少欄位等同空名單，既有 `cabin4ExcludedMembers` 與手動維護的 pool 狀態保持相容。實際候選為角色原始來源與該角色 pool 的交集，再排除角色 exclusion 及當日已取得其他角色的人；加入 exclusion 不會把會員從 pool 永久刪除，取消後不需手動加回。
 
-船長與第四船艙的來源仍是 `guildMembers`，守護來源仍是 `highWarMembers`；三個 pool、抽籤人數、消耗與 history semantics 不變。會員改名時三份 exclusion 一起改名，離開對應來源時 stale exclusion 會被清除；重置 pool 不會清除 exclusion，舊 history 也不會因設定變動而改寫。特別日固定守護或第四船艙若命中 exclusion，抽籤會明確停止並要求管理者調整，不會繞過排除設定。
+船長與第四船艙的來源是 active member IDs，守護來源是 active `highWarMemberIds`；三個 pool、抽籤人數、消耗與 history semantics 不變。會員改名不需要也不允許重寫 exclusion；停用時只從目前可抽來源與 pool 移除，history 與 binding 保留。重置 pool 不會清除 exclusion，舊 history 也不會因設定變動而改寫。特別日固定守護或第四船艙若命中 exclusion，抽籤會明確停止並要求管理者調整，不會繞過排除設定。
 
 ## 新增的後端
 
@@ -132,7 +175,7 @@ firebase functions:list
 
 ## 玩家綁定測試
 
-`guildDraw/main/guildMembers` 的名稱格式是：
+尚未 migration 的 `guildDraw/main/guildMembers` 名稱格式是：
 
 ```text
 LINE 名稱 - 遊戲 ID
@@ -172,9 +215,9 @@ LINE：Rain
 • 流鬼
 ```
 
-同一 LINE 名稱可對應多個遊戲 ID，例如 `Chia - 嘻嘻不嘻嘻` 與 `Chia - CC x CC`。一次 `!綁定 Chia` 會用同一 LINE userId 建立兩個 canonical player binding。binding 的 Firebase key 仍由完整 `playerName` 產生，因此不會互相覆蓋。
+同一 LINE 名稱可對應多個遊戲 ID，例如 `Chia - 嘻嘻不嘻嘻` 與 `Chia - CC x CC`。一次 `!綁定 Chia` 會用同一 LINE userId 建立兩個 canonical member binding。identity schema 下 binding key 與資料以各自的 `memberId` 為準，因此不會互相覆蓋；legacy mode 則仍使用完整 `playerName` key。
 
-舊 binding 不需 migration。後端會忽略舊 schema 中語意錯誤的 `alias/gameName`，每次都從 canonical `playerName` 重新解析 `lineName/gameId`。玩家重新綁定時，該筆資料會自然更新為新 schema。
+舊 binding 不需玩家重新綁定。後端會忽略舊 schema 中語意錯誤的 `alias/gameName`，從 canonical `playerName` 解析 `lineName/gameId`，並只在能完全、唯一對應 canonical master 時推導 `memberId`；無法確定時保留 legacy binding，絕不猜測或覆蓋。新綁定直接保存 `memberId`。
 
 ## 綁定鎖定與管理員代操作
 

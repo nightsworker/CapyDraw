@@ -2,12 +2,13 @@
 
 const {
   bindingKeyForGroup,
+  bindingKeyForMemberId,
+  bindingMatchesMember,
   buildMemberBindingRows,
   createBindingRecord,
   findMembersByLineName,
   listBindingRecords,
   maskLineUserId,
-  normalizeMemberName,
 } = require("./line");
 
 function isFirebaseSafeKey(value) {
@@ -43,6 +44,7 @@ function isLineBotAdmin(adminLineUserIds, userId) {
 
 function buildLineBindingAdminRows({memberNames, bindings, groupId, adminLineUserIds}) {
   return buildMemberBindingRows(memberNames, bindings, groupId).map((member) => ({
+    memberId: member.memberId,
     playerName: member.playerName,
     lineName: member.lineName,
     gameId: member.gameId,
@@ -205,9 +207,8 @@ function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
     }
 
     matches.forEach((member) => {
-      const normalized = normalizeMemberName(member.fullName);
       const existing = records.find((binding) =>
-        binding.normalizedPlayerName === normalized && binding.lineGroupId === groupId);
+        bindingMatchesMember(binding, member) && binding.lineGroupId === groupId);
       if (existing) {
         if (existing.lineUserId !== profile.userId) {
           conflicts += 1;
@@ -234,7 +235,8 @@ function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
         conflicts += 1;
         return;
       }
-      const id = bindingKeyForGroup(member.fullName, groupId);
+      const id = member.memberId ? bindingKeyForMemberId(member.memberId, groupId) :
+        bindingKeyForGroup(member.fullName, groupId);
       const created = createBindingRecord({
         member,
         userId: profile.userId,
@@ -337,8 +339,9 @@ function planAdminBinding({
   members.forEach((member) => {
     const existing = records.find((binding) =>
       binding.lineGroupId === groupId &&
-      binding.normalizedPlayerName === normalizeMemberName(member.fullName));
-    const id = existing ? existing.id : bindingKeyForGroup(member.fullName, groupId);
+      bindingMatchesMember(binding, member));
+    const id = existing ? existing.id : member.memberId ?
+      bindingKeyForMemberId(member.memberId, groupId) : bindingKeyForGroup(member.fullName, groupId);
     updates[id] = createBindingRecord({
       member,
       userId: identity.lineUserId,

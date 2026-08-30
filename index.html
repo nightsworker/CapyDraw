@@ -227,19 +227,33 @@
     </nav>
 
     <section id="settingsPanel" class="tab-panel active">
-      <div class="grid-2">
-        <div class="card">
-          <h2>表單 1：公會成員列表</h2>
-          <p class="hint">一行一個名字，格式為「LINE 名稱 - 遊戲 ID」。船長與船艙 4 都會從這份名單建立各自獨立池子。</p>
-          <textarea id="guildMembersInput"></textarea>
+      <div class="card">
+        <h2>會員主檔</h2>
+        <p class="hint">永久 Member ID 是唯一 identity；遊戲名稱可以修改，移除採 soft delete，不會刪除歷史或 LINE binding。</p>
+        <div class="message" id="memberMasterStatus"></div>
+        <div class="grid-2">
+          <div>
+            <label for="newMemberId">Member ID（純數字，建立後不可修改）</label>
+            <input id="newMemberId" class="requires-member-master" inputmode="numeric" placeholder="例：1443678" />
+          </div>
+          <div>
+            <label for="newMemberGameName">遊戲名稱</label>
+            <input id="newMemberGameName" class="requires-member-master" placeholder="例：挖系小嗨" />
+          </div>
         </div>
-        <div class="card">
-          <h2>表單 2：高戰成員列表</h2>
-          <p class="hint">請填 6 個人，一行一個名字。會長不需要放在高戰清單。</p>
-          <textarea id="highWarMembersInput"></textarea>
-          <label for="presidentName" style="margin-top: 14px;">會長名稱（特別日守護天使固定使用）</label>
-          <input type="text" id="presidentName" placeholder="例：Chia - 嘻嘻不嘻嘻" />
+        <div class="actions">
+          <button class="btn requires-auth requires-member-master" id="addMemberBtn">新增會員</button>
+          <span class="message" id="memberMessage"></span>
         </div>
+        <div id="membersTableWrap"></div>
+      </div>
+
+      <div class="card">
+        <h2>高戰與特別日設定</h2>
+        <p class="hint">高戰實際只保存 Member ID。請選擇剛好 6 位；重新排序或換人都不會修改歷史紀錄。</p>
+        <div id="highWarMemberChoices" class="name-cloud"></div>
+        <label for="presidentMemberId" style="margin-top: 14px;">特別日固定守護</label>
+        <select id="presidentMemberId" class="requires-member-master"></select>
       </div>
 
       <div class="card">
@@ -286,11 +300,10 @@
           <li><strong>一般日：</strong>船長從公會成員池抽 1 人；守護天使從高戰池抽 1 人；船艙 4 從公會成員池抽 5 人，並排除當日船長與守護天使。</li>
           <li><strong>三個池子獨立：</strong>船長池、守護天使池、船艙 4 池互不影響，各自抽完才重複。</li>
           <li><strong>特別日：</strong>如果船長抽到高戰名單中的人，守護天使固定為會長，船艙 4 自動塞入剩餘 5 位高戰；當天只扣船長池，其餘池子不扣。</li>
-          <li><strong>改名保護：</strong>如果同一行只修改名字，系統會視為同一人改名，並同步更新池子與歷史紀錄，不會當成新人補進池子。</li>
+          <li><strong>永久 identity：</strong>改名只更新會員主檔的 gameName；pool、排除與 LINE binding 都以 Member ID 關聯，過去 history 顯示自己的 nameSnapshot。</li>
         </ol>
         <div class="actions">
-          <button class="btn requires-auth" id="saveSettingsBtn">儲存名單到雲端</button>
-          <button class="btn secondary requires-auth" id="loadSampleBtn">載入範例名單</button>
+          <button class="btn requires-auth requires-member-master" id="saveSettingsBtn">儲存高戰與特別日設定</button>
           <span class="message" id="settingsMessage"></span>
         </div>
       </div>
@@ -501,6 +514,7 @@
 
   <script src="history-publication-ui.js"></script>
   <script src="line-schedules-ui.js"></script>
+  <script src="functions/lib/memberIdentity.js"></script>
   <script src="draw-role-exclusions.js"></script>
   <script>
     window.addEventListener("error", function (event) {
@@ -552,13 +566,28 @@
       getRoleEligibleMembers,
       getRoleExcludedMembers,
       getRoleExclusionSet,
-      normalizeRoleExclusions,
-      renameRoleExclusions
+      normalizeRoleExclusions
     } = window.CapyDrawRoleExclusions;
+    const {
+      activeMemberIds,
+      createHistoryMemberSnapshot,
+      hasActivatedMembersMaster,
+      historySnapshotDisplay,
+      memberLabel,
+      memberPlayerName,
+      normalizeMemberId,
+      normalizeMembersMaster,
+      resolveMember,
+      uniqueIds,
+      validateMemberInput
+    } = window.CapyDrawMemberIdentity;
 
     const defaultState = {
+      members: {},
       guildMembers: [],
       highWarMembers: [],
+      highWarMemberIds: [],
+      presidentMemberId: null,
       presidentName: "Chia - 嘻嘻不嘻嘻",
       captainPool: [],
       guardianPool: [],
@@ -632,10 +661,6 @@
       return output;
     }
 
-    function parseTextarea(value) {
-      return uniqueStrings(value);
-    }
-
     function normalizeRecord(record) {
       if (!record || typeof record !== "object") return null;
       const consumed = record.consumed || {};
@@ -650,6 +675,9 @@
           cabin4: uniqueStrings(consumed.cabin4 || [])
         }
       };
+      if (record.memberIdentity && typeof record.memberIdentity === "object") {
+        normalized.memberIdentity = clone(record.memberIdentity);
+      }
       if (record.poolSnapshots) normalized.poolSnapshots = normalizePoolSnapshots(record.poolSnapshots);
       return normalized;
     }
@@ -675,20 +703,67 @@
       return getRoleEligibleMembers(workingState, "cabin4");
     }
 
+    function mapIdentityReferences(value, members) {
+      const master = normalizeMembersMaster(members);
+      const source = Array.isArray(value) ? value : Object.values(value || {});
+      const output = [];
+      source.forEach(item => {
+        const resolved = resolveMember(item, master);
+        const reference = resolved.status === "mapped" && master[resolved.member.memberId] ?
+          resolved.member.memberId : standardizeName(item);
+        if (reference && !output.includes(reference)) output.push(reference);
+      });
+      return output;
+    }
+
+    function unresolvedIdentityReferences(value, members) {
+      const master = normalizeMembersMaster(members);
+      return (Array.isArray(value) ? value : Object.values(value || {}))
+        .filter(reference => !normalizeMemberId(reference) || !master[normalizeMemberId(reference)]);
+    }
+
     function normalizeState(input) {
       const parsed = input && typeof input === "object" ? input : {};
-      const guildMembers = uniqueStrings(parsed.guildMembers || []);
-      const highWarMembers = uniqueStrings(parsed.highWarMembers || []);
-      const exclusions = normalizeRoleExclusions({...parsed, guildMembers, highWarMembers});
-      return {
-        ...clone(defaultState),
+      const members = normalizeMembersMaster(parsed.members);
+      const identityMode = hasActivatedMembersMaster({...parsed, members});
+      const guildMembers = identityMode ? activeMemberIds(members) :
+        uniqueStrings(parsed.guildMembers || []);
+      const storedHighWar = identityMode ?
+        mapIdentityReferences(parsed.highWarMemberIds || parsed.highWarMembers || [], members) :
+        uniqueStrings(parsed.highWarMembers || []);
+      const highWarMembers = identityMode ? storedHighWar.filter(memberId =>
+        normalizeMemberId(memberId) && members[memberId] && members[memberId].active) : storedHighWar;
+      const presidentMemberId = identityMode ?
+        (normalizeMemberId(parsed.presidentMemberId) ||
+          mapIdentityReferences([parsed.presidentName], members)
+            .find(reference => normalizeMemberId(reference)) || null) : null;
+      const presidentName = identityMode && presidentMemberId && members[presidentMemberId] ?
+        memberPlayerName(members[presidentMemberId]) :
+        standardizeName(parsed.presidentName || "Chia - 嘻嘻不嘻嘻") || "Chia - 嘻嘻不嘻嘻";
+      const referenceState = identityMode ? {
         ...parsed,
         guildMembers,
         highWarMembers,
-        presidentName: standardizeName(parsed.presidentName || "Chia - 嘻嘻不嘻嘻") || "Chia - 嘻嘻不嘻嘻",
-        captainPool: uniqueStrings(parsed.captainPool || []),
-        guardianPool: uniqueStrings(parsed.guardianPool || []),
-        cabin4Pool: uniqueStrings(parsed.cabin4Pool || []),
+        captainExcludedMembers: mapIdentityReferences(parsed.captainExcludedMembers, members),
+        guardianExcludedMembers: mapIdentityReferences(parsed.guardianExcludedMembers, members),
+        cabin4ExcludedMembers: mapIdentityReferences(parsed.cabin4ExcludedMembers, members)
+      } : {...parsed, guildMembers, highWarMembers};
+      const exclusions = identityMode ? referenceState : normalizeRoleExclusions(referenceState);
+      return {
+        ...clone(defaultState),
+        ...parsed,
+        members,
+        guildMembers,
+        highWarMembers,
+        highWarMemberIds: identityMode ? storedHighWar : uniqueIds(parsed.highWarMemberIds),
+        presidentMemberId,
+        presidentName,
+        captainPool: identityMode ? mapIdentityReferences(parsed.captainPool, members) :
+          uniqueStrings(parsed.captainPool || []),
+        guardianPool: identityMode ? mapIdentityReferences(parsed.guardianPool, members) :
+          uniqueStrings(parsed.guardianPool || []),
+        cabin4Pool: identityMode ? mapIdentityReferences(parsed.cabin4Pool, members) :
+          uniqueStrings(parsed.cabin4Pool || []),
         captainExcludedMembers: exclusions.captainExcludedMembers,
         guardianExcludedMembers: exclusions.guardianExcludedMembers,
         cabin4ExcludedMembers: exclusions.cabin4ExcludedMembers,
@@ -696,76 +771,40 @@
       };
     }
 
-    function buildRenameMap(oldList, newList) {
-      const oldSet = new Set(oldList);
-      const newSet = new Set(newList);
-      const renameMap = new Map();
-      const count = Math.min(oldList.length, newList.length);
-      for (let i = 0; i < count; i++) {
-        const oldName = oldList[i];
-        const newName = newList[i];
-        if (!oldName || !newName || oldName === newName) continue;
-        if (!newSet.has(oldName) && !oldSet.has(newName)) renameMap.set(oldName, newName);
-      }
-      return renameMap;
+    function usesMemberIdentity(workingState = state) {
+      return hasActivatedMembersMaster(workingState);
     }
 
-    function mergeRenameMaps(...maps) {
-      const merged = new Map();
-      for (const map of maps) for (const [oldName, newName] of map.entries()) merged.set(oldName, newName);
-      return merged;
+    function displayMemberReference(reference, workingState = state) {
+      if (!usesMemberIdentity(workingState)) return standardizeName(reference);
+      const memberId = normalizeMemberId(reference);
+      const member = memberId && workingState.members[memberId];
+      return member ? memberLabel(member) : `未解析：${standardizeName(reference)}`;
     }
 
-    function renameName(name, renameMap) {
-      const normalized = standardizeName(name);
-      return renameMap.get(normalized) || normalized;
+    function legacyPlayerNameForReference(reference, workingState) {
+      if (!usesMemberIdentity(workingState)) return standardizeName(reference);
+      const memberId = normalizeMemberId(reference);
+      const member = memberId && workingState.members[memberId];
+      if (!member) throw new Error(`Member ID ${reference} 無法解析，已停止抽籤。`);
+      return memberPlayerName(member);
     }
 
-    function renameList(list, renameMap) {
-      return uniqueStrings((list || []).map(name => renameName(name, renameMap)));
+    function historyMemberDisplay(record, role, index = null) {
+      const identity = record && record.memberIdentity;
+      const value = identity && (index === null ? identity[role] :
+        Array.isArray(identity[role]) ? identity[role][index] : null);
+      return value ? historySnapshotDisplay(value) :
+        index === null ? standardizeName(record && record[role]) :
+          standardizeName(record && record[role] && record[role][index]);
     }
 
-    function applyRenameMapToState(working, renameMap) {
-      if (!renameMap || renameMap.size === 0) return;
-      working.captainPool = renameList(working.captainPool, renameMap);
-      working.guardianPool = renameList(working.guardianPool, renameMap);
-      working.cabin4Pool = renameList(working.cabin4Pool, renameMap);
-      const renamedExclusions = renameRoleExclusions(working, renameMap);
-      Object.values(ROLE_EXCLUSION_CONFIG).forEach(config => {
-        working[config.exclusionField] = renamedExclusions[config.exclusionField];
-      });
-      working.presidentName = renameName(working.presidentName, renameMap) || working.presidentName;
-      working.history = (working.history || []).map(record => {
-        const renamed = normalizeRecord({
-          ...record,
-          captain: renameName(record.captain, renameMap),
-          guardian: renameName(record.guardian, renameMap),
-          cabin4: renameList(record.cabin4 || [], renameMap),
-          consumed: {
-            captain: renameList(record.consumed?.captain || [], renameMap),
-            guardian: renameList(record.consumed?.guardian || [], renameMap),
-            cabin4: renameList(record.consumed?.cabin4 || [], renameMap)
-          },
-          poolSnapshots: renamePoolSnapshots(record.poolSnapshots, renameMap)
-        });
-        return renamed;
-      }).filter(Boolean);
-    }
-
-    function renamePoolSnapshots(snapshots, renameMap) {
-      if (!snapshots) return snapshots;
-      return {
-        before: snapshots.before ? renamePoolSnapshot(snapshots.before, renameMap) : null,
-        after: snapshots.after ? renamePoolSnapshot(snapshots.after, renameMap) : null
-      };
-    }
-
-    function renamePoolSnapshot(snapshot, renameMap) {
-      return {
-        captainPool: renameList(snapshot.captainPool || [], renameMap),
-        guardianPool: renameList(snapshot.guardianPool || [], renameMap),
-        cabin4Pool: renameList(snapshot.cabin4Pool || [], renameMap)
-      };
+    function historyCabinDisplays(record) {
+      const identityCabin = record && record.memberIdentity && record.memberIdentity.cabin4;
+      const count = Array.isArray(identityCabin) ? identityCabin.length :
+        Array.isArray(record && record.cabin4) ? record.cabin4.length : 0;
+      return Array.from({length: count}, (_value, index) =>
+        historyMemberDisplay(record, "cabin4", index));
     }
 
     function poolSnapshot(working) {
@@ -801,6 +840,10 @@
       const canWrite = cloudReady && isUnlocked;
       document.querySelectorAll(".requires-auth").forEach(el => { el.disabled = !canWrite; });
       document.querySelectorAll(".requires-auth-control").forEach(el => { el.disabled = !canWrite; });
+      const memberMasterReady = usesMemberIdentity();
+      document.querySelectorAll(".requires-member-master").forEach(el => {
+        el.disabled = !canWrite || !memberMasterReady;
+      });
       const canUseLineLogin = canWrite && Boolean(firebaseUser) && !lineSending && !lineAdminSaving;
       document.querySelectorAll(".requires-line-login").forEach(el => { el.disabled = !canUseLineLogin; });
       const canManageLine = canUseLineLogin && lineAdminAuthorized;
@@ -812,9 +855,6 @@
         document.querySelector('[data-tab="settingsPanel"]').classList.add("active");
         $("settingsPanel").classList.add("active");
       }
-      $("guildMembersInput").disabled = !canWrite;
-      $("highWarMembersInput").disabled = !canWrite;
-      $("presidentName").disabled = !canWrite;
       $("authMessage").textContent = isUnlocked ? "已解鎖：可以操作。" : "未解鎖：只能瀏覽。";
       $("authMessage").className = isUnlocked ? "message ok" : "message warn";
       $("unlockBtn").style.display = isUnlocked ? "none" : "inline-flex";
@@ -862,9 +902,24 @@
         .replaceAll("'", "&#039;");
     }
 
+    function assertIdentityStateWritable(nextState) {
+      if (!usesMemberIdentity(nextState)) return;
+      const master = normalizeMembersMaster(nextState.members);
+      const fields = ["highWarMemberIds", "captainPool", "guardianPool", "cabin4Pool",
+        "captainExcludedMembers", "guardianExcludedMembers", "cabin4ExcludedMembers"];
+      const unresolved = fields.flatMap(field =>
+        unresolvedIdentityReferences(nextState[field], master)
+          .map(value => `${field}: ${standardizeName(value)}`));
+      if (unresolved.length) {
+        throw new Error(`Member ID migration 尚有未解析資料，已阻止寫入：${unresolved.join("、")}`);
+      }
+    }
+
     async function saveCloud(nextState = state) {
       if (!cloudReady || !dbRef) throw new Error("Firebase 尚未連線，請確認 Realtime Database 設定。");
-      await dbRef.set(normalizeState(nextState));
+      const normalized = normalizeState(nextState);
+      assertIdentityStateWritable(normalized);
+      await dbRef.set(normalized);
     }
 
     async function refreshFromCloud() {
@@ -889,9 +944,21 @@
 
     function undoRecordConsumption(working, record) {
       if (!record || !record.consumed) return;
-      addBackToPool(working, "captainPool", record.consumed.captain || [], working.guildMembers);
-      addBackToPool(working, "guardianPool", record.consumed.guardian || [], working.highWarMembers);
-      addBackToPool(working, "cabin4Pool", record.consumed.cabin4 || [], working.guildMembers);
+      const resolveConsumed = values => {
+        if (!usesMemberIdentity(working)) return values || [];
+        const mapped = mapIdentityReferences(values, working.members);
+        const unresolved = unresolvedIdentityReferences(mapped, working.members);
+        if (unresolved.length) {
+          throw new Error(`舊紀錄 consumed identity 無法確定，禁止覆蓋：${unresolved.join("、")}`);
+        }
+        return mapped;
+      };
+      addBackToPool(working, "captainPool", resolveConsumed(record.consumed.captain),
+        working.guildMembers);
+      addBackToPool(working, "guardianPool", resolveConsumed(record.consumed.guardian),
+        working.highWarMembers);
+      addBackToPool(working, "cabin4Pool", resolveConsumed(record.consumed.cabin4),
+        working.guildMembers);
     }
 
     function sanitizePool(working, poolKey, allowedList) {
@@ -918,9 +985,25 @@
     function validateBeforeDraw(working) {
       const errors = [];
       const warnings = [];
+      if (usesMemberIdentity(working)) {
+        const referenceFields = ["highWarMemberIds", "captainPool", "guardianPool", "cabin4Pool",
+          "captainExcludedMembers", "guardianExcludedMembers", "cabin4ExcludedMembers"];
+        const unresolved = referenceFields.flatMap(field =>
+          unresolvedIdentityReferences(working[field], working.members)
+            .map(value => `${field}: ${standardizeName(value)}`));
+        if (unresolved.length) {
+          errors.push(`存在無法解析的 legacy identity，禁止抽籤：${unresolved.join("、")}`);
+        }
+      }
       if (working.guildMembers.length < 7) errors.push("公會成員至少需要 7 人，才能抽出船長、守護天使、5 位船艙 4 並避免同日重複。");
       if (working.highWarMembers.length !== 6) errors.push(`高戰成員請剛好設定 6 人。目前是 ${working.highWarMembers.length} 人。`);
-      if (!working.presidentName.trim()) errors.push("請設定會長名稱，特別日時會用作固定守護天使。");
+      if (usesMemberIdentity(working) && (!working.presidentMemberId ||
+          !working.members[working.presidentMemberId] ||
+          working.members[working.presidentMemberId].active === false)) {
+        errors.push("請從有效會員主檔選擇特別日固定守護。");
+      } else if (!usesMemberIdentity(working) && !working.presidentName.trim()) {
+        errors.push("請設定會長名稱，特別日時會用作固定守護天使。");
+      }
       const captainEligibleCount = getRoleEligibleMembers(working, "captain").length;
       const guardianEligibleCount = getRoleEligibleMembers(working, "guardian").length;
       const cabin4EligibleCount = getCabin4EligibleMembers(working).length;
@@ -929,7 +1012,7 @@
       if (cabin4EligibleCount < 7) errors.push(`船艙 4 有效成員不足。目前可抽 ${cabin4EligibleCount} 人，至少需要 7 人。請減少排除名單或增加公會成員。`);
       const guildSet = new Set(working.guildMembers);
       const missingHighWar = working.highWarMembers.filter(name => !guildSet.has(name));
-      if (missingHighWar.length > 0) warnings.push(`提醒：以下高戰不在公會成員名單中：${missingHighWar.join("、")}。船長特別日只會在船長抽到公會名單內的高戰時觸發。`);
+      if (missingHighWar.length > 0) warnings.push(`提醒：以下高戰不在公會成員名單中：${missingHighWar.map(name => displayMemberReference(name, working)).join("、")}。船長特別日只會在船長抽到公會名單內的高戰時觸發。`);
       return { errors, warnings };
     }
 
@@ -951,7 +1034,8 @@
       let cabin4;
       let consumed;
       if (specialDay) {
-        guardian = working.presidentName.trim();
+        guardian = usesMemberIdentity(working) ? working.presidentMemberId :
+          working.presidentName.trim();
         cabin4 = working.highWarMembers.filter(name => name !== captain);
         if (getRoleExclusionSet(working, "guardian").has(guardian)) {
           addBackToPool(working, "captainPool", [captain], working.guildMembers);
@@ -979,18 +1063,24 @@
         consumed = { captain: [captain], guardian: [guardian], cabin4: [...cabin4] };
       }
       const after = poolSnapshot(working);
+      const memberIdentity = usesMemberIdentity(working) ? {
+        captain: createHistoryMemberSnapshot(working.members[captain]),
+        guardian: createHistoryMemberSnapshot(working.members[guardian]),
+        cabin4: cabin4.map(memberId => createHistoryMemberSnapshot(working.members[memberId]))
+      } : null;
       const record = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         date,
         createdAt: new Date().toISOString(),
         specialDay,
         warnings,
-        captain,
-        guardian,
-        cabin4,
+        captain: legacyPlayerNameForReference(captain, working),
+        guardian: legacyPlayerNameForReference(guardian, working),
+        cabin4: cabin4.map(member => legacyPlayerNameForReference(member, working)),
         consumed,
         poolSnapshots: { before, after }
       };
+      if (memberIdentity) record.memberIdentity = memberIdentity;
       working.history.unshift(record);
       return { cancelled: false, record };
     }
@@ -1009,9 +1099,9 @@
       const lineStatus = record.lineSendCount ? `<span class="pill">LINE 已發送 ${Number(record.lineSendCount)} 次</span>` : "";
       return `
         <div>${special}<span class="pill">${escapeHtml(record.date)}</span>${lineStatus}</div>
-        <div class="result-line"><div class="result-role">船長</div><div class="result-name">${escapeHtml(record.captain)}</div></div>
-        <div class="result-line"><div class="result-role">守護天使</div><div class="result-name">${escapeHtml(record.guardian)}</div></div>
-        <div class="result-line"><div class="result-role">船艙 4</div><div class="member-list">${(record.cabin4 || []).map(name => `<span class="member-chip">${escapeHtml(name)}</span>`).join("")}</div></div>
+        <div class="result-line"><div class="result-role">船長</div><div class="result-name">${escapeHtml(historyMemberDisplay(record, "captain"))}</div></div>
+        <div class="result-line"><div class="result-role">守護天使</div><div class="result-name">${escapeHtml(historyMemberDisplay(record, "guardian"))}</div></div>
+        <div class="result-line"><div class="result-role">船艙 4</div><div class="member-list">${historyCabinDisplays(record).map(name => `<span class="member-chip">${escapeHtml(name)}</span>`).join("")}</div></div>
         ${record.specialDay ? `<div class="message warn">特別日規則：今天只扣船長池；守護天使池與船艙 4 池不扣。</div>` : ""}
         ${warnings}
         <div class="hint">建立時間：<button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></div>
@@ -1028,7 +1118,9 @@
     function filteredHistory() {
       const keyword = $("historySearch").value.trim().toLowerCase();
       let list = [...state.history];
-      if (keyword) list = list.filter(record => [record.date, record.captain, record.guardian, ...(record.cabin4 || [])].join(" ").toLowerCase().includes(keyword));
+      if (keyword) list = list.filter(record => [record.date,
+        historyMemberDisplay(record, "captain"), historyMemberDisplay(record, "guardian"),
+        ...historyCabinDisplays(record)].join(" ").toLowerCase().includes(keyword));
       return list;
     }
 
@@ -1051,9 +1143,9 @@
                   <td>${escapeHtml(record.date)}</td>
                   <td class="history-time-cell"><button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></td>
                   <td class="type-cell">${record.specialDay ? `<span class="pill special">特別日</span>` : `<span class="pill">一般日</span>`}</td>
-                  <td><strong>${escapeHtml(record.captain)}</strong></td>
-                  <td>${escapeHtml(record.guardian)}</td>
-                  <td>${(record.cabin4 || []).map(escapeHtml).join("、")}</td>
+                  <td><strong>${escapeHtml(historyMemberDisplay(record, "captain"))}</strong></td>
+                  <td>${escapeHtml(historyMemberDisplay(record, "guardian"))}</td>
+                  <td>${historyCabinDisplays(record).map(escapeHtml).join("、")}</td>
                   <td><span class="line-admin-badge line-publication-badge${publication.published ? " active" : " missing"}">${publication.statusText}</span></td>
                   <td><div class="line-actions">
                     <button class="btn secondary small" data-show-record="${escapeHtml(record.id)}">查看</button>
@@ -1102,7 +1194,8 @@
         el.innerHTML = `<span class="empty">目前池子是空的；下次需要抽這個池子時會自動補滿。</span>`;
         return;
       }
-      el.innerHTML = names.map(name => `<span class="name-token">${escapeHtml(name)}</span>`).join("");
+      el.innerHTML = names.map(name =>
+        `<span class="name-token">${escapeHtml(displayMemberReference(name))}</span>`).join("");
     }
 
     function getPoolAllowedMembers(poolKey) {
@@ -1124,7 +1217,7 @@
       names.forEach(name => {
         const option = document.createElement("option");
         option.value = name;
-        option.textContent = name;
+        option.textContent = displayMemberReference(name);
         select.appendChild(option);
       });
 
@@ -1170,7 +1263,7 @@
 
       view.innerHTML = excluded.map(name => `
         <span class="name-token excluded-chip">
-          ${escapeHtml(name)}
+          ${escapeHtml(displayMemberReference(name))}
           <button class="btn danger small requires-auth role-unexclude-btn" data-role="${escapeHtml(role)}" data-excluded-name="${escapeHtml(name)}">解除排除</button>
         </span>
       `).join("");
@@ -1180,11 +1273,62 @@
       });
     }
 
+    function renderMemberMaster() {
+      const ready = usesMemberIdentity();
+      const members = Object.values(normalizeMembersMaster(state.members))
+        .sort((left, right) => Number(left.memberId) - Number(right.memberId));
+      setMessage("memberMasterStatus", ready ?
+        `會員主檔已啟用，共 ${members.length} 個永久角色 identity。` :
+        `目前是 legacy 相容模式（${state.guildMembers.length} 筆名稱）。尚未執行正式 migration，因此禁止用 UI 隱式建立或改寫 Member ID。`,
+      ready ? "ok" : "warn");
+
+      if (!ready) {
+        $("membersTableWrap").innerHTML = `
+          <table><thead><tr><th>Legacy 名稱</th><th>狀態</th></tr></thead>
+          <tbody>${state.guildMembers.map(name => `<tr><td>${escapeHtml(name)}</td><td>等待 deterministic migration</td></tr>`).join("")}</tbody></table>`;
+        $("highWarMemberChoices").innerHTML = `<span class="empty">會員主檔 migration 前沿用 legacy 高戰名單，不會自動寫入 ID。</span>`;
+        setSelectOptions("presidentMemberId", [], "等待會員主檔 migration");
+        return;
+      }
+
+      $("membersTableWrap").innerHTML = `
+        <table>
+          <thead><tr><th>Member ID</th><th>遊戲名稱</th><th>狀態</th><th>操作</th></tr></thead>
+          <tbody>${members.map(member => `
+            <tr>
+              <td><span class="line-id">${escapeHtml(member.memberId)}</span></td>
+              <td>${escapeHtml(member.gameName)}</td>
+              <td>${member.active ? "✅ 啟用" : "⏸️ 已移除"}</td>
+              <td>
+                <button class="btn secondary small requires-auth requires-member-master" data-rename-member="${escapeHtml(member.memberId)}">修改名稱</button>
+                <button class="btn ${member.active ? "danger" : "secondary"} small requires-auth requires-member-master" data-toggle-member="${escapeHtml(member.memberId)}" data-enabled="${member.active ? "false" : "true"}">${member.active ? "移除會員" : "重新啟用"}</button>
+              </td>
+            </tr>`).join("")}</tbody>
+        </table>`;
+
+      const active = members.filter(member => member.active);
+      const highWarSet = new Set(state.highWarMembers);
+      $("highWarMemberChoices").innerHTML = active.map(member => `
+        <label class="name-token">
+          <input type="checkbox" class="high-war-member-checkbox requires-member-master" value="${escapeHtml(member.memberId)}" ${highWarSet.has(member.memberId) ? "checked" : ""} />
+          ${escapeHtml(memberLabel(member))}
+        </label>`).join("");
+      setSelectOptions("presidentMemberId", active.map(member => member.memberId),
+        "選擇特別日固定守護");
+      $("presidentMemberId").value = state.presidentMemberId || "";
+
+      document.querySelectorAll("[data-rename-member]").forEach(button => {
+        button.addEventListener("click", () => renameMemberGameName(button.dataset.renameMember));
+      });
+      document.querySelectorAll("[data-toggle-member]").forEach(button => {
+        button.addEventListener("click", () => setMemberActive(
+          button.dataset.toggleMember, button.dataset.enabled === "true"));
+      });
+    }
+
     function render() {
       isApplyingRemote = true;
-      $("guildMembersInput").value = state.guildMembers.join("\n");
-      $("highWarMembersInput").value = state.highWarMembers.join("\n");
-      $("presidentName").value = state.presidentName || "Chia - 嘻嘻不嘻嘻";
+      renderMemberMaster();
       isApplyingRemote = false;
       $("captainPoolCount").textContent = state.captainPool.length;
       $("guardianPoolCount").textContent = state.guardianPool.length;
@@ -1715,7 +1859,8 @@
 
     function chipList(names) {
       if (!names || names.length === 0) return `<span class="empty">無</span>`;
-      return `<div class="name-cloud">${names.map(name => `<span class="name-token">${escapeHtml(name)}</span>`).join("")}</div>`;
+      return `<div class="name-cloud">${names.map(name =>
+        `<span class="name-token">${escapeHtml(displayMemberReference(name))}</span>`).join("")}</div>`;
     }
 
     function renderPoolCompare(record) {
@@ -1750,12 +1895,13 @@
       try {
         await refreshFromCloud();
         const allowed = getPoolAllowedMembers(poolKey);
-        if (!allowed.includes(selectedName)) throw new Error(`${selectedName} 不在 ${poolLabel(poolKey)} 的可用名單中。`);
-        if (state[poolKey].includes(selectedName)) throw new Error(`${selectedName} 已經在 ${poolLabel(poolKey)} 裡。`);
+        const displayName = displayMemberReference(selectedName);
+        if (!allowed.includes(selectedName)) throw new Error(`${displayName} 不在 ${poolLabel(poolKey)} 的可用名單中。`);
+        if (state[poolKey].includes(selectedName)) throw new Error(`${displayName} 已經在 ${poolLabel(poolKey)} 裡。`);
 
         state[poolKey].push(selectedName);
         await saveCloud(state);
-        alert(`已新增 ${selectedName} 到 ${poolLabel(poolKey)}。`);
+        alert(`已新增 ${displayName} 到 ${poolLabel(poolKey)}。`);
       } catch (error) {
         alert(error.message);
       }
@@ -1768,7 +1914,8 @@
         return;
       }
 
-      if (!confirm(`確定要從 ${poolLabel(poolKey)} 刪除「${selectedName}」嗎？
+      const displayName = displayMemberReference(selectedName);
+      if (!confirm(`確定要從 ${poolLabel(poolKey)} 刪除「${displayName}」嗎？
 
 這只會修改目前池子，不會從公會名單或高戰名單刪除。`)) return;
 
@@ -1776,10 +1923,10 @@
         await refreshFromCloud();
         const beforeCount = state[poolKey].length;
         state[poolKey] = uniqueStrings(state[poolKey]).filter(name => name !== selectedName);
-        if (state[poolKey].length === beforeCount) throw new Error(`${selectedName} 不在 ${poolLabel(poolKey)} 裡。`);
+        if (state[poolKey].length === beforeCount) throw new Error(`${displayName} 不在 ${poolLabel(poolKey)} 裡。`);
 
         await saveCloud(state);
-        alert(`已從 ${poolLabel(poolKey)} 刪除 ${selectedName}。`);
+        alert(`已從 ${poolLabel(poolKey)} 刪除 ${displayName}。`);
       } catch (error) {
         alert(error.message);
       }
@@ -1795,18 +1942,19 @@
 
       try {
         await refreshFromCloud();
+        const displayName = displayMemberReference(selectedName);
         const sourceMembers = uniqueStrings(state[config.sourceField] || []);
         if (!sourceMembers.includes(selectedName)) {
-          throw new Error(`${selectedName} 不在${config.label}候選來源中。`);
+          throw new Error(`${displayName} 不在${config.label}候選來源中。`);
         }
         if (getRoleExcludedMembers(state, role).includes(selectedName)) {
-          throw new Error(`${selectedName} 已在${config.label}排除名單中。`);
+          throw new Error(`${displayName} 已在${config.label}排除名單中。`);
         }
         state[config.exclusionField].push(selectedName);
         state = normalizeState(state);
         await saveCloud(state);
         setMessage(`${role}ExcludedMessage`,
-          `已將 ${selectedName} 加入${config.label}排除名單；原 pool 保持不變。`, "ok");
+          `已將 ${displayName} 加入${config.label}排除名單；原 pool 保持不變。`, "ok");
       } catch (error) {
         setMessage(`${role}ExcludedMessage`, error.message, "danger");
       }
@@ -1816,21 +1964,104 @@
       const config = ROLE_EXCLUSION_CONFIG[role];
       const selectedName = standardizeName(name);
       if (!selectedName) return;
-      if (!confirm(`確定要解除「${selectedName}」的${config.label}排除嗎？\n\n解除後會恢復資格，既有 pool 輪替保持不變。`)) return;
+      const displayName = displayMemberReference(selectedName);
+      if (!confirm(`確定要解除「${displayName}」的${config.label}排除嗎？\n\n解除後會恢復資格，既有 pool 輪替保持不變。`)) return;
 
       try {
         await refreshFromCloud();
         if (!getRoleExcludedMembers(state, role).includes(selectedName)) {
-          throw new Error(`${selectedName} 已不在${config.label}排除名單中。`);
+          throw new Error(`${displayName} 已不在${config.label}排除名單中。`);
         }
         state[config.exclusionField] = state[config.exclusionField]
           .filter(member => member !== selectedName);
         state = normalizeState(state);
         await saveCloud(state);
         setMessage(`${role}ExcludedMessage`,
-          `已解除 ${selectedName} 的${config.label}排除；資格已恢復，pool 輪替保持不變。`, "ok");
+          `已解除 ${displayName} 的${config.label}排除；資格已恢復，pool 輪替保持不變。`, "ok");
       } catch (error) {
         setMessage(`${role}ExcludedMessage`, error.message, "danger");
+      }
+    }
+
+    async function addMember() {
+      const validation = validateMemberInput({
+        memberId: $("newMemberId").value,
+        gameName: $("newMemberGameName").value
+      });
+      if (!validation.ok) {
+        setMessage("memberMessage", validation.reason === "invalid-member-id" ?
+          "Member ID 必須是純數字。" : "請輸入 1～120 字的遊戲名稱。", "danger");
+        return;
+      }
+      try {
+        await refreshFromCloud();
+        if (!usesMemberIdentity()) throw new Error("會員主檔尚未正式 migration，禁止隱式建立 identity。");
+        if (state.members[validation.memberId]) throw new Error("這個 Member ID 已存在，不可指派給另一個角色。");
+        state.members[validation.memberId] = {
+          memberId: validation.memberId,
+          gameName: validation.gameName,
+          lineNameHint: validation.gameName,
+          active: true
+        };
+        state.captainPool.push(validation.memberId);
+        state.cabin4Pool.push(validation.memberId);
+        state = normalizeState(state);
+        await saveCloud(state);
+        $("newMemberId").value = "";
+        $("newMemberGameName").value = "";
+        setMessage("memberMessage", `已新增 ${memberLabel(state.members[validation.memberId])}。`, "ok");
+      } catch (error) {
+        setMessage("memberMessage", error.message, "danger");
+      }
+    }
+
+    async function renameMemberGameName(memberId) {
+      const current = state.members[memberId];
+      if (!current) return;
+      const gameName = prompt(`修改 #${memberId} 的遊戲名稱：`, current.gameName);
+      if (gameName === null) return;
+      const validation = validateMemberInput({memberId, gameName});
+      if (!validation.ok) {
+        setMessage("memberMessage", "遊戲名稱不可空白，且最多 120 字。", "danger");
+        return;
+      }
+      try {
+        await refreshFromCloud();
+        if (!state.members[memberId]) throw new Error("會員已不存在，請重新整理。");
+        state.members[memberId] = {...state.members[memberId], gameName: validation.gameName};
+        state = normalizeState(state);
+        await saveCloud(state);
+        setMessage("memberMessage", `已更新 #${memberId}；Member ID、history 與 LINE binding 都沒有改變。`, "ok");
+      } catch (error) {
+        setMessage("memberMessage", error.message, "danger");
+      }
+    }
+
+    async function setMemberActive(memberId, active) {
+      const current = state.members[memberId];
+      if (!current) return;
+      const action = active ? "重新啟用" : "移除";
+      if (!confirm(`確定要${action}「${current.gameName} (#${memberId})」嗎？\n\nLINE binding 與歷史紀錄都會保留。`)) return;
+      try {
+        await refreshFromCloud();
+        if (!state.members[memberId]) throw new Error("會員已不存在，請重新整理。");
+        state.members[memberId] = {...state.members[memberId], active};
+        if (!active) {
+          state.highWarMemberIds = state.highWarMemberIds.filter(id => id !== memberId);
+          state.highWarMembers = state.highWarMembers.filter(id => id !== memberId);
+          ["captainPool", "guardianPool", "cabin4Pool"].forEach(poolKey => {
+            state[poolKey] = state[poolKey].filter(id => id !== memberId);
+          });
+          if (state.presidentMemberId === memberId) state.presidentMemberId = null;
+        } else {
+          if (!state.captainPool.includes(memberId)) state.captainPool.push(memberId);
+          if (!state.cabin4Pool.includes(memberId)) state.cabin4Pool.push(memberId);
+        }
+        state = normalizeState(state);
+        await saveCloud(state);
+        setMessage("memberMessage", `已${action} ${current.gameName}；LINE binding 與 history 均保留。`, "ok");
+      } catch (error) {
+        setMessage("memberMessage", error.message, "danger");
       }
     }
 
@@ -1881,9 +2112,10 @@
 
       rows.push(["抽籤結果", ""]);
       rows.push(["角色", "成員"]);
-      rows.push(["船長", record.captain]);
-      rows.push(["守護天使", record.guardian]);
-      (record.cabin4 || []).forEach((name, index) => rows.push([`船艙 4 - ${index + 1}`, name]));
+      rows.push(["船長", historyMemberDisplay(record, "captain")]);
+      rows.push(["守護天使", historyMemberDisplay(record, "guardian")]);
+      historyCabinDisplays(record).forEach((name, index) =>
+        rows.push([`船艙 4 - ${index + 1}`, name]));
       rows.push([]);
 
       const consumedCaptain = uniqueStrings(record.consumed?.captain || []);
@@ -2239,68 +2471,32 @@
 
       $("saveSettingsBtn").addEventListener("click", async () => {
         if (isApplyingRemote) return;
+        const selectedHighWar = [...document.querySelectorAll(".high-war-member-checkbox:checked")]
+          .map(input => input.value);
+        const selectedPresident = $("presidentMemberId").value;
         try {
           await refreshFromCloud();
-          const working = clone(state);
-          const oldGuild = [...working.guildMembers];
-          const oldHighWar = [...working.highWarMembers];
-          const nextGuild = parseTextarea($("guildMembersInput").value);
-          const nextHighWar = parseTextarea($("highWarMembersInput").value);
-          const nextPresident = standardizeName($("presidentName").value) || "Chia - 嘻嘻不嘻嘻";
-          const guildRenameMap = buildRenameMap(oldGuild, nextGuild);
-          const highWarRenameMap = buildRenameMap(oldHighWar, nextHighWar);
-          applyRenameMapToState(working, mergeRenameMaps(guildRenameMap, highWarRenameMap));
-          const exclusionsBeforeCleanup = Object.fromEntries(
-            Object.values(ROLE_EXCLUSION_CONFIG).map(config =>
-              [config.role, [...(working[config.exclusionField] || [])]]),
-          );
-          const oldGuildAfterRename = renameList(oldGuild, guildRenameMap);
-          const oldHighWarAfterRename = renameList(oldHighWar, highWarRenameMap);
-          working.guildMembers = nextGuild;
-          working.highWarMembers = nextHighWar;
-          working.presidentName = nextPresident;
-          const normalizedExclusions = normalizeRoleExclusions(working);
-          Object.values(ROLE_EXCLUSION_CONFIG).forEach(config => {
-            working[config.exclusionField] = normalizedExclusions[config.exclusionField];
-          });
-          addNewNamesToPool(working, "captainPool", oldGuildAfterRename, nextGuild);
-          addNewNamesToPool(working, "cabin4Pool", oldGuildAfterRename, nextGuild);
-          addNewNamesToPool(working, "guardianPool", oldHighWarAfterRename, nextHighWar);
-          sanitizePool(working, "cabin4Pool", nextGuild);
-          if (working.captainPool.length === 0 && nextGuild.length > 0) working.captainPool = shuffle(nextGuild);
-          if (working.cabin4Pool.length === 0 && nextGuild.length > 0) working.cabin4Pool = shuffle(nextGuild);
-          if (working.guardianPool.length === 0 && nextHighWar.length > 0) working.guardianPool = shuffle(nextHighWar);
-          state = normalizeState(working);
+          if (!usesMemberIdentity()) throw new Error("會員主檔尚未正式 migration，不能寫入 ID 設定。");
+          if (selectedHighWar.length !== 6) throw new Error(`高戰成員必須剛好 6 位，目前選擇 ${selectedHighWar.length} 位。`);
+          if (!selectedPresident || !state.members[selectedPresident] ||
+              state.members[selectedPresident].active === false) {
+            throw new Error("請選擇有效的特別日固定守護。");
+          }
+          const oldHighWar = [...state.highWarMembers];
+          state.highWarMemberIds = [...selectedHighWar];
+          state.highWarMembers = [...selectedHighWar];
+          state.presidentMemberId = selectedPresident;
+          addNewNamesToPool(state, "guardianPool", oldHighWar, selectedHighWar);
+          sanitizePool(state, "guardianPool", selectedHighWar);
+          if (state.guardianPool.length === 0) state.guardianPool = shuffle(selectedHighWar);
+          state = normalizeState(state);
           await saveCloud(state);
-          const warnings = [];
-          if (nextHighWar.length !== 6) warnings.push(`高戰名單目前是 ${nextHighWar.length} 人，建議調整為 6 人。`);
-          const guildSet = new Set(nextGuild);
-          const missing = nextHighWar.filter(name => !guildSet.has(name));
-          if (missing.length) warnings.push(`高戰不在公會名單中：${missing.join("、")}。`);
-          Object.values(ROLE_EXCLUSION_CONFIG).forEach(config => {
-            const retained = new Set(working[config.exclusionField] || []);
-            const removed = exclusionsBeforeCleanup[config.role]
-              .filter(name => !retained.has(name));
-            if (removed.length) {
-              warnings.push(`以下已離開${config.label}候選來源的排除項目已清除：${removed.join("、")}。`);
-            }
-          });
-          setMessage("settingsMessage", warnings.length ? `已儲存。${warnings.join(" ")}` : "已儲存到 Firebase 雲端。", warnings.length ? "warn" : "ok");
+          setMessage("settingsMessage", "已用 Member ID 儲存高戰與特別日設定；history 未修改。", "ok");
         } catch (error) {
           setMessage("settingsMessage", error.message, "danger");
         }
       });
-
-      $("loadSampleBtn").addEventListener("click", () => {
-        if (!confirm("載入範例會覆蓋目前文字框內容，但不會立即儲存到雲端。確定載入？")) return;
-        const president = "會長00 - 公會會長";
-        const highWar = ["高戰01 - 龍騎士", "高戰02 - 聖騎士", "高戰03 - 狂戰士", "高戰04 - 狙擊手", "高戰05 - 大法師", "高戰06 - 刺客"];
-        const normal = ["成員01 - 阿火", "成員02 - 阿水", "成員03 - 阿木", "成員04 - 阿光", "成員05 - 阿暗", "成員06 - 小狼"];
-        $("guildMembersInput").value = [president, ...highWar, ...normal].join("\n");
-        $("highWarMembersInput").value = highWar.join("\n");
-        $("presidentName").value = president;
-        setMessage("settingsMessage", "已載入範例到文字框，按「儲存名單到雲端」後才會生效。", "warn");
-      });
+      $("addMemberBtn").addEventListener("click", addMember);
 
       $("drawBtn").addEventListener("click", async () => {
         const date = $("drawDate").value || todayString();

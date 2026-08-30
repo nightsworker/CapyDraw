@@ -33,6 +33,8 @@ const {
   buildAdminBindingSuccessText,
   buildAdminUnbindSuccessText,
   bindingKeyForGroup,
+  bindingKeyForMemberId,
+  bindingMatchesMember,
   buildBindingListText,
   buildBindingSuccessText,
   buildBotHelpText,
@@ -45,13 +47,13 @@ const {
   findMembersByLineName,
   listBindingRecords,
   maskLineUserId,
-  normalizeMemberName,
   parseAdminBindArguments,
   planWebhookEvent,
   resolveBindingLineName,
   splitTextMessages,
   verifyLineSignature,
 } = require("./lib/line");
+const {hasActivatedMembersMaster, normalizeMembersMaster} = require("./lib/memberIdentity");
 const {
   buildLineBindingAdminRows,
   buildMemberSyncPlan,
@@ -153,6 +155,12 @@ const {
 } = require("./lib/miaobingScheduleWrapper");
 
 initializeApp();
+
+async function loadGuildMemberRecords(db = getDatabase()) {
+  const main = (await db.ref("guildDraw/main").get()).val() || {};
+  const members = normalizeMembersMaster(main.members);
+  return hasActivatedMembersMaster(main) ? members : main.guildMembers || [];
+}
 
 const REGION = "asia-southeast1";
 const LINE_API_BASE = "https://api.line.me/v2/bot";
@@ -1196,7 +1204,7 @@ async function handleBindingCommand(event, command, token, observedProfile, send
     binding.lineUserId === userId && binding.lineGroupId === groupId);
 
   if (command.command === "status") {
-    const members = (await db.ref("guildDraw/main/guildMembers").get()).val() || [];
+    const members = await loadGuildMemberRecords(db);
     const ownRows = buildMemberBindingRows(members, bindings, groupId)
       .filter((row) => row.bound && row.lineUserId === userId);
     if (!ownRows.length) {
@@ -1227,7 +1235,7 @@ async function handleBindingCommand(event, command, token, observedProfile, send
     return;
   }
 
-  const members = (await db.ref("guildDraw/main/guildMembers").get()).val() || [];
+  const members = await loadGuildMemberRecords(db);
   if (command.command === "binding-list") {
     const text = buildBindingListText(members, bindings, groupId, isBindingLocked(settings.bindingLocked));
     await replier.longText(text);
@@ -1308,9 +1316,10 @@ async function handleBindingCommand(event, command, token, observedProfile, send
   const updates = {};
   matches.forEach((member) => {
     const existing = bindingEntries.find((binding) =>
-      binding.normalizedPlayerName === normalizeMemberName(member.fullName) &&
+      bindingMatchesMember(binding, member) &&
       binding.lineUserId === userId && binding.lineGroupId === groupId);
-    const key = existing ? existing.id : bindingKeyForGroup(member.fullName, groupId);
+    const key = existing ? existing.id : member.memberId ?
+      bindingKeyForMemberId(member.memberId, groupId) : bindingKeyForGroup(member.fullName, groupId);
     updates[key] = createBindingRecord({
       member,
       userId,
@@ -1766,15 +1775,18 @@ exports.updateTomorrowDrawAutomation = onRequest({region: REGION}, async (req, r
 exports.getLineBindings = onRequest({region: REGION}, async (req, res) =>
   withAdminRequest(req, res, ["GET"], async () => {
     const db = getDatabase();
-    const [membersSnapshot, bindingsSnapshot, settingsSnapshot] = await Promise.all([
-      db.ref("guildDraw/main/guildMembers").get(),
+    const [mainSnapshot, bindingsSnapshot, settingsSnapshot] = await Promise.all([
+      db.ref("guildDraw/main").get(),
       db.ref("guildDraw/lineBindings").get(),
       db.ref("guildDraw/lineSettings").get(),
     ]);
+    const main = mainSnapshot.val() || {};
+    const master = normalizeMembersMaster(main.members);
+    const memberRecords = hasActivatedMembersMaster(main) ? master : main.guildMembers || [];
     const settings = settingsSnapshot.val() || {};
     const groupId = settings.defaultGroupId;
     const members = buildLineBindingAdminRows({
-      memberNames: membersSnapshot.val() || [],
+      memberNames: memberRecords,
       bindings: bindingsSnapshot.val() || {},
       groupId,
       adminLineUserIds: settings.adminLineUserIds,
@@ -1829,10 +1841,10 @@ exports.setDefaultLineGroup = onRequest({
     }
 
     const db = getDatabase();
-    const [groupsSnapshot, settingsSnapshot, membersSnapshot, bindingsSnapshot] = await Promise.all([
+    const [groupsSnapshot, settingsSnapshot, mainSnapshot, bindingsSnapshot] = await Promise.all([
       db.ref("guildDraw/lineGroups").get(),
       db.ref("guildDraw/lineSettings").get(),
-      db.ref("guildDraw/main/guildMembers").get(),
+      db.ref("guildDraw/main").get(),
       db.ref("guildDraw/lineBindings").get(),
     ]);
     const knownGroups = Object.values(groupsSnapshot.val() || {});
@@ -1848,6 +1860,9 @@ exports.setDefaultLineGroup = onRequest({
     const settings = settingsSnapshot.val() || {};
     const oldGroupId = settings.defaultGroupId || null;
     const bindings = bindingsSnapshot.val() || {};
+    const main = mainSnapshot.val() || {};
+    const master = normalizeMembersMaster(main.members);
+    const memberRecords = hasActivatedMembersMaster(main) ? master : main.guildMembers || [];
     let migration = {updates: {}, migratedBindings: 0, skippedBindings: 0, conflicts: 0};
     if (oldGroupId && oldGroupId !== newGroupId) {
       const userIds = [...new Set(listBindingRecords(bindings)
@@ -1865,7 +1880,7 @@ exports.setDefaultLineGroup = onRequest({
         } : null;
       })).filter(Boolean);
       migration = buildLineBindingMigrationPlan({
-        memberNames: membersSnapshot.val() || [],
+        memberNames: memberRecords,
         bindings,
         oldGroupId,
         newGroupId,

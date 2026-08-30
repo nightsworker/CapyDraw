@@ -1,6 +1,6 @@
 "use strict";
 
-const {parseMemberName} = require("./line");
+const {normalizeLineMember} = require("./line");
 
 const DRAW_QUERY_PATTERN = /(船長|守護天使|第四船艙|抽籤(?:結果)?|抽了誰|抽誰)/u;
 const LATEST_DRAW_PATTERN = /(最近(?:一次|一筆)?|最新(?:一次|一筆)?|上一次)\s*(?:的)?抽籤/u;
@@ -76,7 +76,7 @@ function isDrawPublishedToLine(record) {
 }
 
 function safeMemberName(value) {
-  const parsed = parseMemberName(value);
+  const parsed = normalizeLineMember(value);
   return String(parsed.fullName || "").replace(/\s+/gu, " ").trim().slice(0, 200);
 }
 
@@ -87,9 +87,12 @@ function sanitizePublishedDrawRecord(record) {
     Number(dateMatch[1]), Number(dateMatch[2]), Number(dateMatch[3]),
   );
   if (!date) return null;
-  const captain = safeMemberName(record.captain);
-  const guardian = safeMemberName(record.guardian);
-  const cabin4 = (Array.isArray(record.cabin4) ? record.cabin4 : Object.values(record.cabin4 || {}))
+  const identity = record.memberIdentity && typeof record.memberIdentity === "object" ?
+    record.memberIdentity : {};
+  const captain = safeMemberName(identity.captain || record.captain);
+  const guardian = safeMemberName(identity.guardian || record.guardian);
+  const cabinSource = identity.cabin4 || record.cabin4;
+  const cabin4 = (Array.isArray(cabinSource) ? cabinSource : Object.values(cabinSource || {}))
     .map(safeMemberName)
     .filter(Boolean);
   if (!captain || !guardian) return null;
