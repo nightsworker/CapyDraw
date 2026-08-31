@@ -15,7 +15,7 @@ guildDraw/main/members/{memberId} = {
 }
 ```
 
-`members` 是會員 master；`gameName` 可以改名，`active=false` 代表 soft delete。停用不會刪除 history 或 LINE binding，重新啟用同一 `memberId` 後可恢復抽籤資格。網站的會員設定頁只允許新增 numeric ID、修改遊戲名稱、停用與重新啟用，不提供 hard delete，也不會依 array index 推測誰改名。
+`members` 是會員 master；`gameName` 可以改名，`active=false` 代表 soft delete。停用不會刪除 history 或 LINE binding，重新啟用同一 `memberId` 後可恢復抽籤資格。正式 proposal 包含 45 位現役 canonical member，以及三位只為保留歷史 LINE identity 的 inactive member：`1474493`（璇璇很可愛）、`875114`（MingWong）、`3612290`（賓妹）。網站的會員設定頁只允許新增 numeric ID、修改遊戲名稱、停用與重新啟用，不提供 hard delete，也不會依 array index 推測誰改名。
 
 `highWarMemberIds`、`captainPool`、`guardianPool`、`cabin4Pool`、`captainExcludedMembers`、`guardianExcludedMembers`、`cabin4ExcludedMembers` 與 `presidentMemberId` 都以 `memberId` 保存。UI 顯示 `gameName (#memberId)`；高戰名單的重新排序或替換不會改動任何舊 history 身份。
 
@@ -35,7 +35,11 @@ LINE binding 在新 schema 以 `memberId` 為 source of truth，同一 LINE user
 
 ### Migration safety
 
-Production 尚未出現 `guildDraw/main/members` 時，網站維持 legacy read/write 相容模式，但會員 master CRUD 與新高戰設定會停用，避免瀏覽器隱式建立或猜測 identity。migration 必須先做唯讀 dry-run；任一未對應或多義會員、LINE binding 或 history role 都會使 proposal fail closed，程式不會 fuzzy match、依 index 配對或局部寫入。
+Production 尚未出現 `guildDraw/main/members` 時，網站維持 legacy read/write 相容模式，但會員 master CRUD 與新高戰設定會停用，避免瀏覽器隱式建立或猜測 identity。migration 必須先做唯讀 dry-run；任一未對應或多義的現役會員、LINE binding、high-war、pool 或 exclusion 都會使 proposal fail closed，程式不會 fuzzy match、依 index 配對或局部寫入。
+
+舊 history 不再是 Member Master／LINE binding migration 的門檻，也不列入 migration patch。無法證明身份的舊 captain、guardian、cabin4、consumed 與 pool snapshot 永久保留原本文字，不猜測、不補 `memberIdentity`、不改寫；只有 migration 後產生的新 history 才保存 Member ID snapshot。identity-sensitive overwrite 若無法解析舊 consumed reference，仍會明確停止。
+
+五筆人工確認的 legacy binding mapping 僅用於 LINE identity 相容：`竣棋 - 璇璇很可愛 → 1474493`、`德 - MingWong → 875114`、`貳零陸 - 九章伏藏 → 1493451`、`俊宏 - 趴地柒 → 2481528`、`saiyiu - 賓妹 → 3612290`。其中 `1493451` 與 `2481528` 是既有角色，現在名稱仍為「萬朔夜」與「仰泳的魚」，不會建立 duplicate member 或把名稱改回舊值。
 
 先以 Firebase CLI 將唯讀資料輸出到本機暫存檔，再執行：
 

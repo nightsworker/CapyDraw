@@ -112,6 +112,20 @@ test("K: canonical 貳零陸 - 九章伏藏 binding resolves the plate target", 
   assert.equal(plate.lineName, "貳零陸");
 });
 
+test("K2: migrated plate binding resolves by Member ID after the current game-name change", () => {
+  const migrated = {
+    plate: {
+      memberId: "1493451",
+      playerName: "貳零陸 - 萬朔夜",
+      lineName: "貳零陸",
+      gameId: "萬朔夜",
+      lineUserId: "U_PLATE",
+      lineGroupId: GROUP_ID,
+    },
+  };
+  assert.equal(resolveLoreIdentity(migrated, GROUP_ID, "plateTarget").lineUserId, "U_PLATE");
+});
+
 test("L: a bound plate target produces a real LINE textV2 mention payload", () => {
   const plan = planMiaobingMessage({event: textEvent("盤子"), rng: () => 0});
   const message = buildLoreReplyMessage(

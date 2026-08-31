@@ -8,6 +8,8 @@ const {spawnSync} = require("node:child_process");
 const test = require("node:test");
 const {
   CANONICAL_MEMBERS,
+  CONFIRMED_LEGACY_BINDING_ALIASES,
+  INACTIVE_HISTORICAL_MEMBER_IDS,
   activeMemberIds,
   buildMigrationProposal,
   buildProductionDryRun,
@@ -17,6 +19,7 @@ const {
   historySnapshotDisplay,
   normalizeMembersMaster,
   resolveCanonicalMember,
+  resolveLegacyBindingMember,
   validateMemberInput,
 } = require("../lib/memberIdentity");
 const {
@@ -70,10 +73,68 @@ function safeLegacyMain(overrides = {}) {
   };
 }
 
-test("canonical mapping contains 45 unique numeric Member IDs", () => {
-  assert.equal(CANONICAL_MEMBERS.length, 45);
-  assert.equal(new Set(CANONICAL_MEMBERS.map((row) => row.memberId)).size, 45);
+function productionLikeMain(overrides = {}) {
+  const currentNames = CANONICAL_MEMBERS.filter((entry) => entry.active)
+    .map((entry) => entry.legacyPlayerNames[0]);
+  return {
+    guildMembers: currentNames,
+    highWarMembers: currentNames.slice(0, 6),
+    presidentName: "@Hank - 挖系小嗨",
+    captainPool: currentNames,
+    guardianPool: currentNames.slice(0, 6),
+    cabin4Pool: currentNames,
+    captainExcludedMembers: [],
+    guardianExcludedMembers: [],
+    cabin4ExcludedMembers: [],
+    history: [{id: "legacy-unknown", date: "2026-01-01", captain: "舊成員 - 未知",
+      guardian: currentNames[0], cabin4: currentNames.slice(1, 6)}],
+    ...overrides,
+  };
+}
+
+function productionLikeBindings() {
+  const currentEntries = CANONICAL_MEMBERS.filter((entry) => entry.active);
+  const lineUserFor = (memberId) => {
+    if (["849633", "852177"].includes(memberId)) return "U_CHIA";
+    if (["1311826", "1635753"].includes(memberId)) return "U_CHULONG";
+    return `U_${memberId}`;
+  };
+  const bindings = {};
+  [...currentEntries.map((entry) => ({playerName: entry.legacyPlayerNames[0],
+    memberId: entry.memberId})), ...CONFIRMED_LEGACY_BINDING_ALIASES].forEach((entry, index) => {
+    bindings[`binding-${index}`] = {playerName: entry.playerName,
+      lineUserId: lineUserFor(entry.memberId), lineGroupId: GROUP_ID};
+  });
+  return bindings;
+}
+
+test("canonical mapping contains 48 unique numeric Member IDs", () => {
+  assert.equal(CANONICAL_MEMBERS.length, 48);
+  assert.equal(new Set(CANONICAL_MEMBERS.map((row) => row.memberId)).size, 48);
   assert.equal(CANONICAL_MEMBERS.every((row) => /^\d+$/u.test(row.memberId)), true);
+});
+
+test("three confirmed historical members exist and remain inactive", () => {
+  const master = canonicalMaster();
+  assert.deepEqual(INACTIVE_HISTORICAL_MEMBER_IDS, ["1474493", "875114", "3612290"]);
+  assert.deepEqual(master[1474493], {memberId: "1474493", gameName: "璇璇很可愛",
+    lineNameHint: "竣棋", active: false});
+  assert.deepEqual(master[875114], {memberId: "875114", gameName: "MingWong",
+    lineNameHint: "德", active: false});
+  assert.deepEqual(master[3612290], {memberId: "3612290", gameName: "賓妹",
+    lineNameHint: "saiyiu", active: false});
+  assert.equal(activeMemberIds(master).some((id) =>
+    INACTIVE_HISTORICAL_MEMBER_IDS.includes(id)), false);
+});
+
+test("confirmed old game names map to existing IDs without changing current names", () => {
+  assert.equal(resolveLegacyBindingMember("貳零陸 - 九章伏藏").member.memberId, "1493451");
+  assert.equal(resolveLegacyBindingMember("俊宏 - 趴地柒").member.memberId, "2481528");
+  const master = canonicalMaster();
+  assert.equal(master[1493451].gameName, "萬朔夜");
+  assert.equal(master[2481528].gameName, "仰泳的魚");
+  assert.equal(CANONICAL_MEMBERS.filter((entry) => entry.memberId === "1493451").length, 1);
+  assert.equal(CANONICAL_MEMBERS.filter((entry) => entry.memberId === "2481528").length, 1);
 });
 
 test("duplicate or mismatched embedded memberId is rejected by master normalization", () => {
@@ -230,6 +291,15 @@ test("inactive member binding remains stored and can work again after reactivati
   assert.equal(findBindingForMember(master[1537124], {stored}, GROUP_ID).lineUserId, "U_RAIN");
 });
 
+test("inactive historical member binding remains stored but is excluded from new draws", () => {
+  const oldBinding = {playerName: "竣棋 - 璇璇很可愛", lineUserId: "U_RETIRED",
+    lineGroupId: GROUP_ID};
+  const records = listBindingRecords({oldBinding});
+  assert.equal(records[0].memberId, "1474493");
+  assert.equal(records[0].lineUserId, "U_RETIRED");
+  assert.equal(activeMemberIds(canonicalMaster()).includes("1474493"), false);
+});
+
 test("OWNER and GUILD_LEADER true identity resolution prefers Member ID", () => {
   const bindings = {
     owner: binding(member("849633"), "U_CHIA"),
@@ -330,22 +400,44 @@ test("unknown legacy LINE binding blocks full production migration", () => {
   assert.equal(proposal.report.bindings.unmapped.length, 1);
 });
 
-test("unknown legacy history role is marked ambiguous and never patched", () => {
+test("unresolved legacy history is preserved and does not block member migration", () => {
   const main = safeLegacyMain();
   main.history[0].captain = "舊成員 - 未知";
+  const originalHistory = structuredClone(main.history);
   const proposal = buildMigrationProposal({main, bindings: {}});
-  assert.equal(proposal.safe, false);
+  assert.equal(proposal.safe, true);
   assert.equal(proposal.report.history.ambiguous.length, 1);
+  assert.equal(proposal.safety.historyBlocksMigration, false);
+  assert.equal(proposal.legacyHistoryPreserved, true);
+  assert.equal(Object.hasOwn(proposal.mainPatch, "history"), false);
+  assert.deepEqual(main.history, originalHistory);
+});
+
+test("production-like proposal maps all 50 bindings and proposes 45 active plus 3 inactive", () => {
+  const main = productionLikeMain();
+  const originalHistory = structuredClone(main.history);
+  const proposal = buildMigrationProposal({main, bindings: productionLikeBindings()});
+  const proposedMembers = Object.values(proposal.mainPatch.members);
+  assert.equal(proposal.safe, true);
+  assert.equal(proposedMembers.length, 48);
+  assert.equal(proposedMembers.filter((entry) => entry.active).length, 45);
+  assert.equal(proposedMembers.filter((entry) => !entry.active).length, 3);
+  assert.equal(proposal.report.bindings.total, 50);
+  assert.equal(proposal.report.bindings.mapped.length, 50);
+  assert.equal(proposal.report.bindings.unmapped.length, 0);
+  assert.equal(proposal.report.bindings.ambiguous.length, 0);
+  assert.equal(proposal.report.bindings.multiCharacterUsers.length, 2);
+  assert.equal(Object.keys(proposal.bindingPatches).length, 50);
+  assert.equal(Object.hasOwn(proposal.mainPatch, "history"), false);
+  assert.deepEqual(main.history, originalHistory);
 });
 
 test("production dry-run counts deterministic mappings without exposing raw LINE identity", () => {
-  const main = safeLegacyMain();
-  const bindings = {
-    rain: {playerName: "Rain - 流鬼", lineUserId: "U_RAW_SECRET", lineGroupId: "C_RAW_GROUP"},
-  };
+  const main = productionLikeMain();
+  const bindings = productionLikeBindings();
   const report = buildProductionDryRun({main, bindings});
-  assert.equal(report.members.mapped.length, 3);
-  assert.equal(report.bindings.mapped.length, 1);
+  assert.equal(report.members.mapped.length, 45);
+  assert.equal(report.bindings.mapped.length, 50);
 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "capydraw-identity-"));
   const mainPath = path.join(directory, "main.json");
@@ -357,9 +449,19 @@ test("production dry-run counts deterministic mappings without exposing raw LINE
       path.resolve(__dirname, "../scripts/memberIdentityDryRun.js"), mainPath, bindingsPath,
     ], {encoding: "utf8"});
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /LINE BINDINGS MAPPED: 1/u);
+    assert.match(result.stdout, /MEMBERS MASTER PROPOSED TOTAL: 48/u);
+    assert.match(result.stdout, /ACTIVE: 45/u);
+    assert.match(result.stdout, /INACTIVE: 3/u);
+    assert.match(result.stdout, /LINE BINDINGS MAPPED: 50/u);
+    assert.match(result.stdout, /LINE BINDINGS UNMAPPED: 0/u);
+    assert.match(result.stdout, /LINE BINDINGS AMBIGUOUS: 0/u);
+    assert.match(result.stdout, /MULTI CHARACTER LINE USERS: 2/u);
+    assert.match(result.stdout, /LEGACY HISTORY PRESERVED: YES/u);
+    assert.match(result.stdout, /HISTORY BLOCKS MEMBER MIGRATION: NO/u);
+    assert.match(result.stdout, /SAFE TO MIGRATE MEMBER MASTER: YES/u);
+    assert.match(result.stdout, /SAFE TO MIGRATE LINE BINDINGS: YES/u);
     assert.match(result.stdout, /PRODUCTION WRITES PERFORMED: NO/u);
-    assert.doesNotMatch(result.stdout, /U_RAW_SECRET|C_RAW_GROUP/u);
+    assert.doesNotMatch(result.stdout, /U_CHIA|U_CHULONG|C_GROUP/u);
   } finally {
     fs.rmSync(directory, {recursive: true, force: true});
   }

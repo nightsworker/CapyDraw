@@ -22,7 +22,8 @@ const MIAOBING_LORE = Object.freeze({
   }),
   guildLeader: Object.freeze({lineName: "@Hank", gameId: "挖系小嗨",
     memberIds: Object.freeze(["1443678"])}),
-  plateTarget: Object.freeze({lineName: "貳零陸", gameId: "九章伏藏"}),
+  plateTarget: Object.freeze({lineName: "貳零陸", gameId: "九章伏藏",
+    memberIds: Object.freeze(["1493451"])}),
 });
 
 const SENDER_ROLES = Object.freeze({

@@ -5,7 +5,7 @@ const {
   memberPlayerName,
   normalizeMemberId,
   normalizeMembersMaster,
-  resolveCanonicalMember,
+  resolveLegacyBindingMember,
 } = require("./memberIdentity");
 
 function standardizeName(value) {
@@ -318,7 +318,7 @@ function listBindingRecords(bindings) {
     .filter(([, value]) => value && typeof value === "object")
     .map(([id, value]) => {
       const parsed = normalizeLineMember(value);
-      const inferred = resolveCanonicalMember(value.playerName || value.gameId || "");
+      const inferred = resolveLegacyBindingMember(value);
       const memberId = normalizeMemberId(value.memberId) ||
         (inferred.status === "mapped" ? inferred.member.memberId : null);
       return {

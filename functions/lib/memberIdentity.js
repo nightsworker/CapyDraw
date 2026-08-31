@@ -7,14 +7,16 @@
 
   const MEMBER_ID_PATTERN = /^\d+$/u;
 
-  function canonical(memberId, lineNameHint, gameName, legacyPlayerName = null) {
+  function canonical(memberId, lineNameHint, gameName, legacyPlayerName = null, active = true) {
+    const legacyPlayerNames = Array.isArray(legacyPlayerName) ? legacyPlayerName : [
+      legacyPlayerName || `${lineNameHint} - ${gameName}`,
+    ];
     return Object.freeze({
       memberId,
       lineNameHint,
       gameName,
-      legacyPlayerNames: Object.freeze([
-        legacyPlayerName || `${lineNameHint} - ${gameName}`,
-      ]),
+      active,
+      legacyPlayerNames: Object.freeze(legacyPlayerNames),
     });
   }
 
@@ -65,7 +67,19 @@
     canonical("852177", "Chia", "CC x CC"),
     canonical("849633", "Chia", "嘻嘻不嘻嘻"),
     canonical("1443678", "@Hank", "挖系小嗨"),
+    canonical("1474493", "竣棋", "璇璇很可愛", null, false),
+    canonical("875114", "德", "MingWong", null, false),
+    canonical("3612290", "saiyiu", "賓妹", null, false),
   ]);
+
+  const CONFIRMED_LEGACY_BINDING_ALIASES = Object.freeze([
+    Object.freeze({playerName: "竣棋 - 璇璇很可愛", memberId: "1474493"}),
+    Object.freeze({playerName: "德 - MingWong", memberId: "875114"}),
+    Object.freeze({playerName: "貳零陸 - 九章伏藏", memberId: "1493451"}),
+    Object.freeze({playerName: "俊宏 - 趴地柒", memberId: "2481528"}),
+    Object.freeze({playerName: "saiyiu - 賓妹", memberId: "3612290"}),
+  ]);
+  const INACTIVE_HISTORICAL_MEMBER_IDS = Object.freeze(["1474493", "875114", "3612290"]);
 
   function normalizeText(value) {
     return String(value || "")
@@ -103,13 +117,15 @@
       memberId: entry.memberId,
       gameName: entry.gameName,
       lineNameHint: entry.lineNameHint,
-      active: true,
+      active: entry.active,
     }]));
   }
 
   const CANONICAL_BY_ID = new Map(CANONICAL_MEMBERS.map((entry) => [entry.memberId, entry]));
   const CANONICAL_ALIASES = new Map();
   const CANONICAL_GAME_NAMES = new Map();
+  const CONFIRMED_BINDING_ALIAS_MAP = new Map(CONFIRMED_LEGACY_BINDING_ALIASES
+    .map((entry) => [normalizedLookup(entry.playerName), entry.memberId]));
   CANONICAL_MEMBERS.forEach((entry) => {
     const aliases = [...entry.legacyPlayerNames, `${entry.lineNameHint} - ${entry.gameName}`];
     aliases.forEach((alias) => {
@@ -200,7 +216,7 @@
       memberId: canonicalEntry.memberId,
       gameName: canonicalEntry.gameName,
       lineNameHint: canonicalEntry.lineNameHint,
-      active: true,
+      active: canonicalEntry.active,
       source: "canonical",
     } : null;
   }
@@ -230,6 +246,20 @@
     if (gameIds.length > 1) return {status: "ambiguous", value: normalizeText(value),
       candidateMemberIds: gameIds};
     return {status: "unmapped", value: normalizeText(value)};
+  }
+
+  function resolveLegacyBindingMember(value) {
+    if (value && typeof value === "object") {
+      const byId = resolveFromId(value.memberId);
+      if (byId) return {status: "mapped", matchType: "member-id", member: byId};
+      value = value.playerName || value.gameId || "";
+    }
+    const confirmedMemberId = CONFIRMED_BINDING_ALIAS_MAP.get(normalizedLookup(value));
+    if (confirmedMemberId) {
+      return {status: "mapped", matchType: "confirmed-legacy-binding-alias",
+        member: resolveFromId(confirmedMemberId)};
+    }
+    return resolveCanonicalMember(value);
   }
 
   function buildMasterLookup(members) {
@@ -321,7 +351,7 @@
     const rows = Object.entries(bindings && typeof bindings === "object" ? bindings : {})
       .filter(([, binding]) => binding && typeof binding === "object")
       .map(([bindingId, binding]) => ({bindingId, binding,
-        result: resolveCanonicalMember(bindingValue(binding))}));
+        result: resolveLegacyBindingMember(bindingValue(binding))}));
     const users = new Map();
     rows.forEach((row) => {
       const userId = String(row.binding.lineUserId || "");
@@ -414,24 +444,6 @@
     return analysis.mapped.map((row) => row.member.memberId);
   }
 
-  function migrateHistoryRecord(record) {
-    const roles = historyRoles(record);
-    const captainResult = resolveCanonicalMember(roles.find((row) => row.role === "captain").value);
-    const guardianResult = resolveCanonicalMember(roles.find((row) => row.role === "guardian").value);
-    const cabinResults = roles.filter((row) => row.role.startsWith("cabin4["))
-      .map((row) => resolveCanonicalMember(row.value));
-    if ([captainResult, guardianResult, ...cabinResults]
-      .some((result) => result.status !== "mapped")) return null;
-    return {
-      ...record,
-      memberIdentity: {
-        captain: createHistoryMemberSnapshot(captainResult.member),
-        guardian: createHistoryMemberSnapshot(guardianResult.member),
-        cabin4: cabinResults.map((result) => createHistoryMemberSnapshot(result.member)),
-      },
-    };
-  }
-
   function buildMigrationProposal({main, bindings} = {}) {
     const state = main && typeof main === "object" ? main : {};
     const report = buildProductionDryRun({main: state, bindings});
@@ -444,17 +456,22 @@
     const guardianExcludedMembers = mappedIds(state.guardianExcludedMembers);
     const cabin4ExcludedMembers = mappedIds(state.cabin4ExcludedMembers);
     const president = resolveCanonicalMember(state.presidentName);
-    const history = memberValues(state.history).map(migrateHistoryRecord);
     const bindingPatches = {};
     report.bindings.mapped.forEach((row) => {
       bindingPatches[row.bindingId] = {memberId: row.result.member.memberId};
     });
     const uniqueMappedMembers = memberIds && new Set(memberIds).size === memberIds.length;
-    const safe = Boolean(uniqueMappedMembers && highWarMemberIds && captainPool && guardianPool &&
-      cabin4Pool && captainExcludedMembers && guardianExcludedMembers &&
-      cabin4ExcludedMembers && president.status === "mapped" && history.every(Boolean) &&
-      report.bindings.ambiguous.length === 0 && report.bindings.unmapped.length === 0);
-    if (!safe) return {safe: false, report, mainPatch: null, bindingPatches: null};
+    const memberMasterSafe = Boolean(uniqueMappedMembers);
+    const roleStateSafe = Boolean(highWarMemberIds && captainPool && guardianPool && cabin4Pool &&
+      captainExcludedMembers && guardianExcludedMembers && cabin4ExcludedMembers &&
+      president.status === "mapped");
+    const lineBindingsSafe = report.bindings.ambiguous.length === 0 &&
+      report.bindings.unmapped.length === 0;
+    const safety = {memberMaster: memberMasterSafe, roleState: roleStateSafe,
+      lineBindings: lineBindingsSafe, historyBlocksMigration: false};
+    const safe = memberMasterSafe && roleStateSafe && lineBindingsSafe;
+    if (!safe) return {safe: false, safety, report, mainPatch: null, bindingPatches: null,
+      legacyHistoryPreserved: true};
     const currentIds = new Set(memberIds);
     const members = canonicalMaster();
     Object.values(members).forEach((member) => { member.active = currentIds.has(member.memberId); });
@@ -473,10 +490,11 @@
         captainExcludedMembers,
         guardianExcludedMembers,
         cabin4ExcludedMembers,
-        history,
         memberIdentityVersion: 1,
       },
       bindingPatches,
+      safety,
+      legacyHistoryPreserved: true,
     };
   }
 
@@ -502,6 +520,8 @@
 
   return {
     CANONICAL_MEMBERS,
+    CONFIRMED_LEGACY_BINDING_ALIASES,
+    INACTIVE_HISTORICAL_MEMBER_IDS,
     MEMBER_ID_PATTERN,
     activeMemberIds,
     analyzeBindings,
@@ -521,6 +541,7 @@
     normalizeMembersMaster,
     normalizeText,
     resolveCanonicalMember,
+    resolveLegacyBindingMember,
     resolveMember,
     uniqueIds,
     validateMemberInput,
