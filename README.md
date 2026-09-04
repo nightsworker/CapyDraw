@@ -364,6 +364,8 @@ Command 的原始結構化結果不變，再以 80% 機率加入簡短 opening�
 
 明日抽籤設定在 `guildDraw/lineSchedules/tomorrowDraw`。每天設定時間只找隔天日期；沒有紀錄時將 occurrence 設為 `waiting-for-draw` 並以 `nextCheckAt` 每 5 分鐘重查，23:59 最後檢查仍不存在才標為 `expired-no-draw`，隔天使用全新的 runKey。同日期多筆仍 fail closed 為 `ambiguous-draw-records`。找到單筆 unpublished draw 後建立 canonical draw pending 並標成 `queued-for-reply`；已成功建立的 pending 不受 23:59 限制，可跨午夜等待。Reply 前會再次讀取 history：若管理員已手動 Push 或 backfill，pending 會取消而不重送。只有 LINE Reply 成功後才寫入有效 `lineSentAt`、增加 `lineSendCount`、設 `lastLineSendStatus = sent` 與 `lastLineSendMode = reply`，使既有 `isDrawPublishedToLine()` 成立；Reply 失敗則釋放 claim，抽籤仍保持 unpublished。
 
+固定公告與明日抽籤的 occurrence identity 都以「排程／類型 + Asia/Taipei 日期」為準，設定時間只決定當天何時到期。管理員在同一天修改時間不會建立第二個 run 或 pending，也不會重新發送已排隊或已送出的公告；既有包含時間的 legacy run 仍會依 occurrence date 被沿用，避免改版當天重複。
+
 Pending 以 deterministic occurrence id 去重，並用 RTDB transaction 由 webhook event claim；短 lease 到期後可由下一個 event 恢復。同一 `webhookEventId` 會留下有限的 backend event ledger，redelivery 不會再次消費。Reply 失敗會明確 release，manual Push 與 pending draw 另共用 record-level draw claim，避免同一 draw 同時送兩次。一次 Reply 最多 5 個 message objects：一般使用者要求的回覆優先，若有 pending 至少保留 1 個 slot 給最舊公告，其餘 pending 繼續排隊。每筆 schedule 只保留最近 20 筆 sanitized run history，並分開記錄排定時間、`sent-via-reply` 實際時間與 reply delay。
 
 固定公告的新 recurrence schema 僅支援 `daily` 與 `every_n_weeks`。每 X 週可設定 1～52 的整數 `weekInterval` 並多選 `weekdays`；`startDate` 所在 Asia/Taipei 週一至週日的 calendar week 是 week 0，只有 calendar week difference 可整除 `weekInterval` 時才執行，不使用固定毫秒數推算週期。`startDate`、`endDate` 都 inclusive，省略 endDate 代表永久；week 0 中早於 `startDate` 的 weekday 不執行。Backend 是 `nextRunAt` 的唯一計算來源，dispatcher 即使晚一分鐘仍會處理尚未 claim 的 due occurrence。

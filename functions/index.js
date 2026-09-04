@@ -133,6 +133,7 @@ const {
   occurrenceTimestamp,
   pruneRunHistory,
   renderScheduleCore,
+  reuseExistingOccurrenceRun,
   taipeiDateKey,
   validateLineSchedule,
   validateTomorrowAutomation,
@@ -1907,16 +1908,16 @@ exports.setDefaultLineGroup = onRequest({
     });
   }));
 
-function fixedOccurrenceFromSchedule(schedule) {
+function fixedOccurrenceFromSchedule(schedule, scheduleRuns = {}) {
   const timestamp = Date.parse(schedule && schedule.nextRunAt);
   if (!Number.isFinite(timestamp)) return null;
   const occurrenceDate = taipeiDateKey(new Date(timestamp));
-  return {
+  return reuseExistingOccurrenceRun({
     occurrenceDate,
     scheduledFor: new Date(timestamp).toISOString(),
     timestamp,
     runKey: fixedRunKey(schedule.id, occurrenceDate, schedule.time),
-  };
+  }, scheduleRuns);
 }
 
 function fixedOccurrenceFromRun(run) {
@@ -1974,7 +1975,7 @@ async function dispatchFixedSchedules({db, items, runs, bindings, defaultGroupId
       });
     }
 
-    const occurrence = fixedOccurrenceFromSchedule(schedule);
+    const occurrence = fixedOccurrenceFromSchedule(schedule, scheduleRuns);
     if (!occurrence || occurrence.timestamp > now.getTime() ||
         processedRunKeys.has(occurrence.runKey)) {
       await pruneRunsRef(db.ref(`guildDraw/lineSchedules/runs/${schedule.id}`));
@@ -2011,9 +2012,10 @@ exports.scheduleDispatcher = onSchedule({
 }, async () => {
   const db = getDatabase();
   const now = new Date();
-  const [tomorrowSnapshot, itemsSnapshot, runsSnapshot, bindingsSnapshot,
-    settingsSnapshot] = await Promise.all([
+  const [tomorrowSnapshot, tomorrowRunsSnapshot, itemsSnapshot, runsSnapshot,
+    bindingsSnapshot, settingsSnapshot] = await Promise.all([
     db.ref("guildDraw/lineSchedules/tomorrowDraw").get(),
+    db.ref("guildDraw/lineSchedules/tomorrowRuns").get(),
     db.ref("guildDraw/lineSchedules/items").get(),
     db.ref("guildDraw/lineSchedules/runs").get(),
     db.ref("guildDraw/lineBindings").get(),
@@ -2030,10 +2032,14 @@ exports.scheduleDispatcher = onSchedule({
     enqueuePendingAnnouncement(groupPendingRef, announcement);
   let tomorrowStatus = "disabled";
   const tomorrowSettings = tomorrowSnapshot.val();
-  const tomorrowOccurrence = latestTomorrowOccurrence(tomorrowSettings, now);
+  const tomorrowOccurrence = reuseExistingOccurrenceRun(
+    latestTomorrowOccurrence(tomorrowSettings, now),
+    tomorrowRunsSnapshot.val() || {},
+  );
   if (tomorrowOccurrence) {
     const result = await dispatchTomorrowDraw({
       settings: tomorrowSettings,
+      occurrence: tomorrowOccurrence,
       runRef: db.ref(`guildDraw/lineSchedules/tomorrowRuns/${tomorrowOccurrence.runKey}`),
       historyRef: db.ref("guildDraw/main/history"),
       bindings,

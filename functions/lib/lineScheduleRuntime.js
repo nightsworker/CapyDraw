@@ -272,6 +272,7 @@ function isTaipeiLastMinute(now) {
 
 async function dispatchTomorrowDraw({
   settings,
+  occurrence: suppliedOccurrence = null,
   runRef,
   historyRef,
   bindings,
@@ -279,7 +280,7 @@ async function dispatchTomorrowDraw({
   enqueueAnnouncement,
   now = new Date(),
 } = {}) {
-  const occurrence = latestTomorrowOccurrence(settings, now);
+  const occurrence = suppliedOccurrence || latestTomorrowOccurrence(settings, now);
   if (!occurrence) return {status: settings && settings.enabled ? "not-due" : "disabled"};
   const lastMinute = isTaipeiLastMinute(now);
   const claim = await claimTomorrowCheck(runRef, occurrence, now, {force: lastMinute});

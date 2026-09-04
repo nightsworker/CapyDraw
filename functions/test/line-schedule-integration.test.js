@@ -59,6 +59,14 @@ test("pending queue and schedules remain server-only under RTDB deny rules", () 
   assert.equal(rules.rules.guildDraw.lineSchedules, undefined);
 });
 
+test("dispatcher reuses same-date legacy runs before dispatching stable occurrence keys", () => {
+  assert.match(indexSource, /fixedOccurrenceFromSchedule\(schedule, scheduleRuns\)/u);
+  assert.match(indexSource,
+    /db\.ref\("guildDraw\/lineSchedules\/tomorrowRuns"\)\.get\(\)/u);
+  assert.match(indexSource, /reuseExistingOccurrenceRun\([\s\S]*?tomorrowRunsSnapshot\.val\(\)/u);
+  assert.match(indexSource, /dispatchTomorrowDraw\(\{[\s\S]*?occurrence: tomorrowOccurrence/u);
+});
+
 test("dispatcher only targets defaultGroupId and never accepts schedule groupId", () => {
   const scheduleModule = fs.readFileSync(path.resolve(__dirname, "../lib/lineSchedule.js"), "utf8");
   assert.doesNotMatch(scheduleModule, /targetGroupId|schedule\.groupId/u);

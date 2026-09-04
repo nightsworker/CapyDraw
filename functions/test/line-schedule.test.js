@@ -7,14 +7,18 @@ const {
   buildScheduledLineMessage,
   calendarDayDifference,
   findNextOccurrence,
+  fixedRunKey,
   formatDateToken,
+  latestTomorrowOccurrence,
   occurrenceTimestamp,
   normalizeLineScheduleRecurrence,
   pruneRunHistory,
   recurrenceMatchesDate,
   renderScheduleCore,
+  reuseExistingOccurrenceRun,
   stableRetryKey,
   taipeiDateKey,
+  tomorrowRunKey,
   validateLineSchedule,
   validateTomorrowAutomation,
 } = require("../lib/lineSchedule");
@@ -229,6 +233,46 @@ test("next occurrence is backend-calculated and catches a one-minute late dispat
   });
   assert.equal(next.scheduledFor, "2026-08-14T12:30:00.000Z");
   assert.ok(next.timestamp <= Date.parse("2026-08-14T12:31:00.000Z"));
+});
+
+test("same-day occurrence keys do not change when an admin edits the time", () => {
+  assert.equal(fixedRunKey("s_test1234", "2026-09-01", "13:00"),
+    fixedRunKey("s_test1234", "2026-09-01", "15:19"));
+  assert.equal(fixedRunKey("s_test1234", "2026-09-01"), "s_test1234_2026-09-01");
+  assert.equal(tomorrowRunKey("2026-09-01", "13:00"),
+    tomorrowRunKey("2026-09-01", "15:19"));
+  assert.equal(tomorrowRunKey("2026-09-01"), "tomorrow_2026-09-01");
+  assert.notEqual(tomorrowRunKey("2026-09-01"), tomorrowRunKey("2026-09-02"));
+  assert.equal(
+    latestTomorrowOccurrence({enabled: true, time: "13:00"},
+      new Date("2026-09-01T07:20:00.000Z")).runKey,
+    latestTomorrowOccurrence({enabled: true, time: "15:19"},
+      new Date("2026-09-01T07:20:00.000Z")).runKey,
+  );
+});
+
+test("same-date legacy time-based run is reused and terminal run wins", () => {
+  const occurrence = {
+    occurrenceDate: "2026-09-01",
+    scheduledFor: "2026-09-01T07:19:00.000Z",
+    runKey: tomorrowRunKey("2026-09-01"),
+  };
+  const resolved = reuseExistingOccurrenceRun(occurrence, {
+    "tomorrow_2026-09-01_13-00": {
+      occurrenceDate: "2026-09-01", status: "waiting-for-draw",
+      scheduledFor: "2026-09-01T05:00:00.000Z",
+    },
+    "tomorrow_2026-09-01_15-15": {
+      occurrenceDate: "2026-09-01", status: "sent-via-reply",
+      scheduledFor: "2026-09-01T07:15:00.000Z",
+    },
+  });
+  assert.equal(resolved.runKey, "tomorrow_2026-09-01_15-15");
+  assert.equal(reuseExistingOccurrenceRun({...occurrence, occurrenceDate: "2026-09-02"}, {
+    "tomorrow_2026-09-01_15-15": {
+      occurrenceDate: "2026-09-01", status: "sent-via-reply",
+    },
+  }).runKey, occurrence.runKey);
 });
 
 test("no end date continues while after endDate has no occurrence", () => {

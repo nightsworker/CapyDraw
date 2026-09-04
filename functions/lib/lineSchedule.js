@@ -159,14 +159,50 @@ function recurrenceMatchesDate(schedule, occurrenceDate) {
   return false;
 }
 
-function fixedRunKey(scheduleId, date, time) {
+function fixedRunKey(scheduleId, date) {
   const safeId = String(scheduleId || "schedule")
     .replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 80);
-  return `${safeId}_${date}_${String(time || "00:00").replace(":", "-")}`;
+  return `${safeId}_${date}`;
 }
 
-function tomorrowRunKey(date, time) {
-  return `tomorrow_${date}_${String(time || "00:00").replace(":", "-")}`;
+function tomorrowRunKey(date) {
+  return `tomorrow_${date}`;
+}
+
+const OCCURRENCE_TERMINAL_STATUSES = new Set([
+  "sent", "sent-via-reply", "queued-for-reply", "failed", "expired", "expired-no-draw",
+  "ambiguous-draw-records", "skipped-already-published",
+]);
+
+function existingRunPriority(run) {
+  if (OCCURRENCE_TERMINAL_STATUSES.has(run && run.status)) return 2;
+  return run && run.status ? 1 : 0;
+}
+
+function existingRunTime(run) {
+  for (const value of [run && run.updatedAt, run && run.sentAt, run && run.scheduledFor]) {
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return 0;
+}
+
+function runMatchesOccurrenceDate(run, occurrenceDate) {
+  if (!run || typeof run !== "object") return false;
+  if (run.occurrenceDate === occurrenceDate) return true;
+  const scheduledTimestamp = Date.parse(run.scheduledFor);
+  return Number.isFinite(scheduledTimestamp) &&
+    taipeiDateKey(new Date(scheduledTimestamp)) === occurrenceDate;
+}
+
+function reuseExistingOccurrenceRun(occurrence, runs) {
+  if (!occurrence || !occurrence.occurrenceDate) return occurrence;
+  const candidates = Object.entries(runs && typeof runs === "object" ? runs : {})
+    .filter(([, run]) => runMatchesOccurrenceDate(run, occurrence.occurrenceDate))
+    .sort((left, right) => existingRunPriority(right[1]) - existingRunPriority(left[1]) ||
+      existingRunTime(right[1]) - existingRunTime(left[1]) ||
+      String(left[0]).localeCompare(String(right[0])));
+  return candidates.length ? {...occurrence, runKey: candidates[0][0]} : occurrence;
 }
 
 function findNextOccurrence(schedule, {after = new Date(), inclusive = false} = {}) {
@@ -437,6 +473,7 @@ module.exports = {
   pruneRunHistory,
   recurrenceMatchesDate,
   renderScheduleCore,
+  reuseExistingOccurrenceRun,
   stableRetryKey,
   taipeiDateKey,
   tomorrowRunKey,

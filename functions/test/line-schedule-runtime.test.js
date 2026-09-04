@@ -199,6 +199,39 @@ test("tomorrow draw due creates one pending without publishing", async () => {
   assert.equal(isDrawPublishedToLine(historyRef.value()[0]), false);
 });
 
+test("editing tomorrow automation time on the same day queues only once", async () => {
+  const historyRef = memoryRef([drawRecord()]);
+  const runRef = memoryRef(null);
+  const pending = pendingCollector();
+  const common = {runRef, historyRef, bindings: {}, defaultGroupId: "G",
+    enqueueAnnouncement: pending.enqueue};
+  const first = await dispatchTomorrowDraw({...common,
+    settings: {enabled: true, time: "13:00"},
+    now: new Date("2026-08-14T05:00:30.000Z")});
+  const edited = await dispatchTomorrowDraw({...common,
+    settings: {enabled: true, time: "15:19"},
+    now: new Date("2026-08-14T07:19:30.000Z")});
+  assert.equal(first.status, "queued-for-reply");
+  assert.equal(edited.status, "queued-for-reply");
+  assert.equal(pending.items.length, 1);
+  assert.equal(runRef.value().checkCount, 1);
+  assert.equal(isDrawPublishedToLine(historyRef.value()[0]), false);
+});
+
+test("concurrent same-day dispatchers with different configured times still queue once", async () => {
+  const historyRef = memoryRef([drawRecord()]);
+  const runRef = memoryRef(null);
+  const pending = pendingCollector();
+  const common = {runRef, historyRef, bindings: {}, defaultGroupId: "G",
+    enqueueAnnouncement: pending.enqueue, now: new Date("2026-08-14T07:20:00.000Z")};
+  await Promise.all([
+    dispatchTomorrowDraw({...common, settings: {enabled: true, time: "13:00"}}),
+    dispatchTomorrowDraw({...common, settings: {enabled: true, time: "15:19"}}),
+  ]);
+  assert.equal(pending.items.length, 1);
+  assert.equal(runRef.value().checkCount, 1);
+});
+
 test("array and object histories both find tomorrow record by record.date", async () => {
   for (const history of [[null, drawRecord()], {unrelatedFirebaseKey: drawRecord()}]) {
     const pending = pendingCollector();
@@ -310,6 +343,28 @@ test("fixed due prepares wrapper and queues immutable occurrence-based core", as
   assert.equal(pending.items[0].occurrenceDate, "2026-08-14");
   assert.equal(pending.items[0].aiIntro, "先提醒。");
   assert.equal(runRef.value().deliveryPayload, undefined);
+});
+
+test("editing a fixed schedule time on the same day does not queue a second announcement", async () => {
+  const pending = pendingCollector();
+  const runRef = memoryRef(null);
+  let wrapperCalls = 0;
+  const common = {runRef, bindings: {}, defaultGroupId: "G", enqueueAnnouncement: pending.enqueue,
+    createWrapper: async () => {
+      wrapperCalls += 1;
+      return {intro: "", outro: "", reason: "success"};
+    }};
+  const first = await dispatchFixedOccurrence({...common,
+    schedule: fixedSchedule({time: "15:56"}), occurrence: occurrence("2026-08-14", "15:56"),
+    now: new Date("2026-08-14T12:31:00.000Z")});
+  const edited = await dispatchFixedOccurrence({...common,
+    schedule: fixedSchedule({time: "17:53"}), occurrence: occurrence("2026-08-14", "17:53"),
+    now: new Date("2026-08-14T12:32:00.000Z")});
+  assert.equal(first.status, "queued-for-reply");
+  assert.equal(edited.status, "queued-for-reply");
+  assert.equal(pending.items.length, 1);
+  assert.equal(wrapperCalls, 1);
+  assert.equal(runRef.value().retryCount, 1);
 });
 
 test("dispatcher next occurrence follows normalized every-two-week calendar cadence", () => {
