@@ -368,6 +368,8 @@ test("weekday UI uses member master and separate role/weekday checkboxes", () =>
   assert.match(indexSource, /class="weekday-role-checkbox requires-member-master"/u);
   assert.match(indexSource, /class="weekday-block-checkbox requires-member-master"/u);
   assert.match(indexSource, /roleWeekdayRestrictions: normalizeRoleWeekdayRestrictions/u);
+  assert.match(indexSource,
+    /src="draw-role-exclusions\.js\?v=weekday-restrictions-v1"/u);
 });
 
 test("weekday restriction CRUD never modifies history, pools, or LINE state", () => {
