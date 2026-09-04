@@ -295,6 +295,51 @@
       </div>
 
       <div class="card">
+        <div class="schedule-card-head">
+          <div>
+            <h2>週間角色限制</h2>
+            <p class="hint">依 Asia/Taipei 的星期額外限制未來抽籤資格。規則只綁定 Member ID，不會修改永久排除、pool 或歷史紀錄。</p>
+          </div>
+          <button class="btn small requires-auth requires-member-master" id="newWeekdayRestrictionBtn">＋新增限制</button>
+        </div>
+        <div class="schedule-card" id="weekdayRestrictionEditor" style="display:none; margin-top:14px">
+          <h3 id="weekdayRestrictionEditorTitle">新增週間限制</h3>
+          <div class="grid-2">
+            <div>
+              <label for="weekdayRestrictionMemberId">成員</label>
+              <select id="weekdayRestrictionMemberId" class="requires-member-master"></select>
+            </div>
+            <div>
+              <label>限制角色（至少一個）</label>
+              <div class="weekday-selector">
+                <label><input type="checkbox" class="weekday-role-checkbox requires-member-master" value="captain" />船長</label>
+                <label><input type="checkbox" class="weekday-role-checkbox requires-member-master" value="guardian" />守護</label>
+                <label><input type="checkbox" class="weekday-role-checkbox requires-member-master" value="cabin4" />第四船艙</label>
+              </div>
+            </div>
+          </div>
+          <label style="margin-top:12px">不可抽到的星期（至少一天）</label>
+          <div class="weekday-selector">
+            <label><input type="checkbox" class="weekday-block-checkbox requires-member-master" value="1" />一</label>
+            <label><input type="checkbox" class="weekday-block-checkbox requires-member-master" value="2" />二</label>
+            <label><input type="checkbox" class="weekday-block-checkbox requires-member-master" value="3" />三</label>
+            <label><input type="checkbox" class="weekday-block-checkbox requires-member-master" value="4" />四</label>
+            <label><input type="checkbox" class="weekday-block-checkbox requires-member-master" value="5" />五</label>
+            <label><input type="checkbox" class="weekday-block-checkbox requires-member-master" value="6" />六</label>
+            <label><input type="checkbox" class="weekday-block-checkbox requires-member-master" value="7" />日</label>
+          </div>
+          <div class="actions">
+            <button class="btn secondary small requires-auth requires-member-master" id="weekdaySundayOnlyBtn">只允許週日</button>
+            <button class="btn small requires-auth requires-member-master" id="saveWeekdayRestrictionBtn">儲存限制</button>
+            <button class="btn secondary small" id="cancelWeekdayRestrictionBtn">取消</button>
+            <span class="message" id="weekdayRestrictionEditorMessage"></span>
+          </div>
+        </div>
+        <div id="weekdayRestrictionsView" style="margin-top:14px"></div>
+        <div class="message" id="weekdayRestrictionsMessage"></div>
+      </div>
+
+      <div class="card">
         <h2>抽籤規則</h2>
         <ol class="rule-list">
           <li><strong>一般日：</strong>船長從公會成員池抽 1 人；守護天使從高戰池抽 1 人；船艙 4 從公會成員池抽 5 人，並排除當日船長與守護天使。</li>
@@ -563,10 +608,16 @@
     } = window.CapyDrawLineSchedulesUi;
     const {
       ROLE_EXCLUSION_CONFIG,
+      WEEKDAY_LABELS,
       getRoleEligibleMembers,
       getRoleExcludedMembers,
       getRoleExclusionSet,
-      normalizeRoleExclusions
+      getRoleWeekdayRestrictedMemberIds,
+      isDuplicateRoleWeekdayRestriction,
+      listRoleWeekdayRestrictions,
+      normalizeRoleExclusions,
+      normalizeRoleWeekdayRestrictions,
+      validateRoleWeekdayRestriction
     } = window.CapyDrawRoleExclusions;
     const {
       activeMemberIds,
@@ -595,6 +646,7 @@
       captainExcludedMembers: [],
       guardianExcludedMembers: [],
       cabin4ExcludedMembers: [],
+      roleWeekdayRestrictions: {},
       history: []
     };
 
@@ -618,6 +670,8 @@
     let tomorrowRunsCache = [];
     let scheduleDraftTokens = [];
     let editingScheduleId = null;
+    let editingWeekdayRestrictionId = null;
+    let weekdayRestrictionEditorOpen = false;
 
     const $ = (id) => document.getElementById(id);
 
@@ -699,8 +753,8 @@
       };
     }
 
-    function getCabin4EligibleMembers(workingState) {
-      return getRoleEligibleMembers(workingState, "cabin4");
+    function getCabin4EligibleMembers(workingState, drawDate) {
+      return getRoleEligibleMembers(workingState, "cabin4", drawDate);
     }
 
     function mapIdentityReferences(value, members) {
@@ -767,6 +821,7 @@
         captainExcludedMembers: exclusions.captainExcludedMembers,
         guardianExcludedMembers: exclusions.guardianExcludedMembers,
         cabin4ExcludedMembers: exclusions.cabin4ExcludedMembers,
+        roleWeekdayRestrictions: normalizeRoleWeekdayRestrictions(parsed.roleWeekdayRestrictions),
         history: Array.isArray(parsed.history) ? parsed.history.map(normalizeRecord).filter(Boolean) : []
       };
     }
@@ -982,7 +1037,7 @@
       return picked;
     }
 
-    function validateBeforeDraw(working) {
+    function validateBeforeDraw(working, drawDate) {
       const errors = [];
       const warnings = [];
       if (usesMemberIdentity(working)) {
@@ -1004,12 +1059,12 @@
       } else if (!usesMemberIdentity(working) && !working.presidentName.trim()) {
         errors.push("請設定會長名稱，特別日時會用作固定守護天使。");
       }
-      const captainEligibleCount = getRoleEligibleMembers(working, "captain").length;
-      const guardianEligibleCount = getRoleEligibleMembers(working, "guardian").length;
-      const cabin4EligibleCount = getCabin4EligibleMembers(working).length;
-      if (captainEligibleCount < 1) errors.push("船長有效成員不足，請減少船長排除名單或增加公會成員。");
-      if (guardianEligibleCount < 1) errors.push("守護有效成員不足，請減少守護排除名單或增加高戰成員。");
-      if (cabin4EligibleCount < 7) errors.push(`船艙 4 有效成員不足。目前可抽 ${cabin4EligibleCount} 人，至少需要 7 人。請減少排除名單或增加公會成員。`);
+      const captainEligibleCount = getRoleEligibleMembers(working, "captain", drawDate).length;
+      const guardianEligibleCount = getRoleEligibleMembers(working, "guardian", drawDate).length;
+      const cabin4EligibleCount = getCabin4EligibleMembers(working, drawDate).length;
+      if (captainEligibleCount < 1) errors.push(`${drawDate} 沒有可擔任船長的成員，請檢查永久排除與週間限制。`);
+      if (guardianEligibleCount < 1) errors.push(`${drawDate} 沒有可擔任守護的高戰成員，請檢查永久排除與週間限制。`);
+      if (cabin4EligibleCount < 7) errors.push(`${drawDate} 第四船艙有效成員不足。目前可抽 ${cabin4EligibleCount} 人，至少需要 7 人。請減少永久排除或週間限制，或增加公會成員。`);
       const guildSet = new Set(working.guildMembers);
       const missingHighWar = working.highWarMembers.filter(name => !guildSet.has(name));
       if (missingHighWar.length > 0) warnings.push(`提醒：以下高戰不在公會成員名單中：${missingHighWar.map(name => displayMemberReference(name, working)).join("、")}。船長特別日只會在船長抽到公會名單內的高戰時觸發。`);
@@ -1017,7 +1072,7 @@
     }
 
     function buildDrawResult(working, date, allowOverwrite) {
-      const { errors, warnings } = validateBeforeDraw(working);
+      const { errors, warnings } = validateBeforeDraw(working, date);
       if (errors.length > 0) throw new Error(errors.join("\n"));
       const existingIndex = working.history.findIndex(record => record.date === date);
       if (existingIndex >= 0) {
@@ -1028,7 +1083,7 @@
       const before = poolSnapshot(working);
       const highWarSet = new Set(working.highWarMembers);
       const captain = pickOneFromPool(working, "captainPool", working.guildMembers,
-        getRoleExclusionSet(working, "captain"));
+        getRoleExclusionSet(working, "captain", [], date));
       const specialDay = highWarSet.has(captain);
       let guardian;
       let cabin4;
@@ -1037,15 +1092,26 @@
         guardian = usesMemberIdentity(working) ? working.presidentMemberId :
           working.presidentName.trim();
         cabin4 = working.highWarMembers.filter(name => name !== captain);
-        if (getRoleExclusionSet(working, "guardian").has(guardian)) {
+        if (new Set(getRoleExcludedMembers(working, "guardian")).has(guardian)) {
           addBackToPool(working, "captainPool", [captain], working.guildMembers);
           throw new Error("特別日固定守護目前在守護排除名單中，請先調整排除設定。");
         }
-        const cabin4Excluded = getRoleExclusionSet(working, "cabin4");
+        if (getRoleWeekdayRestrictedMemberIds(working, "guardian", date).has(guardian)) {
+          addBackToPool(working, "captainPool", [captain], working.guildMembers);
+          throw new Error(`${displayMemberReference(guardian, working)} 在 ${date} 設定為不可擔任守護。`);
+        }
+        const cabin4Excluded = new Set(getRoleExcludedMembers(working, "cabin4"));
         const excludedCabin4 = cabin4.filter(name => cabin4Excluded.has(name));
         if (excludedCabin4.length) {
           addBackToPool(working, "captainPool", [captain], working.guildMembers);
-          throw new Error(`特別日固定船艙 4 包含已排除成員：${excludedCabin4.join("、")}。請先調整排除設定。`);
+          throw new Error(`特別日固定第四船艙包含永久排除成員：${excludedCabin4.map(name => displayMemberReference(name, working)).join("、")}。請先調整排除設定。`);
+        }
+        const weekdayBlockedCabin4 = getRoleWeekdayRestrictedMemberIds(
+          working, "cabin4", date);
+        const restrictedCabin4 = cabin4.filter(name => weekdayBlockedCabin4.has(name));
+        if (restrictedCabin4.length) {
+          addBackToPool(working, "captainPool", [captain], working.guildMembers);
+          throw new Error(`特別日固定第四船艙包含今天不可擔任的成員：${restrictedCabin4.map(name => displayMemberReference(name, working)).join("、")}。`);
         }
         if (cabin4.length !== 5) {
           addBackToPool(working, "captainPool", [captain], working.guildMembers);
@@ -1054,10 +1120,11 @@
         consumed = { captain: [captain], guardian: [], cabin4: [] };
       } else {
         guardian = pickOneFromPool(working, "guardianPool", working.highWarMembers,
-          getRoleExclusionSet(working, "guardian", [captain]));
+          getRoleExclusionSet(working, "guardian", [captain], date));
         cabin4 = [];
         for (let i = 0; i < 5; i++) {
-          const exclude = getRoleExclusionSet(working, "cabin4", [captain, guardian, ...cabin4]);
+          const exclude = getRoleExclusionSet(
+            working, "cabin4", [captain, guardian, ...cabin4], date);
           cabin4.push(pickOneFromPool(working, "cabin4Pool", working.guildMembers, exclude));
         }
         consumed = { captain: [captain], guardian: [guardian], cabin4: [...cabin4] };
@@ -1273,6 +1340,157 @@
       });
     }
 
+    function weekdayRoleLabel(role) {
+      return ROLE_EXCLUSION_CONFIG[role] ? ROLE_EXCLUSION_CONFIG[role].label : role;
+    }
+
+    function weekdayMemberLabel(memberId) {
+      const member = state.members[memberId];
+      if (!member) return `未知會員 (#${memberId})`;
+      return `${memberLabel(member)}${member.active === false ? "（已移除）" : ""}`;
+    }
+
+    function renderWeekdayRestrictionEditor() {
+      const editor = $("weekdayRestrictionEditor");
+      editor.style.display = weekdayRestrictionEditorOpen ? "block" : "none";
+      if (!weekdayRestrictionEditorOpen) return;
+      const existing = editingWeekdayRestrictionId ?
+        listRoleWeekdayRestrictions(state)
+          .find(rule => rule.ruleId === editingWeekdayRestrictionId) : null;
+      $("weekdayRestrictionEditorTitle").textContent = existing ?
+        "修改週間限制" : "新增週間限制";
+      const memberSelect = $("weekdayRestrictionMemberId");
+      memberSelect.innerHTML = `<option value="">選擇會員</option>${Object.values(state.members)
+        .sort((left, right) => Number(left.memberId) - Number(right.memberId))
+        .map(member => `<option value="${escapeHtml(member.memberId)}">${escapeHtml(weekdayMemberLabel(member.memberId))}</option>`)
+        .join("")}`;
+      memberSelect.value = existing ? existing.memberId : "";
+      const selectedRoles = new Set(existing ? existing.roles : []);
+      document.querySelectorAll(".weekday-role-checkbox").forEach(input => {
+        input.checked = selectedRoles.has(input.value);
+      });
+      const selectedWeekdays = new Set(existing ? existing.blockedWeekdays.map(String) : []);
+      document.querySelectorAll(".weekday-block-checkbox").forEach(input => {
+        input.checked = selectedWeekdays.has(input.value);
+      });
+      setMessage("weekdayRestrictionEditorMessage", "");
+    }
+
+    function renderWeekdayRestrictions() {
+      const rules = listRoleWeekdayRestrictions(state)
+        .sort((left, right) => weekdayMemberLabel(left.memberId)
+          .localeCompare(weekdayMemberLabel(right.memberId), "zh-Hant") ||
+          left.ruleId.localeCompare(right.ruleId));
+      const view = $("weekdayRestrictionsView");
+      if (!rules.length) {
+        view.innerHTML = `<p class="empty">目前沒有週間角色限制。</p>`;
+      } else {
+        view.innerHTML = `
+          <table>
+            <thead><tr><th>成員</th><th>限制角色</th><th>不可抽到</th><th>操作</th></tr></thead>
+            <tbody>${rules.map(rule => `
+              <tr>
+                <td>${escapeHtml(weekdayMemberLabel(rule.memberId))}</td>
+                <td>${escapeHtml(rule.roles.map(weekdayRoleLabel).join("、"))}</td>
+                <td>${escapeHtml(rule.blockedWeekdays.map(day => WEEKDAY_LABELS[day]).join("、"))}不可抽</td>
+                <td>
+                  <button class="btn secondary small requires-auth requires-member-master" data-edit-weekday-rule="${escapeHtml(rule.ruleId)}">修改</button>
+                  <button class="btn danger small requires-auth requires-member-master" data-delete-weekday-rule="${escapeHtml(rule.ruleId)}">刪除</button>
+                </td>
+              </tr>`).join("")}</tbody>
+          </table>`;
+      }
+      view.querySelectorAll("[data-edit-weekday-rule]").forEach(button => {
+        button.addEventListener("click", () => openWeekdayRestrictionEditor(
+          button.dataset.editWeekdayRule));
+      });
+      view.querySelectorAll("[data-delete-weekday-rule]").forEach(button => {
+        button.addEventListener("click", () => deleteWeekdayRestriction(
+          button.dataset.deleteWeekdayRule));
+      });
+      renderWeekdayRestrictionEditor();
+    }
+
+    function openWeekdayRestrictionEditor(ruleId = null) {
+      editingWeekdayRestrictionId = ruleId;
+      weekdayRestrictionEditorOpen = true;
+      renderWeekdayRestrictionEditor();
+      $("weekdayRestrictionEditor").scrollIntoView({behavior: "smooth", block: "nearest"});
+      updateAccessUi();
+    }
+
+    function closeWeekdayRestrictionEditor() {
+      editingWeekdayRestrictionId = null;
+      weekdayRestrictionEditorOpen = false;
+      renderWeekdayRestrictionEditor();
+    }
+
+    async function saveWeekdayRestriction() {
+      const candidate = {
+        memberId: $("weekdayRestrictionMemberId").value,
+        roles: [...document.querySelectorAll(".weekday-role-checkbox:checked")]
+          .map(input => input.value),
+        blockedWeekdays: [...document.querySelectorAll(".weekday-block-checkbox:checked")]
+          .map(input => Number(input.value))
+      };
+      const validation = validateRoleWeekdayRestriction(candidate);
+      if (!validation.ok) {
+        const message = validation.reason === "invalid-member-id" ? "請選擇會員。" :
+          validation.reason === "missing-role" ? "請至少選擇一個限制角色。" :
+            "請至少選擇一個不可抽到的星期。";
+        setMessage("weekdayRestrictionEditorMessage", message, "warn");
+        return;
+      }
+      try {
+        await refreshFromCloud();
+        if (!usesMemberIdentity()) throw new Error("會員主檔尚未正式 migration，無法建立週間限制。");
+        if (!state.members[validation.rule.memberId]) throw new Error("找不到這個 Member ID，請重新整理。");
+        if (editingWeekdayRestrictionId &&
+            !state.roleWeekdayRestrictions[editingWeekdayRestrictionId]) {
+          throw new Error("這筆週間限制已不存在，請重新整理。");
+        }
+        if (isDuplicateRoleWeekdayRestriction(
+          state, validation.rule, editingWeekdayRestrictionId)) {
+          throw new Error("完全相同的週間限制已存在。");
+        }
+        let ruleId = editingWeekdayRestrictionId;
+        if (!ruleId) {
+          do {
+            ruleId = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+          } while (state.roleWeekdayRestrictions[ruleId]);
+        }
+        state.roleWeekdayRestrictions[ruleId] = validation.rule;
+        state = normalizeState(state);
+        await saveCloud(state);
+        editingWeekdayRestrictionId = null;
+        weekdayRestrictionEditorOpen = false;
+        render();
+        setMessage("weekdayRestrictionsMessage", "週間角色限制已儲存；pool 與歷史紀錄均未修改。", "ok");
+      } catch (error) {
+        setMessage("weekdayRestrictionEditorMessage", error.message, "danger");
+      }
+    }
+
+    async function deleteWeekdayRestriction(ruleId) {
+      const existing = listRoleWeekdayRestrictions(state).find(rule => rule.ruleId === ruleId);
+      if (!existing) return;
+      if (!confirm(`確定要刪除「${weekdayMemberLabel(existing.memberId)}」的這筆週間角色限制嗎？`)) return;
+      try {
+        await refreshFromCloud();
+        if (!state.roleWeekdayRestrictions[ruleId]) {
+          throw new Error("這筆週間限制已不存在，請重新整理。");
+        }
+        delete state.roleWeekdayRestrictions[ruleId];
+        state = normalizeState(state);
+        await saveCloud(state);
+        if (editingWeekdayRestrictionId === ruleId) closeWeekdayRestrictionEditor();
+        render();
+        setMessage("weekdayRestrictionsMessage", "已刪除週間角色限制；pool 與歷史紀錄均未修改。", "ok");
+      } catch (error) {
+        setMessage("weekdayRestrictionsMessage", error.message, "danger");
+      }
+    }
+
     function renderMemberMaster() {
       const ready = usesMemberIdentity();
       const members = Object.values(normalizeMembersMaster(state.members))
@@ -1341,6 +1559,7 @@
       renderPoolView("cabin4PoolView", state.cabin4Pool);
       renderPoolControls();
       Object.keys(ROLE_EXCLUSION_CONFIG).forEach(renderRoleExclusions);
+      renderWeekdayRestrictions();
       const selectedDate = $("drawDate").value || todayString();
       const record = state.history.find(x => x.date === selectedDate) || state.history[0];
       setCurrentRecord(record);
@@ -2557,6 +2776,16 @@
       $("cabin4PoolRemoveBtn").addEventListener("click", () => removeSelectedMemberFromPool("cabin4Pool", "cabin4PoolRemoveSelect"));
       Object.keys(ROLE_EXCLUSION_CONFIG).forEach(role => {
         $(`${role}ExcludedAddBtn`).addEventListener("click", () => addRoleExcludedMember(role));
+      });
+      $("newWeekdayRestrictionBtn").addEventListener("click", () =>
+        openWeekdayRestrictionEditor());
+      $("cancelWeekdayRestrictionBtn").addEventListener("click",
+        closeWeekdayRestrictionEditor);
+      $("saveWeekdayRestrictionBtn").addEventListener("click", saveWeekdayRestriction);
+      $("weekdaySundayOnlyBtn").addEventListener("click", () => {
+        document.querySelectorAll(".weekday-block-checkbox").forEach(input => {
+          input.checked = input.value !== "7";
+        });
       });
 
       $("resetPoolsBtn").addEventListener("click", async () => {

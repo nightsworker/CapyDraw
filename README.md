@@ -55,6 +55,12 @@ node functions/scripts/memberIdentityDryRun.js <main.json> <lineBindings.json>
 
 船長與第四船艙的來源是 active member IDs，守護來源是 active `highWarMemberIds`；三個 pool、抽籤人數、消耗與 history semantics 不變。會員改名不需要也不允許重寫 exclusion；停用時只從目前可抽來源與 pool 移除，history 與 binding 保留。重置 pool 不會清除 exclusion，舊 history 也不會因設定變動而改寫。特別日固定守護或第四船艙若命中 exclusion，抽籤會明確停止並要求管理者調整，不會繞過排除設定。
 
+### 週間角色限制
+
+週間限制與永久角色排除是兩套獨立規則。`guildDraw/main/roleWeekdayRestrictions/{ruleId}` 每筆保存 `{ memberId, roles, blockedWeekdays }`；`roles` 僅支援 `captain`、`guardian`、`cabin4`，星期固定以 `1 = Monday` 至 `7 = Sunday` 保存。規則只綁 numeric `memberId`，因此改名不影響；會員 `active=false` 時規則保留，重新啟用後繼續生效。
+
+抽籤以所選日期的 `Asia/Taipei` 星期判斷，候選人依序套用原有角色來源、永久排除、週間限制與當日角色衝突。週間限制只會額外移除資格，不能重新授權永久排除者，也不修改 pool、fairness、角色人數或 history。特別日固定守護／第四船艙若受當日限制會安全停止並顯示明確錯誤；若任何角色因此沒有足夠人選，也不會 fallback 到受限會員。
+
 ## 新增的後端
 
 Functions v2 部署在 `asia-southeast1`（新加坡），與目前 Realtime Database 位於同一區域：

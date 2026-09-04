@@ -6,10 +6,17 @@ const path = require("node:path");
 const test = require("node:test");
 const {
   ROLE_EXCLUSION_CONFIG,
+  WEEKDAY_LABELS,
   getRoleEligibleMembers,
   getRoleExclusionSet,
+  getRoleWeekdayRestrictedMemberIds,
+  isDuplicateRoleWeekdayRestriction,
+  listRoleWeekdayRestrictions,
   normalizeRoleExclusions,
+  normalizeRoleWeekdayRestrictions,
   renameRoleExclusions,
+  taipeiWeekday,
+  validateRoleWeekdayRestriction,
 } = require("../../draw-role-exclusions");
 
 const indexSource = fs.readFileSync(path.resolve(__dirname, "../../index.html"), "utf8");
@@ -144,11 +151,11 @@ test("normalization and rename do not modify history or pool contents", () => {
 
 test("draw routing applies each role exclusion at the final eligibility step", () => {
   assert.match(indexSource,
-    /pickOneFromPool\(working, "captainPool", working\.guildMembers,[\s\S]*?getRoleExclusionSet\(working, "captain"\)/u);
+    /pickOneFromPool\(working, "captainPool", working\.guildMembers,[\s\S]*?getRoleExclusionSet\(working, "captain", \[\], date\)/u);
   assert.match(indexSource,
-    /pickOneFromPool\(working, "guardianPool", working\.highWarMembers,[\s\S]*?getRoleExclusionSet\(working, "guardian", \[captain\]\)/u);
+    /pickOneFromPool\(working, "guardianPool", working\.highWarMembers,[\s\S]*?getRoleExclusionSet\(working, "guardian", \[captain\], date\)/u);
   assert.match(indexSource,
-    /getRoleExclusionSet\(working, "cabin4", \[captain, guardian, \.\.\.cabin4\]\)/u);
+    /getRoleExclusionSet\([\s\S]*?working, "cabin4", \[captain, guardian, \.\.\.cabin4\], date\)/u);
 });
 
 test("adding an exclusion never removes the member from a role pool", () => {
@@ -187,5 +194,196 @@ test("UI exposes three separate authenticated role exclusion controls", () => {
 
 test("special-day fixed roles fail safely instead of bypassing exclusions", () => {
   assert.match(indexSource, /特別日固定守護目前在守護排除名單中/u);
-  assert.match(indexSource, /特別日固定船艙 4 包含已排除成員/u);
+  assert.match(indexSource, /設定為不可擔任守護/u);
+  assert.match(indexSource, /特別日固定第四船艙包含永久排除成員/u);
+  assert.match(indexSource, /特別日固定第四船艙包含今天不可擔任的成員/u);
+});
+
+function weekdayState(overrides = {}) {
+  return {
+    guildMembers: ["100", "200", "300", "400", "500", "600", "700", "800"],
+    highWarMembers: ["100", "200", "300", "400", "500", "600"],
+    captainPool: ["100", "200", "300", "400", "500", "600", "700", "800"],
+    guardianPool: ["100", "200", "300", "400", "500", "600"],
+    cabin4Pool: ["100", "200", "300", "400", "500", "600", "700", "800"],
+    captainExcludedMembers: [],
+    guardianExcludedMembers: [],
+    cabin4ExcludedMembers: [],
+    roleWeekdayRestrictions: {},
+    history: [{id: "past", captain: "100"}],
+    ...overrides,
+  };
+}
+
+function rule(memberId, roles, blockedWeekdays) {
+  return {memberId, roles, blockedWeekdays};
+}
+
+test("Monday captain restriction blocks only Monday and allows Tuesday", () => {
+  const state = weekdayState({
+    roleWeekdayRestrictions: {r1: rule("100", ["captain"], [1])},
+  });
+  assert.equal(getRoleEligibleMembers(state, "captain", "2026-09-07").includes("100"), false);
+  assert.equal(getRoleEligibleMembers(state, "captain", "2026-09-08").includes("100"), true);
+});
+
+test("Sunday-only cabin member is blocked Monday through Saturday and eligible Sunday", () => {
+  const state = weekdayState({
+    roleWeekdayRestrictions: {sundayOnly: rule("100", ["cabin4"], [1, 2, 3, 4, 5, 6])},
+  });
+  for (const date of ["2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10",
+    "2026-09-11", "2026-09-12"]) {
+    assert.equal(getRoleEligibleMembers(state, "cabin4", date).includes("100"), false);
+  }
+  assert.equal(getRoleEligibleMembers(state, "cabin4", "2026-09-06").includes("100"), true);
+});
+
+test("guardian weekday restriction retains high-war source semantics", () => {
+  const state = weekdayState({
+    roleWeekdayRestrictions: {r1: rule("200", ["guardian"], [1])},
+  });
+  assert.equal(getRoleEligibleMembers(state, "guardian", "2026-09-07").includes("200"), false);
+  assert.equal(getRoleEligibleMembers(state, "captain", "2026-09-07").includes("200"), true);
+  assert.equal(getRoleEligibleMembers(state, "guardian", "2026-09-07").includes("700"), false);
+});
+
+test("one rule can block multiple roles without affecting another role", () => {
+  const state = weekdayState({
+    roleWeekdayRestrictions: {r1: rule("300", ["captain", "guardian"], [1])},
+  });
+  assert.equal(getRoleEligibleMembers(state, "captain", "2026-09-07").includes("300"), false);
+  assert.equal(getRoleEligibleMembers(state, "guardian", "2026-09-07").includes("300"), false);
+  assert.equal(getRoleEligibleMembers(state, "cabin4", "2026-09-07").includes("300"), true);
+});
+
+test("multiple matching rules use order-independent union semantics", () => {
+  const left = weekdayState({roleWeekdayRestrictions: {
+    first: rule("400", ["captain"], [1]), second: rule("500", ["captain"], [1]),
+  }});
+  const right = weekdayState({roleWeekdayRestrictions: {
+    second: rule("500", ["captain"], [1]), first: rule("400", ["captain"], [1]),
+  }});
+  assert.deepEqual([...getRoleWeekdayRestrictedMemberIds(left, "captain", "2026-09-07")].sort(),
+    ["400", "500"]);
+  assert.deepEqual([...getRoleWeekdayRestrictedMemberIds(right, "captain", "2026-09-07")].sort(),
+    ["400", "500"]);
+});
+
+test("permanent exclusion remains effective on a weekday not blocked by the rule", () => {
+  const state = weekdayState({
+    cabin4ExcludedMembers: ["100"],
+    roleWeekdayRestrictions: {sundayOnly: rule("100", ["cabin4"], [1, 2, 3, 4, 5, 6])},
+  });
+  assert.equal(getRoleEligibleMembers(state, "cabin4", "2026-09-06").includes("100"), false);
+});
+
+test("rules remain bound to memberId when the current game name changes", () => {
+  const restrictions = normalizeRoleWeekdayRestrictions({
+    r1: rule("1493451", ["cabin4"], [1]),
+  });
+  const members = {1493451: {memberId: "1493451", gameName: "新名稱", active: true}};
+  assert.equal(restrictions.r1.memberId, "1493451");
+  assert.equal(members[restrictions.r1.memberId].gameName, "新名稱");
+});
+
+test("inactive member keeps its rule but is absent from base eligibility", () => {
+  const state = weekdayState({
+    guildMembers: ["200", "300", "400", "500", "600", "700", "800"],
+    roleWeekdayRestrictions: {r1: rule("100", ["cabin4"], [1])},
+  });
+  assert.equal(listRoleWeekdayRestrictions(state)[0].memberId, "100");
+  assert.equal(getRoleEligibleMembers(state, "cabin4", "2026-09-08").includes("100"), false);
+});
+
+test("reactivating a member restores normal eligibility while retaining its rule", () => {
+  const inactive = weekdayState({
+    guildMembers: ["200", "300", "400", "500", "600", "700", "800"],
+    roleWeekdayRestrictions: {r1: rule("100", ["cabin4"], [1])},
+  });
+  const active = {...inactive, guildMembers: ["100", ...inactive.guildMembers]};
+  assert.equal(getRoleEligibleMembers(active, "cabin4", "2026-09-08").includes("100"), true);
+  assert.equal(getRoleEligibleMembers(active, "cabin4", "2026-09-07").includes("100"), false);
+});
+
+test("Asia/Taipei weekday helper uses canonical Monday=1 through Sunday=7", () => {
+  assert.deepEqual(WEEKDAY_LABELS, {1: "週一", 2: "週二", 3: "週三", 4: "週四",
+    5: "週五", 6: "週六", 7: "週日"});
+  assert.equal(taipeiWeekday("2026-09-07"), 1);
+  assert.equal(taipeiWeekday("2026-09-06"), 7);
+});
+
+test("UTC Saturday crossing Taipei midnight is evaluated as Sunday", () => {
+  assert.equal(new Date("2026-09-05T16:30:00.000Z").getUTCDay(), 6);
+  assert.equal(taipeiWeekday(new Date("2026-09-05T16:30:00.000Z")), 7);
+  const state = weekdayState({
+    roleWeekdayRestrictions: {sunday: rule("100", ["captain"], [7])},
+  });
+  assert.equal(getRoleEligibleMembers(
+    state, "captain", new Date("2026-09-05T16:30:00.000Z")).includes("100"), false);
+});
+
+test("empty weekday-restricted candidate set fails closed without fallback", () => {
+  const blocked = weekdayState({
+    guildMembers: ["100"],
+    roleWeekdayRestrictions: {r1: rule("100", ["captain"], [1])},
+  });
+  assert.deepEqual(getRoleEligibleMembers(blocked, "captain", "2026-09-07"), []);
+  assert.match(indexSource, /沒有可擔任船長的成員，請檢查永久排除與週間限制/u);
+});
+
+test("weekday schema accepts only memberId, supported roles, and canonical weekdays", () => {
+  assert.equal(validateRoleWeekdayRestriction(
+    rule("1493451", ["cabin4"], [1, 2, 3, 4, 5, 6])).ok, true);
+  assert.equal(validateRoleWeekdayRestriction(
+    rule("萬朔夜", ["cabin4"], [1])).reason, "invalid-member-id");
+  assert.equal(validateRoleWeekdayRestriction(rule("1493451", [], [1])).reason, "missing-role");
+  assert.equal(validateRoleWeekdayRestriction(
+    rule("1493451", ["cabin4"], [0, 8])).reason, "missing-weekday");
+});
+
+test("normalization preserves history and all pool arrays", () => {
+  const state = weekdayState({roleWeekdayRestrictions: {
+    r1: rule("100", ["cabin4"], [6, 1, 1]),
+  }});
+  const normalized = normalizeRoleWeekdayRestrictions(state.roleWeekdayRestrictions);
+  assert.deepEqual(normalized.r1.blockedWeekdays, [1, 6]);
+  assert.deepEqual(state.history, [{id: "past", captain: "100"}]);
+  assert.deepEqual(state.captainPool, ["100", "200", "300", "400", "500", "600", "700", "800"]);
+});
+
+test("duplicate detection ignores rule ordering and supports editing the same rule", () => {
+  const state = weekdayState({roleWeekdayRestrictions: {
+    r1: rule("100", ["captain", "cabin4"], [1, 2]),
+  }});
+  const duplicate = rule("100", ["cabin4", "captain"], [2, 1]);
+  assert.equal(isDuplicateRoleWeekdayRestriction(state, duplicate), true);
+  assert.equal(isDuplicateRoleWeekdayRestriction(state, duplicate, "r1"), false);
+});
+
+test("weekday UI uses member master and separate role/weekday checkboxes", () => {
+  for (const id of ["newWeekdayRestrictionBtn", "weekdayRestrictionMemberId",
+    "saveWeekdayRestrictionBtn", "weekdayRestrictionsView"]) {
+    assert.match(indexSource, new RegExp(`id="${id}"`, "u"));
+  }
+  assert.match(indexSource, /class="weekday-role-checkbox requires-member-master"/u);
+  assert.match(indexSource, /class="weekday-block-checkbox requires-member-master"/u);
+  assert.match(indexSource, /roleWeekdayRestrictions: normalizeRoleWeekdayRestrictions/u);
+});
+
+test("weekday restriction CRUD never modifies history, pools, or LINE state", () => {
+  const handlers = indexSource.match(
+    /async function saveWeekdayRestriction[\s\S]*?(?=\n    async function addMember)/u);
+  assert.ok(handlers);
+  assert.doesNotMatch(handlers[0], /state\.(?:history|captainPool|guardianPool|cabin4Pool|lineBindings)\s*=/u);
+  assert.match(handlers[0], /state\.roleWeekdayRestrictions\[ruleId\] = validation\.rule/u);
+  assert.match(handlers[0], /delete state\.roleWeekdayRestrictions\[ruleId\]/u);
+});
+
+test("weekday eligibility leaves role pool order and fairness state untouched", () => {
+  const state = weekdayState({roleWeekdayRestrictions: {
+    r1: rule("100", ["captain"], [1]),
+  }});
+  const before = JSON.stringify(state);
+  getRoleEligibleMembers(state, "captain", "2026-09-07");
+  assert.equal(JSON.stringify(state), before);
 });
