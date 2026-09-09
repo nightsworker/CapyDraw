@@ -12,8 +12,9 @@ const {
   renderScheduleCore,
   stableRetryKey,
   taipeiDateKey,
+  weekdayForDate,
 } = require("./lineSchedule");
-const {buildDrawLineMessage} = require("./line");
+const {buildDrawLineMessage, formatDrawDate} = require("./line");
 const {isDrawPublishedToLine} = require("./drawKnowledge");
 const {
   listHistoryEntries,
@@ -29,6 +30,14 @@ const TERMINAL_RUN_STATUSES = new Set([
   "ambiguous-draw-records",
   "skipped-already-published",
 ]);
+
+const WEEKDAY_LABELS = Object.freeze(["", "一", "二", "三", "四", "五", "六", "日"]);
+
+function formatDrawDateWithWeekday(value) {
+  const weekday = weekdayForDate(value);
+  const suffix = weekday ? ` 星期${WEEKDAY_LABELS[weekday]}` : "";
+  return `${formatDrawDate(value)}${suffix}`;
+}
 
 function safeRunError(error) {
   return String(error && (error.code || error.lineStatus || error.name) || "unknown-error")
@@ -314,6 +323,14 @@ async function dispatchTomorrowDraw({
   }
   try {
     const rendered = buildDrawLineMessage(selection.record, bindings || {}, defaultGroupId);
+    const message = {
+      ...rendered.message,
+      text: [
+        `📅 明日抽籤（${formatDrawDateWithWeekday(occurrence.targetDrawDate)}）`,
+        "",
+        rendered.message.text,
+      ].join("\n"),
+    };
     const pending = buildPendingAnnouncement({
       id: pendingAnnouncementId("draw", occurrence.runKey),
       type: "draw",
@@ -322,7 +339,7 @@ async function dispatchTomorrowDraw({
       drawRecordId: selection.record.id,
       runKey: occurrence.runKey,
       runPath: `guildDraw/lineSchedules/tomorrowRuns/${occurrence.runKey}`,
-      message: rendered.message,
+      message,
       warning: rendered.unboundMembers.length ?
         `unbound:${rendered.unboundMembers.join(",")}`.slice(0, 500) : null,
       createdAt: now.toISOString(),

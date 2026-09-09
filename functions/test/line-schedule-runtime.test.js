@@ -195,6 +195,8 @@ test("tomorrow draw due creates one pending without publishing", async () => {
   assert.equal(pending.items.length, 1);
   assert.equal(pending.items[0].type, "draw");
   assert.equal(pending.items[0].drawRecordId, "draw-2026-08-15");
+  assert.match(pending.items[0].message.text,
+    /^📅 明日抽籤（8\/15 星期六）\n\n8\/15船長：/u);
   assert.equal(pending.items[0].expiresAt, null);
   assert.equal(isDrawPublishedToLine(historyRef.value()[0]), false);
 });
