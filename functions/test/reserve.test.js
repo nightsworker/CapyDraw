@@ -108,3 +108,39 @@ test("next date preserves pending order and never repeats a player who already f
   assert.equal(result.length, 5);
   assert.ok(!result.includes("I"));
 });
+
+test("global reserves can be drawn and used without any draw date or history", () => {
+  const result = JSON.parse(run(`
+    randomIndex = n => n - 1;
+    const w = normalizeState({guildMembers:['A','B','C','D','E','F','G'],presidentName:'P',reserveRecordId:'legacy-date'});
+    fillReserves(w);
+    const before = [...w.reserveQueue];
+    consumeReserve(w);
+    JSON.stringify({before,queue:w.reserveQueue,uses:w.reserveUses,history:w.history});
+  `));
+  assert.equal(result.before.length, 5);
+  assert.deepEqual(result.queue, result.before.slice(1));
+  assert.equal(result.uses[0].member, result.before[0]);
+  assert.equal(result.uses[0].replaced, "");
+  assert.deepEqual(result.history, []);
+});
+
+test("selected draw date never gates or chooses the global reserve operation", () => {
+  const handler = source.slice(source.indexOf('      $("fillReservesBtn").addEventListener'), source.indexOf('      $("drawBtn").addEventListener'));
+  assert.doesNotMatch(handler, /currentRecordId|reserveRecordId|drawDate/);
+  assert.match(handler, /todayString\(\)/);
+  assert.doesNotMatch(source, /請選擇目前補位所屬的抽籤日期/);
+});
+
+test("global FIFO ignores legacy date ownership and blocks same-day used members on refill", () => {
+  const result = JSON.parse(run(`
+    randomIndex = n => n - 1;
+    const w = normalizeState({guildMembers:['A','B','C','D','E','F','G'],presidentName:'P',reserveQueue:['A','B','C','D','E'],reserveRecordId:'old'});
+    consumeReserve(w);
+    fillReserves(w);
+    JSON.stringify({queue:w.reserveQueue,uses:w.reserveUses});
+  `));
+  assert.ok(!result.queue.includes("A"));
+  assert.equal(result.queue.length, 5);
+  assert.deepEqual(result.queue.slice(0, 4), ["B", "C", "D", "E"]);
+});

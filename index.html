@@ -206,7 +206,8 @@
           </div>
           <button class="btn requires-auth" id="drawBtn">開始抽籤</button>
         </div>
-        <button class="btn secondary requires-auth" id="fillReservesBtn">抽補位（補滿 5 人）</button>
+        <button class="btn secondary requires-auth" id="fillReservesBtn">抽全域補位（補滿 5 人）</button>
+        <div id="reservePanel"></div>
         <div class="message" id="drawMessage"></div>
         <div class="current-result" id="currentResult"><p class="empty">尚未載入資料。</p></div>
         <div class="actions">
@@ -646,7 +647,7 @@
       guardianPool: [],
       reservePool: [],
       reserveQueue: [],
-      reserveRecordId: null,
+      reserveUses: [],
       cabin4Pool: [],
       captainExcludedMembers: [],
       guardianExcludedMembers: [],
@@ -854,26 +855,27 @@
       working.reserveQueue = reserveReferences(working, working.reserveQueue).filter(ref => allowed.has(ref) || (ref === president && presidentEligible)).slice(0, 5);
     }
 
-    function fillReserves(working, record) {
+    function fillReserves(working, record = null) {
       syncReserveState(working);
-      const identity = record.memberIdentity;
-      const aboard = new Set(identity ? [identity.captain.memberId, identity.guardian.memberId, ...identity.cabin4.map(m => m.memberId)] : [record.captain, record.guardian, ...record.cabin4]);
-      (record.reserveUses || []).forEach(use => aboard.add(use.memberId || use.member));
-      const allowed = getReserveEligibleMembers(working, record.date);
+      const date = record ? record.date : todayString();
+      const identity = record && record.memberIdentity;
+      const aboard = new Set(identity ? [identity.captain.memberId, identity.guardian.memberId, ...identity.cabin4.map(m => m.memberId)] : record ? [record.captain, record.guardian, ...record.cabin4] : []);
+      [...(record && record.reserveUses || []), ...(working.reserveUses || []).filter(use => use.date === date)].forEach(use => aboard.add(use.memberId || use.member));
+      const allowed = getReserveEligibleMembers(working, date);
       const eligible = new Set(allowed);
       const president = presidentReference(working);
-      const presidentEligible = president && !getRoleExclusionSet(working, "cabin4", [], record.date).has(president) &&
+      const presidentEligible = president && !getRoleExclusionSet(working, "cabin4", [], date).has(president) &&
         (!usesMemberIdentity(working) || working.guildMembers.includes(president));
       working.reserveQueue = working.reserveQueue.filter(ref => !aboard.has(ref) && (eligible.has(ref) || (ref === president && presidentEligible)));
       while (working.reserveQueue.length < 5) {
         const excluded = new Set([...aboard, ...working.reserveQueue]);
         let picked;
         if (presidentEligible && !excluded.has(president) && randomIndex(100) < 30) picked = president;
-        else if (allowed.some(ref => !excluded.has(ref))) picked = pickOneFromPool(working, "reservePool", getReserveEligibleMembers(working), new Set([...excluded, ...getRoleExclusionSet(working, "cabin4", [], record.date)]));
+        else if (allowed.some(ref => !excluded.has(ref))) picked = pickOneFromPool(working, "reservePool", getReserveEligibleMembers(working), new Set([...excluded, ...getRoleExclusionSet(working, "cabin4", [], date)]));
         else break;
         working.reserveQueue.push(picked);
       }
-      working.reserveRecordId = record.id;
+      if (!record) return;
       record.reserves = working.reserveQueue.map(ref => legacyPlayerNameForReference(ref, working));
       record.reserveRemaining = [...record.reserves];
       if (identity) identity.reserves = working.reserveQueue.map(ref => createHistoryMemberSnapshot(working.members[ref]));
@@ -1227,7 +1229,7 @@
         <div class="result-line"><div class="result-role">守護天使</div><div class="result-name">${escapeHtml(historyMemberDisplay(record, "guardian"))}</div></div>
         <div class="result-line"><div class="result-role">船艙 4</div><div class="member-list">${historyCabinDisplays(record).map(name => `<span class="member-chip">${escapeHtml(name)}</span>`).join("")}</div></div>
         ${record.specialDay ? `<div class="message warn">特別日規則：船艙抽籤只扣船長池；守護天使池與船艙 4 池不扣，補位池照常扣除。</div>` : ""}
-        <div class="result-line"><div class="result-role">補位順序</div><ol>${(record.id === state.reserveRecordId ? state.reserveQueue.map(ref => displayMemberReference(ref)) : (record.reserveRemaining || record.reserves || [])).map(name => `<li>${escapeHtml(name)}</li>`).join("") || "尚無補位名單"}</ol></div>
+        <div class="result-line"><div class="result-role">當次補位快照</div><ol>${(record.reserveRemaining || record.reserves || []).map(name => `<li>${escapeHtml(name)}</li>`).join("") || "尚無補位快照"}</ol></div>
         ${record.lineReserves ? `<div class="hint">LINE 通知補位：${record.lineReserves.map((name, i) => `${i + 1}. ${escapeHtml(name)}`).join("、")}</div>` : ""}
         ${(record.reserveUses || []).map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${escapeHtml(use.member)} 補上${use.replaced ? `，替補 ${escapeHtml(use.replaced)}` : "（未指定對象）"}</div>`).join("")}
         ${warnings}
@@ -1239,16 +1241,18 @@
       currentRecordId = record && record.id ? record.id : null;
       $("currentResult").innerHTML = renderRecord(record);
       bindDetailButtons();
-      renderReserveControls(record);
+      renderReserveControls();
       updateAccessUi();
     }
 
-    function renderReserveControls(record) {
-      if (!record || record.id !== state.reserveRecordId || !state.reserveQueue.length) return;
+    function renderReserveControls() {
+      const record = state.history.find(r => r.date === todayString());
+      $("reservePanel").innerHTML = `<h3>全域補位順序</h3><p class="hint">所有日期共用這份名單，切換抽籤日期不會更換補位。</p><ol>${state.reserveQueue.map(ref => `<li>${escapeHtml(displayMemberReference(ref))}</li>`).join("")}</ol>${state.reserveQueue.length ? "" : '<p class="empty">尚無補位，可直接按「抽全域補位」。</p>'}${(state.reserveUses || []).slice(-5).reverse().map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${escapeHtml(use.member)} 補上${use.replaced ? `，替補 ${escapeHtml(use.replaced)}` : "（未指定對象）"}</div>`).join("")}`;
+      if (!state.reserveQueue.length) return;
       const box = document.createElement("div");
       box.className = "actions";
-      box.innerHTML = `<span>目前 #1：${escapeHtml(displayMemberReference(state.reserveQueue[0]))}</span><select id="reserveReplaceSelect" class="requires-auth-control"><option value="">不指定替補對象</option>${record.cabin4.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}</select><button id="useReserveBtn" class="btn requires-auth">補上</button>`;
-      $("currentResult").appendChild(box);
+      box.innerHTML = `<span>目前 #1：${escapeHtml(displayMemberReference(state.reserveQueue[0]))}</span><select id="reserveReplaceSelect" class="requires-auth-control"><option value="">不指定替補對象</option>${(record ? record.cabin4 : []).map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}</select><button id="useReserveBtn" class="btn requires-auth">補上</button>`;
+      $("reservePanel").appendChild(box);
       $("useReserveBtn").addEventListener("click", async () => {
         const expected = state.reserveQueue[0];
         const replaced = $("reserveReplaceSelect").value;
@@ -1256,9 +1260,9 @@
           if (!isUnlocked) throw new Error("請先解鎖操作。");
           await refreshFromCloud();
           const working = clone(state);
-          const target = working.history.find(r => r.id === record.id);
-          if (!target || working.reserveRecordId !== record.id || working.reserveQueue[0] !== expected) throw new Error("補位名單已變更，請重新操作。");
-          if (!confirm(`確定由 ${expected} 補上${replaced ? `，替補 ${replaced}` : "（未指定對象）"}？`)) return;
+          const target = working.history.find(r => r.date === todayString()) || null;
+          if (working.reserveQueue[0] !== expected) throw new Error("補位名單已變更，請重新操作。");
+          if (!confirm(`確定由 ${displayMemberReference(expected, working)} 補上${replaced ? `，替補 ${replaced}` : "（未指定對象）"}？`)) return;
           consumeReserve(working, target, replaced);
           await saveCloud(working);
           state = normalizeState(working);
@@ -1268,12 +1272,16 @@
       });
     }
 
-    function consumeReserve(working, record, replaced = "") {
-      if (working.reserveRecordId !== record.id || !working.reserveQueue.length) throw new Error("目前沒有可補上的人選。");
-      if (replaced && !record.cabin4.includes(replaced)) throw new Error("替補對象必須是當天第四船艙成員。");
+    function consumeReserve(working, record = null, replaced = "") {
+      if (!working.reserveQueue.length) throw new Error("目前沒有可補上的人選。");
+      if (replaced && (!record || !record.cabin4.includes(replaced))) throw new Error("替補對象必須是當天第四船艙成員。");
       const member = working.reserveQueue.shift();
-      record.reserveRemaining = working.reserveQueue.map(ref => legacyPlayerNameForReference(ref, working));
-      record.reserveUses = [...(record.reserveUses || []), {member: legacyPlayerNameForReference(member, working), ...(usesMemberIdentity(working) ? {memberId: member} : {}), replaced, at: new Date().toISOString()}];
+      const use = {member: legacyPlayerNameForReference(member, working), ...(usesMemberIdentity(working) ? {memberId: member} : {}), replaced, date: record ? record.date : todayString(), at: new Date().toISOString()};
+      working.reserveUses = [...(working.reserveUses || []), use];
+      if (record) {
+        record.reserveRemaining = working.reserveQueue.map(ref => legacyPlayerNameForReference(ref, working));
+        record.reserveUses = [...(record.reserveUses || []), use];
+      }
     }
 
     function filteredHistory() {
@@ -2818,12 +2826,9 @@
       $("fillReservesBtn").addEventListener("click", async () => {
         try {
           if (!isUnlocked) throw new Error("請先解鎖操作。");
-          const recordId = currentRecordId;
           await refreshFromCloud();
           const working = clone(state);
-          const record = working.history.find(r => r.id === recordId);
-          if (!record) throw new Error("請先抽出當天船艙。");
-          if (working.reserveRecordId && working.reserveRecordId !== record.id) throw new Error("請選擇目前補位所屬的抽籤日期。");
+          const record = working.history.find(r => r.date === todayString()) || null;
           fillReserves(working, record);
           await saveCloud(working);
           state = normalizeState(working);
