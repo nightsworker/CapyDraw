@@ -76,7 +76,9 @@ async function finishDownstreamState({db, item, drawState, sentAt}) {
   const warnings = [];
   if (item.type === "draw" && drawState) {
     try {
-      await markDrawPublished(drawState.recordRef, {sentAt, deliveryMode: "reply"});
+      await markDrawPublished(drawState.recordRef, {
+        sentAt, deliveryMode: "reply", reserveSnapshot: item.reserveSnapshot || null,
+      });
       await finishDrawClaim(drawState.claimRef, drawState.claim, "sent", {
         now: new Date(sentAt),
       });

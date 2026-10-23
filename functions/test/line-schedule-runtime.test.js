@@ -174,13 +174,27 @@ test("manual LINE failure never writes publication success", async () => {
   assert.equal(isDrawPublishedToLine(historyRef.value()[0]), false);
 });
 
+test("manual delivery freezes reserve snapshot even if the queue changes during push", async () => {
+  const historyRef = memoryRef([drawRecord({reserves: ["Reserve - Original"]})]);
+  await sendDrawLineRecord({
+    historyRef, claimsRef: memoryRef({}), recordId: "draw-2026-08-15",
+    groupId: "G", bindings: {}, owner: "manual", allowRepublish: true,
+    pushMessage: async ({messages}) => {
+      assert.match(messages[0].text, /1\. @Reserve/u);
+      await historyRef.child("0").update({reserves: ["Other - New"]});
+    },
+  });
+  assert.deepEqual(historyRef.value()[0].lineReserves, ["Reserve - Original"]);
+  assert.deepEqual(historyRef.value()[0].reserves, ["Other - New"]);
+});
+
 test("tomorrow automation disabled does nothing", async () => {
   const result = await dispatchTomorrowDraw({settings: {enabled: false}, now: new Date()});
   assert.equal(result.status, "disabled");
 });
 
 test("tomorrow draw due creates one pending without publishing", async () => {
-  const historyRef = memoryRef([drawRecord()]);
+  const historyRef = memoryRef([drawRecord({reserves: ["Reserve - Player"]})]);
   const pending = pendingCollector();
   const result = await dispatchTomorrowDraw({
     settings: {enabled: true, time: "21:00"},
@@ -195,6 +209,8 @@ test("tomorrow draw due creates one pending without publishing", async () => {
   assert.equal(pending.items.length, 1);
   assert.equal(pending.items[0].type, "draw");
   assert.equal(pending.items[0].drawRecordId, "draw-2026-08-15");
+  assert.deepEqual(pending.items[0].reserveSnapshot.names, ["Reserve - Player"]);
+  assert.match(pending.items[0].message.text, /1\. @Reserve/u);
   assert.match(pending.items[0].message.text,
     /^📅 明日抽籤（8\/15 星期六）\n\n8\/15船長：/u);
   assert.equal(pending.items[0].expiresAt, null);

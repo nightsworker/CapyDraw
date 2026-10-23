@@ -337,6 +337,12 @@ async function dispatchTomorrowDraw({
       scheduledFor: occurrence.scheduledFor,
       occurrenceDate: occurrence.occurrenceDate,
       drawRecordId: selection.record.id,
+      reserveSnapshot: {
+        names: selection.record.lineReserves || selection.record.reserves || [],
+        identity: selection.record.lineReserveIdentity ||
+          (selection.record.memberIdentity && selection.record.memberIdentity.reserves) ||
+          selection.record.lineReserves || selection.record.reserves || [],
+      },
       runKey: occurrence.runKey,
       runPath: `guildDraw/lineSchedules/tomorrowRuns/${occurrence.runKey}`,
       message,
