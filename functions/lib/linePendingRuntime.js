@@ -32,7 +32,7 @@ function replyPayload(normalMessages, pendingMessages) {
   return [...normal, ...pending].slice(0, 5);
 }
 
-async function prepareClaimedPending({claim, historyRef, drawClaimsRef, now}) {
+async function prepareClaimedPending({claim, historyRef, drawClaimsRef, now, renderDraw}) {
   const ready = [];
   const cancelledIds = [];
   const releasedIds = [];
@@ -67,7 +67,7 @@ async function prepareClaimedPending({claim, historyRef, drawClaimsRef, now}) {
       continue;
     }
     drawClaims.set(item.id, {claim: drawClaim, recordRef: historyRef.child(found.key)});
-    ready.push(item);
+    ready.push(renderDraw ? await renderDraw(found.record, item) : item);
   }
   return {ready, cancelledIds, releasedIds, drawClaims};
 }
@@ -123,6 +123,8 @@ async function consumePendingAnnouncements({
   defaultGroupId,
   normalMessages = [],
   sendReply,
+  ensurePlans,
+  renderDraw,
   now = new Date(),
 } = {}) {
   const normal = normalReplyMessages(normalMessages);
@@ -147,8 +149,9 @@ async function consumePendingAnnouncements({
   }
 
   const historyRef = db.ref("guildDraw/main/history");
+  if (ensurePlans && claim.items.some(item => item.type === "draw")) await ensurePlans();
   const drawClaimsRef = db.ref("guildDraw/lineSchedules/drawClaims");
-  const prepared = await prepareClaimedPending({claim, historyRef, drawClaimsRef, now});
+  const prepared = await prepareClaimedPending({claim, historyRef, drawClaimsRef, now, renderDraw});
   for (const [itemId, value] of prepared.drawClaims.entries()) {
     value.claimRef = drawClaimsRef.child(drawClaimKey(
       prepared.ready.find((item) => item.id === itemId).drawRecordId));

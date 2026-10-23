@@ -322,7 +322,7 @@ async function dispatchTomorrowDraw({
       previousStatus: claim.previousStatus || null};
   }
   try {
-    const rendered = buildDrawLineMessage(selection.record, bindings || {}, defaultGroupId);
+    const rendered = buildDrawLineMessage(selection.record, bindings || {}, defaultGroupId, {useCurrentReserves: true});
     const message = {
       ...rendered.message,
       text: [
@@ -338,10 +338,9 @@ async function dispatchTomorrowDraw({
       occurrenceDate: occurrence.occurrenceDate,
       drawRecordId: selection.record.id,
       reserveSnapshot: {
-        names: selection.record.lineReserves || selection.record.reserves || [],
-        identity: selection.record.lineReserveIdentity ||
-          (selection.record.memberIdentity && selection.record.memberIdentity.reserves) ||
-          selection.record.lineReserves || selection.record.reserves || [],
+        names: selection.record.reserves || [],
+        identity: (selection.record.memberIdentity && selection.record.memberIdentity.reserves) ||
+          selection.record.reserves || [],
       },
       runKey: occurrence.runKey,
       runPath: `guildDraw/lineSchedules/tomorrowRuns/${occurrence.runKey}`,

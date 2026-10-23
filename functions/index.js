@@ -17,6 +17,7 @@ const {
   processMiaobingAiRequest,
 } = require("./lib/ai");
 const {reserveAiUsage} = require("./lib/aiRateLimit");
+const {syncReservePlans, renderPendingDraw} = require("./lib/reserveRuntime");
 const {
   loadPublishedDrawKnowledge,
   planPublishedDrawQuery,
@@ -1423,6 +1424,9 @@ async function processLineWebhookEventWithPending(event, payload, token) {
       event,
       defaultGroupId,
       normalMessages: collector.messages,
+      ensurePlans: () => syncReservePlans(db.ref("guildDraw/main")),
+      renderDraw: async (record, item) => renderPendingDraw(record, item,
+        (await db.ref("guildDraw/lineBindings").get()).val() || {}, defaultGroupId),
       sendReply: (messages, diagnostics) =>
         sendReplyMessagesNow(event.replyToken, messages, token, diagnostics),
     });
@@ -1502,6 +1506,7 @@ exports.sendDrawToLine = onRequest({
     json(res, 409, {ok: false, error: "尚未設定正式 LINE 群組，請先完成一筆有效綁定，或由管理員明確設定。"});
     return;
   }
+  await syncReservePlans(db.ref("guildDraw/main"));
   const outcome = await sendDrawLineRecord({
     historyRef: db.ref("guildDraw/main/history"),
     bindings: bindingsSnapshot.val() || {},
@@ -2012,6 +2017,7 @@ exports.scheduleDispatcher = onSchedule({
 }, async () => {
   const db = getDatabase();
   const now = new Date();
+  await syncReservePlans(db.ref("guildDraw/main"), now);
   const [tomorrowSnapshot, tomorrowRunsSnapshot, itemsSnapshot, runsSnapshot,
     bindingsSnapshot, settingsSnapshot] = await Promise.all([
     db.ref("guildDraw/lineSchedules/tomorrowDraw").get(),

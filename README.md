@@ -396,4 +396,14 @@ Admin endpoints：`getLineSchedules`、`createLineSchedule`、`updateLineSchedul
 
 船長與守護天使會顯示「遊戲 ID + 真正 mention」，第四船艙只顯示真正 mention。未綁定玩家會以普通 `@LINE名稱` 顯示，但不會阻止整則訊息發送；網站同時列出 `unboundMembers`。成功後 record 會新增 `lineSentAt`、`lineSendCount` 與 `lastLineSendStatus`。再次發送同一筆紀錄時，前端會先要求確認，但允許補發。
 
-LINE 的真正 mention 要求官方帳號、接收者與所有被 mention 的使用者都在同一群組；單一訊息最多 20 個 mention。本專案每次最多建立 7 個。
+LINE 的真正 mention 要求官方帳號、接收者與所有被 mention 的使用者都在同一群組；單一訊息最多 20 個 mention。船艙與 5 位補位合計最多建立 12 個。
+
+## 今日與明日補位
+
+- `reservePlanDate`、`reserveQueue` 是今日可使用的補位；`tomorrowReserveDate`、`tomorrowReserveQueue` 是明日預定名單，共用獨立的 `reservePool`。
+- 今日按「補上」只移除今日 #1，不立即補抽今日；明日若包含同一人，會同步移除並補滿。可選擇今日第四船艙替補對象，或不指定。
+- 台灣時間換日後，後端每分鐘排程先將明日名單升為今日，再依新明日的船艙結果產生新名單，無須開啟網站；重試不會重複換日。
+- 抽明日船艙只更新明日名單；提前抽後天或更晚的船艙不會改動今日與明日名單。新日期進入明日時才建立補位。
+- 舊抽籤紀錄在進入今日或明日時會自動補上補位資料。若尚無船艙結果，先建立預定補位，之後抽船艙時再剔除衝突人選。
+- LINE 排程排入及實際發送前都會使用最新明日預定名單；`lineReserves` 和 `lineReserveIdentity` 保存實際送出的版本。
+- 永久排除及星期限制依各日期套用，會長逐格 30% 入選且不在一般補位池。今日已補上的人不再進入今日或明日名單。

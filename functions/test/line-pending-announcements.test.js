@@ -12,6 +12,7 @@ const {
   pendingGroupRef,
 } = require("../lib/linePendingAnnouncements");
 const {consumePendingAnnouncements} = require("../lib/linePendingRuntime");
+const {renderPendingDraw} = require("../lib/reserveRuntime");
 const {
   isDrawPublishedToLine,
   planPublishedDrawQuery,
@@ -606,6 +607,22 @@ test("draw Reply failure remains unpublished and releases both claims", async ()
   assert.equal(pendingItem(db, pending.id).status, "pending");
   const claims = db.ref("guildDraw/lineSchedules/drawClaims").value();
   assert.equal(Object.values(claims)[0].status, "failed");
+});
+
+test("queued draw reconciles plans before loading and publishes the actual latest reserve snapshot", async () => {
+  const db = new MemoryDb({guildDraw:{main:{history:[drawRecord({reserves:["Old - Player"]})]}}});
+  await addPending(db,drawPending());
+  const calls=[];
+  const outcome=await consumePendingAnnouncements({
+    db,event:event(),defaultGroupId:GROUP_ID,
+    ensurePlans:async()=>db.ref("guildDraw/main/history/0").update({reserves:["New - Player"]}),
+    renderDraw:(record,item)=>renderPendingDraw(record,item,{},GROUP_ID),
+    sendReply:async messages=>calls.push(messages),
+  });
+  assert.equal(outcome.status,"sent-via-reply");
+  assert.match(calls[0][0].text,/1\. @New/u);
+  assert.doesNotMatch(calls[0][0].text,/@Old/u);
+  assert.deepEqual(db.ref("guildDraw/main/history/0").value().lineReserves,["New - Player"]);
 });
 
 test("manual publication while pending causes cancellation without Reply", async () => {

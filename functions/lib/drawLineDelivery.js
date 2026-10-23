@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const {isDrawPublishedToLine} = require("./drawKnowledge");
 const {buildDrawLineMessage} = require("./line");
+const {day, nextDay} = require("./reservePlans");
 const {RUN_LEASE_MS, stableRetryKey} = require("./lineSchedule");
 
 function listHistoryEntries(value) {
@@ -145,7 +146,8 @@ async function sendDrawLineRecord({
     return {status: "skipped-already-published", record: found.record};
   }
 
-  const rendered = buildDrawLineMessage(found.record, bindings || {}, groupId);
+  const useCurrentReserves = [day(now), nextDay(day(now))].includes(found.record.date);
+  const rendered = buildDrawLineMessage(found.record, bindings || {}, groupId, {useCurrentReserves});
   try {
     await pushMessage({
       to: groupId,
@@ -164,8 +166,10 @@ async function sendDrawLineRecord({
   try {
     updated = await markDrawPublished(historyRef.child(found.key), {
       sentAt: new Date().toISOString(),
-      reserveSnapshot: {names: found.record.lineReserves || found.record.reserves || [],
-        identity: found.record.lineReserveIdentity || (found.record.memberIdentity && found.record.memberIdentity.reserves) || found.record.lineReserves || found.record.reserves || []},
+      reserveSnapshot: useCurrentReserves ? {names: found.record.reserves || [],
+        identity: (found.record.memberIdentity && found.record.memberIdentity.reserves) || found.record.reserves || []} :
+        {names: found.record.lineReserves || found.record.reserves || [],
+          identity: found.record.lineReserveIdentity || (found.record.memberIdentity && found.record.memberIdentity.reserves) || found.record.lineReserves || found.record.reserves || []},
     });
   } catch (error) {
     await finishDrawClaim(claimRef, claim, "publication-pending", {

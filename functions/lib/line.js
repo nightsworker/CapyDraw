@@ -516,7 +516,7 @@ function escapeTextV2Literal(value) {
   return String(value || "").replaceAll("{", "{{").replaceAll("}", "}}");
 }
 
-function buildDrawLineMessage(record, bindings, groupId) {
+function buildDrawLineMessage(record, bindings, groupId, {useCurrentReserves = false} = {}) {
   if (!record || typeof record !== "object") throw new Error("抽籤紀錄格式不正確。");
   const substitutions = {};
   const unboundMembers = [];
@@ -546,7 +546,8 @@ function buildDrawLineMessage(record, bindings, groupId) {
   const guardianMember = identity && identity.guardian || record.guardian;
   const cabinMembers = identity && Array.isArray(identity.cabin4) ? identity.cabin4 :
     Array.isArray(record.cabin4) ? record.cabin4 : [];
-  const reserves = record.lineReserveIdentity || record.lineReserves || (identity && identity.reserves) || record.reserves || [];
+  const reserves = useCurrentReserves ? (identity && identity.reserves) || record.reserves || [] :
+    record.lineReserveIdentity || record.lineReserves || (identity && identity.reserves) || record.reserves || [];
   const lines = [
     `${escapeTextV2Literal(formatDrawDate(record.date))}船長：${renderMember(captainMember, true)}`,
     `守護天使：${renderMember(guardianMember, true)}`,
