@@ -206,6 +206,7 @@
           </div>
           <button class="btn requires-auth" id="drawBtn">開始抽籤</button>
         </div>
+        <button class="btn secondary requires-auth" id="fillReservesBtn">抽補位（補滿 5 人）</button>
         <div class="message" id="drawMessage"></div>
         <div class="current-result" id="currentResult"><p class="empty">尚未載入資料。</p></div>
         <div class="actions">
@@ -421,6 +422,7 @@
             </div>
           </div>
         </div>
+        <div class="card"><h3>補位池</h3><p class="hint">沿用第四船艙排除及週間限制，會長不在池內。每個缺額有 30% 機率抽中符合資格且不在名單的會長。</p><div class="name-cloud" id="reservePoolView"></div></div>
         <div class="actions"><button class="btn warning requires-auth" id="resetPoolsBtn">重置所有池子</button></div>
       </div>
     </section>
@@ -642,6 +644,9 @@
       presidentName: "Chia - 嘻嘻不嘻嘻",
       captainPool: [],
       guardianPool: [],
+      reservePool: [],
+      reserveQueue: [],
+      reserveRecordId: null,
       cabin4Pool: [],
       captainExcludedMembers: [],
       guardianExcludedMembers: [],
@@ -803,7 +808,7 @@
         cabin4ExcludedMembers: mapIdentityReferences(parsed.cabin4ExcludedMembers, members)
       } : {...parsed, guildMembers, highWarMembers};
       const exclusions = identityMode ? referenceState : normalizeRoleExclusions(referenceState);
-      return {
+      const normalized = {
         ...clone(defaultState),
         ...parsed,
         members,
@@ -824,6 +829,56 @@
         roleWeekdayRestrictions: normalizeRoleWeekdayRestrictions(parsed.roleWeekdayRestrictions),
         history: Array.isArray(parsed.history) ? parsed.history.map(normalizeRecord).filter(Boolean) : []
       };
+      syncReserveState(normalized);
+      return normalized;
+    }
+
+    function presidentReference(working) {
+      return usesMemberIdentity(working) ? working.presidentMemberId : working.presidentName;
+    }
+
+    function getReserveEligibleMembers(working, date) {
+      return getCabin4EligibleMembers(working, date).filter(ref => ref !== presidentReference(working));
+    }
+
+    function reserveReferences(working, values) {
+      return usesMemberIdentity(working) ? mapIdentityReferences(values || [], working.members) : uniqueStrings(values || []);
+    }
+
+    function syncReserveState(working) {
+      const allowed = new Set(getReserveEligibleMembers(working));
+      const president = presidentReference(working);
+      const presidentEligible = president && !getRoleExcludedMembers(working, "cabin4").includes(president) &&
+        (!usesMemberIdentity(working) || working.guildMembers.includes(president));
+      working.reservePool = reserveReferences(working, working.reservePool).filter(ref => allowed.has(ref));
+      working.reserveQueue = reserveReferences(working, working.reserveQueue).filter(ref => allowed.has(ref) || (ref === president && presidentEligible)).slice(0, 5);
+    }
+
+    function fillReserves(working, record) {
+      syncReserveState(working);
+      const identity = record.memberIdentity;
+      const aboard = new Set(identity ? [identity.captain.memberId, identity.guardian.memberId, ...identity.cabin4.map(m => m.memberId)] : [record.captain, record.guardian, ...record.cabin4]);
+      (record.reserveUses || []).forEach(use => aboard.add(use.memberId || use.member));
+      const allowed = getReserveEligibleMembers(working, record.date);
+      const eligible = new Set(allowed);
+      const president = presidentReference(working);
+      const presidentEligible = president && !getRoleExclusionSet(working, "cabin4", [], record.date).has(president) &&
+        (!usesMemberIdentity(working) || working.guildMembers.includes(president));
+      working.reserveQueue = working.reserveQueue.filter(ref => !aboard.has(ref) && (eligible.has(ref) || (ref === president && presidentEligible)));
+      while (working.reserveQueue.length < 5) {
+        const excluded = new Set([...aboard, ...working.reserveQueue]);
+        let picked;
+        if (presidentEligible && !excluded.has(president) && randomIndex(100) < 30) picked = president;
+        else if (allowed.some(ref => !excluded.has(ref))) picked = pickOneFromPool(working, "reservePool", getReserveEligibleMembers(working), new Set([...excluded, ...getRoleExclusionSet(working, "cabin4", [], record.date)]));
+        else break;
+        working.reserveQueue.push(picked);
+      }
+      working.reserveRecordId = record.id;
+      record.reserves = working.reserveQueue.map(ref => legacyPlayerNameForReference(ref, working));
+      record.reserveRemaining = [...record.reserves];
+      if (identity) identity.reserves = working.reserveQueue.map(ref => createHistoryMemberSnapshot(working.members[ref]));
+      record.warnings = (record.warnings || []).filter(w => !w.startsWith("補位人數不足"));
+      if (working.reserveQueue.length < 5) record.warnings.push("補位人數不足：目前合格人選無法補滿 5 人。");
     }
 
     function usesMemberIdentity(workingState = state) {
@@ -1077,6 +1132,7 @@
       const existingIndex = working.history.findIndex(record => record.date === date);
       if (existingIndex >= 0) {
         if (!allowOverwrite) return { cancelled: true, record: working.history[existingIndex] };
+        if ((working.history[existingIndex].reserveUses || []).length) throw new Error("這天已有補上紀錄，不能覆蓋抽籤結果。");
         undoRecordConsumption(working, working.history[existingIndex]);
         working.history.splice(existingIndex, 1);
       }
@@ -1148,6 +1204,7 @@
         poolSnapshots: { before, after }
       };
       if (memberIdentity) record.memberIdentity = memberIdentity;
+      fillReserves(working, record);
       working.history.unshift(record);
       return { cancelled: false, record };
     }
@@ -1169,7 +1226,10 @@
         <div class="result-line"><div class="result-role">船長</div><div class="result-name">${escapeHtml(historyMemberDisplay(record, "captain"))}</div></div>
         <div class="result-line"><div class="result-role">守護天使</div><div class="result-name">${escapeHtml(historyMemberDisplay(record, "guardian"))}</div></div>
         <div class="result-line"><div class="result-role">船艙 4</div><div class="member-list">${historyCabinDisplays(record).map(name => `<span class="member-chip">${escapeHtml(name)}</span>`).join("")}</div></div>
-        ${record.specialDay ? `<div class="message warn">特別日規則：今天只扣船長池；守護天使池與船艙 4 池不扣。</div>` : ""}
+        ${record.specialDay ? `<div class="message warn">特別日規則：船艙抽籤只扣船長池；守護天使池與船艙 4 池不扣，補位池照常扣除。</div>` : ""}
+        <div class="result-line"><div class="result-role">補位順序</div><ol>${(record.id === state.reserveRecordId ? state.reserveQueue.map(ref => displayMemberReference(ref)) : (record.reserveRemaining || record.reserves || [])).map(name => `<li>${escapeHtml(name)}</li>`).join("") || "尚無補位名單"}</ol></div>
+        ${record.lineReserves ? `<div class="hint">LINE 通知補位：${record.lineReserves.map((name, i) => `${i + 1}. ${escapeHtml(name)}`).join("、")}</div>` : ""}
+        ${(record.reserveUses || []).map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${escapeHtml(use.member)} 補上${use.replaced ? `，替補 ${escapeHtml(use.replaced)}` : "（未指定對象）"}</div>`).join("")}
         ${warnings}
         <div class="hint">建立時間：<button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></div>
       `;
@@ -1179,7 +1239,41 @@
       currentRecordId = record && record.id ? record.id : null;
       $("currentResult").innerHTML = renderRecord(record);
       bindDetailButtons();
+      renderReserveControls(record);
       updateAccessUi();
+    }
+
+    function renderReserveControls(record) {
+      if (!record || record.id !== state.reserveRecordId || !state.reserveQueue.length) return;
+      const box = document.createElement("div");
+      box.className = "actions";
+      box.innerHTML = `<span>目前 #1：${escapeHtml(displayMemberReference(state.reserveQueue[0]))}</span><select id="reserveReplaceSelect" class="requires-auth-control"><option value="">不指定替補對象</option>${record.cabin4.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}</select><button id="useReserveBtn" class="btn requires-auth">補上</button>`;
+      $("currentResult").appendChild(box);
+      $("useReserveBtn").addEventListener("click", async () => {
+        const expected = state.reserveQueue[0];
+        const replaced = $("reserveReplaceSelect").value;
+        try {
+          if (!isUnlocked) throw new Error("請先解鎖操作。");
+          await refreshFromCloud();
+          const working = clone(state);
+          const target = working.history.find(r => r.id === record.id);
+          if (!target || working.reserveRecordId !== record.id || working.reserveQueue[0] !== expected) throw new Error("補位名單已變更，請重新操作。");
+          if (!confirm(`確定由 ${expected} 補上${replaced ? `，替補 ${replaced}` : "（未指定對象）"}？`)) return;
+          consumeReserve(working, target, replaced);
+          await saveCloud(working);
+          state = normalizeState(working);
+          render();
+          setMessage("drawMessage", "已記錄補上，尚未補抽新人。", "ok");
+        } catch (error) { setMessage("drawMessage", error.message, "danger"); }
+      });
+    }
+
+    function consumeReserve(working, record, replaced = "") {
+      if (working.reserveRecordId !== record.id || !working.reserveQueue.length) throw new Error("目前沒有可補上的人選。");
+      if (replaced && !record.cabin4.includes(replaced)) throw new Error("替補對象必須是當天第四船艙成員。");
+      const member = working.reserveQueue.shift();
+      record.reserveRemaining = working.reserveQueue.map(ref => legacyPlayerNameForReference(ref, working));
+      record.reserveUses = [...(record.reserveUses || []), {member: legacyPlayerNameForReference(member, working), ...(usesMemberIdentity(working) ? {memberId: member} : {}), replaced, at: new Date().toISOString()}];
     }
 
     function filteredHistory() {
@@ -1557,6 +1651,7 @@
       renderPoolView("captainPoolView", state.captainPool);
       renderPoolView("guardianPoolView", state.guardianPool);
       renderPoolView("cabin4PoolView", state.cabin4Pool);
+      renderPoolView("reservePoolView", state.reservePool);
       renderPoolControls();
       Object.keys(ROLE_EXCLUSION_CONFIG).forEach(renderRoleExclusions);
       renderWeekdayRestrictions();
@@ -2224,6 +2319,7 @@
         };
         state.captainPool.push(validation.memberId);
         state.cabin4Pool.push(validation.memberId);
+        state.reservePool.push(validation.memberId);
         state = normalizeState(state);
         await saveCloud(state);
         $("newMemberId").value = "";
@@ -2335,6 +2431,8 @@
       rows.push(["守護天使", historyMemberDisplay(record, "guardian")]);
       historyCabinDisplays(record).forEach((name, index) =>
         rows.push([`船艙 4 - ${index + 1}`, name]));
+      (record.reserves || []).forEach((name, index) => rows.push([`補位 ${index + 1}`, name]));
+      (record.reserveUses || []).forEach(use => rows.push(["補上紀錄", use.member, use.replaced || "未指定", formatDateTime(use.at)]));
       rows.push([]);
 
       const consumedCaptain = uniqueStrings(record.consumed?.captain || []);
@@ -2717,6 +2815,23 @@
       });
       $("addMemberBtn").addEventListener("click", addMember);
 
+      $("fillReservesBtn").addEventListener("click", async () => {
+        try {
+          if (!isUnlocked) throw new Error("請先解鎖操作。");
+          const recordId = currentRecordId;
+          await refreshFromCloud();
+          const working = clone(state);
+          const record = working.history.find(r => r.id === recordId);
+          if (!record) throw new Error("請先抽出當天船艙。");
+          if (working.reserveRecordId && working.reserveRecordId !== record.id) throw new Error("請選擇目前補位所屬的抽籤日期。");
+          fillReserves(working, record);
+          await saveCloud(working);
+          state = normalizeState(working);
+          render();
+          setMessage("drawMessage", `補位名單目前 ${working.reserveQueue.length} 人。`, working.reserveQueue.length === 5 ? "ok" : "warn");
+        } catch (error) { setMessage("drawMessage", error.message, "danger"); }
+      });
+
       $("drawBtn").addEventListener("click", async () => {
         const date = $("drawDate").value || todayString();
         try {
@@ -2795,6 +2910,7 @@
           state.captainPool = shuffle(state.guildMembers);
           state.guardianPool = shuffle(state.highWarMembers);
           state.cabin4Pool = shuffle(state.guildMembers);
+          state.reservePool = shuffle(getReserveEligibleMembers(state));
           await saveCloud(state);
           alert("池子已重置。");
         } catch (error) { alert(error.message); }

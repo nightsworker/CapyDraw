@@ -86,6 +86,7 @@ async function finishDrawClaim(claimRef, claim, status, {now = new Date(), error
 async function markDrawPublished(recordRef, {
   sentAt = new Date().toISOString(),
   deliveryMode = null,
+  reserveSnapshot = null,
 } = {}) {
   let updated = null;
   const transaction = await recordRef.transaction((current) => {
@@ -93,6 +94,7 @@ async function markDrawPublished(recordRef, {
     updated = {
       ...current,
       lineSentAt: sentAt,
+      ...(reserveSnapshot ? {lineReserves: reserveSnapshot.names, lineReserveIdentity: reserveSnapshot.identity} : {}),
       lineSendCount: (Number(current.lineSendCount) || 0) + 1,
       lastLineSendStatus: "sent",
       ...(deliveryMode ? {lastLineSendMode: String(deliveryMode).slice(0, 40)} : {}),
@@ -162,6 +164,8 @@ async function sendDrawLineRecord({
   try {
     updated = await markDrawPublished(historyRef.child(found.key), {
       sentAt: new Date().toISOString(),
+      reserveSnapshot: {names: found.record.lineReserves || found.record.reserves || [],
+        identity: found.record.lineReserveIdentity || (found.record.memberIdentity && found.record.memberIdentity.reserves) || found.record.lineReserves || found.record.reserves || []},
     });
   } catch (error) {
     await finishDrawClaim(claimRef, claim, "publication-pending", {
