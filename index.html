@@ -1278,6 +1278,7 @@
       if (!cloudReady || !dbRef) throw new Error("Firebase 尚未連線。");
       let result;
       const transaction = await dbRef.transaction(current => {
+        if (current === null) return null;
         if (!current) return;
         const working = normalizeState(current);
         ReservePlans.ensure(working, {pick: randomIndex});
@@ -1285,7 +1286,7 @@
         assertIdentityStateWritable(working);
         return working;
       }, undefined, false);
-      if (!transaction.committed) throw new Error("補位資料尚未載入，請稍後重試。");
+      if (!transaction.committed || !transaction.snapshot.exists()) throw new Error("補位資料尚未載入，請稍後重試。");
       state = normalizeState(transaction.snapshot.val());
       render();
       return result;

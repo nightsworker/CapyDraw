@@ -163,6 +163,20 @@ test("queued LINE message uses latest tomorrow plan while historical rendering s
   assert.doesNotMatch(rendered.message.text,/@Old/u); assert.deepEqual(rendered.reserveSnapshot.names,["New - Current"]);
   assert.match(buildDrawLineMessage(r,{},"group").message.text,/1\. @Old/u);
 });
+test("cold Firebase cache keeps reconciliation alive until the server supplies current data", async () => {
+  let current=state({history:[record("2026-10-24")]});
+  const ref={transaction:async update=>{
+    assert.equal(update(null),null);
+    const next=update(clone(current));
+    if(next) current=next;
+    return {committed:Boolean(next)};
+  }};
+  await syncReservePlans(ref,NOW);
+  assert.equal(current.reservePlanDate,"2026-10-23");
+  assert.equal(current.tomorrowReserveDate,"2026-10-24");
+  assert.equal(current.history.length,1);
+  assert.equal(current.history[0].reserves.length,5);
+});
 test("frontend loads shared planner and parses with both dated reserve panels", () => {
   const html=fs.readFileSync(path.join(__dirname,"../../index.html"),"utf8");
   new vm.Script(html.slice(html.lastIndexOf("<script>")+8,html.lastIndexOf("</script>")));

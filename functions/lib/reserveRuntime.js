@@ -5,6 +5,9 @@ const {buildDrawLineMessage} = require("./line");
 
 async function syncReservePlans(mainRef, now = new Date()) {
   return mainRef.transaction(current => {
+    // A new Admin SDK instance starts with an empty local cache. Returning
+    // null keeps the transaction alive so the server can retry with real data.
+    if (current === null) return null;
     if (!current || (!Object.keys(current.members || {}).length && !(current.guildMembers || []).length)) return;
     const working = JSON.parse(JSON.stringify(current));
     plans.ensure(working, {now});
