@@ -58,6 +58,8 @@
     .status-label { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
     .status-value { font-size: 24px; font-weight: 800; color: var(--accent2); }
     .result-card { padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+    .result-stack { display: grid; gap: 18px; align-content: start; min-width: 0; }
+    .reserve-name { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
     .draw-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
     label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 7px; }
     input[type="date"], input[type="time"], input[type="number"], input[type="text"], input[type="password"], textarea, select {
@@ -198,6 +200,7 @@
         </div>
       </div>
 
+      <div class="result-stack">
       <div class="result-card">
         <div class="draw-row">
           <div>
@@ -206,8 +209,6 @@
           </div>
           <button class="btn requires-auth" id="drawBtn">開始抽籤</button>
         </div>
-        <button class="btn secondary requires-auth" id="fillReservesBtn">抽全域補位（補滿 5 人）</button>
-        <div id="reservePanel"></div>
         <div class="message" id="drawMessage"></div>
         <div class="current-result" id="currentResult"><p class="empty">尚未載入資料。</p></div>
         <div class="actions">
@@ -215,6 +216,17 @@
           <span class="hint">會消耗 LINE 主動訊息額度。</span>
           <span class="message" id="lineSendMessage"></span>
         </div>
+      </div>
+      <section class="result-card" aria-label="全域補位">
+        <div class="draw-row">
+          <div>
+            <h3>全域補位</h3>
+            <p class="hint">跨日共用，依序補上；每次補抽至 5 人。</p>
+          </div>
+          <button class="btn requires-auth" id="fillReservesBtn">抽補位</button>
+        </div>
+        <div id="reservePanel" class="current-result"></div>
+      </section>
       </div>
     </section>
 
@@ -1247,11 +1259,11 @@
 
     function renderReserveControls() {
       const record = state.history.find(r => r.date === todayString());
-      $("reservePanel").innerHTML = `<h3>全域補位順序</h3><p class="hint">所有日期共用這份名單，切換抽籤日期不會更換補位。</p><ol>${state.reserveQueue.map(ref => `<li>${escapeHtml(displayMemberReference(ref))}</li>`).join("")}</ol>${state.reserveQueue.length ? "" : '<p class="empty">尚無補位，可直接按「抽全域補位」。</p>'}${(state.reserveUses || []).slice(-5).reverse().map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${escapeHtml(use.member)} 補上${use.replaced ? `，替補 ${escapeHtml(use.replaced)}` : "（未指定對象）"}</div>`).join("")}`;
+      $("reservePanel").innerHTML = `<div><span class="pill">全域共用</span><span class="pill">${state.reserveQueue.length} / 5 人</span></div>${state.reserveQueue.map((ref, index) => `<div class="result-line"><div class="result-role">補位 #${index + 1}</div><div class="reserve-name"><span class="result-name">${escapeHtml(displayMemberReference(ref))}</span>${index === 0 ? '<button id="useReserveBtn" class="btn small requires-auth">補上</button>' : ""}</div></div>`).join("")}${state.reserveQueue.length ? "" : '<p class="empty">尚無補位，按「抽補位」即可補滿名單。</p>'}${(state.reserveUses || []).slice(-5).reverse().map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${escapeHtml(use.member)} 補上${use.replaced ? `，替補 ${escapeHtml(use.replaced)}` : "（未指定對象）"}</div>`).join("")}`;
       if (!state.reserveQueue.length) return;
       const box = document.createElement("div");
-      box.className = "actions";
-      box.innerHTML = `<span>目前 #1：${escapeHtml(displayMemberReference(state.reserveQueue[0]))}</span><select id="reserveReplaceSelect" class="requires-auth-control"><option value="">不指定替補對象</option>${(record ? record.cabin4 : []).map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}</select><button id="useReserveBtn" class="btn requires-auth">補上</button>`;
+      box.className = "pool-controls";
+      box.innerHTML = `<div><label for="reserveReplaceSelect">替補對象（選填，按 #1 的「補上」確認）</label><select id="reserveReplaceSelect" class="requires-auth-control"><option value="">不指定替補對象</option>${(record ? record.cabin4 : []).map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}</select></div>`;
       $("reservePanel").appendChild(box);
       $("useReserveBtn").addEventListener("click", async () => {
         const expected = state.reserveQueue[0];
