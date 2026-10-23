@@ -223,9 +223,14 @@
             <h3>全域補位</h3>
             <p class="hint">跨日共用，依序補上；每次補抽至 5 人。</p>
           </div>
-          <button class="btn requires-auth" id="fillReservesBtn">抽補位</button>
+          <div class="line-actions">
+            <button class="btn requires-auth" id="fillReservesBtn">抽補位</button>
+            <button class="btn secondary requires-auth" id="refreshReservesBtn">刷新補位</button>
+          </div>
         </div>
+        <p class="hint">刷新會依上方選定日期，剔除已上船的補位，再依原順序補滿 5 人。</p>
         <div id="reservePanel" class="current-result"></div>
+        <div class="message" id="reserveMessage"></div>
       </section>
       </div>
     </section>
@@ -893,6 +898,14 @@
       if (identity) identity.reserves = working.reserveQueue.map(ref => createHistoryMemberSnapshot(working.members[ref]));
       record.warnings = (record.warnings || []).filter(w => !w.startsWith("補位人數不足"));
       if (working.reserveQueue.length < 5) record.warnings.push("補位人數不足：目前合格人選無法補滿 5 人。");
+    }
+
+    function refreshReserves(working, date) {
+      const record = working.history.find(item => item.date === date);
+      if (!record) throw new Error(`${date} 尚無船艙結果，請先抽船艙；也可直接按「抽補位」。`);
+      const before = [...working.reserveQueue];
+      fillReserves(working, record);
+      return before.filter(ref => !working.reserveQueue.includes(ref));
     }
 
     function usesMemberIdentity(workingState = state) {
@@ -2835,6 +2848,21 @@
       });
       $("addMemberBtn").addEventListener("click", addMember);
 
+      $("refreshReservesBtn").addEventListener("click", async () => {
+        const date = $("drawDate").value || todayString();
+        try {
+          if (!isUnlocked) throw new Error("請先解鎖操作。");
+          await refreshFromCloud();
+          const working = clone(state);
+          const removed = refreshReserves(working, date);
+          await saveCloud(working);
+          state = normalizeState(working);
+          render();
+          const removedText = removed.length ? `已剔除 ${removed.map(ref => displayMemberReference(ref, working)).join("、")}；` : "無需剔除；";
+          setMessage("reserveMessage", `已依 ${date} 刷新，${removedText}目前 ${working.reserveQueue.length} / 5 人。`, working.reserveQueue.length === 5 ? "ok" : "warn");
+        } catch (error) { setMessage("reserveMessage", error.message, "danger"); }
+      });
+
       $("fillReservesBtn").addEventListener("click", async () => {
         try {
           if (!isUnlocked) throw new Error("請先解鎖操作。");
@@ -2845,8 +2873,8 @@
           await saveCloud(working);
           state = normalizeState(working);
           render();
-          setMessage("drawMessage", `補位名單目前 ${working.reserveQueue.length} 人。`, working.reserveQueue.length === 5 ? "ok" : "warn");
-        } catch (error) { setMessage("drawMessage", error.message, "danger"); }
+          setMessage("reserveMessage", `補位名單目前 ${working.reserveQueue.length} 人。`, working.reserveQueue.length === 5 ? "ok" : "warn");
+        } catch (error) { setMessage("reserveMessage", error.message, "danger"); }
       });
 
       $("drawBtn").addEventListener("click", async () => {

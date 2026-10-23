@@ -144,3 +144,36 @@ test("global FIFO ignores legacy date ownership and blocks same-day used members
   assert.equal(result.queue.length, 5);
   assert.deepEqual(result.queue.slice(0, 4), ["B", "C", "D", "E"]);
 });
+
+test("refresh uses selected day's roles, preserves FIFO and LINE snapshot, and fills vacancies", () => {
+  const result = JSON.parse(run(`
+    randomIndex = n => n - 1;
+    const w = normalizeState({guildMembers:['A','B','C','D','E','F','G','H','I','J','K','L','M','N'],presidentName:'P',reserveQueue:['A','D','E','F','G'],history:[
+      {id:'tomorrow',date:'2026-10-24',captain:'A',guardian:'B',cabin4:['C','D','H','I','J'],lineReserves:['A','D','E','F','G']},
+      {id:'today',date:'2026-10-23',captain:'E',guardian:'F',cabin4:['G','H','I','J','K']}
+    ]});
+    const removed = refreshReserves(w,'2026-10-24');
+    const fullQueue = [...w.reserveQueue];
+    refreshReserves(w,'2026-10-24');
+    JSON.stringify({removed,queue:w.reserveQueue,fullQueue,history:w.history});
+  `));
+  assert.deepEqual(result.removed, ["A", "D"]);
+  assert.deepEqual(result.queue.slice(0, 3), ["E", "F", "G"]);
+  assert.equal(result.queue.length, 5);
+  assert.ok(result.queue.every(ref => !["A", "B", "C", "D", "H", "I", "J"].includes(ref)));
+  assert.deepEqual(result.fullQueue, result.queue);
+  assert.deepEqual(result.history[0].lineReserves, ["A", "D", "E", "F", "G"]);
+  assert.deepEqual(result.history[0].reserves, result.queue);
+  assert.equal(result.history[1].reserves, undefined);
+});
+
+test("refresh without a draw for the selected date leaves global reserves intact", () => {
+  const result = JSON.parse(run(`
+    const w = normalizeState({guildMembers:['A','B','C','D','E'],reserveQueue:['A','B'],history:[]});
+    let failed = false;
+    try { refreshReserves(w,'2026-10-24'); } catch (_error) { failed = true; }
+    JSON.stringify({failed,queue:w.reserveQueue});
+  `));
+  assert.equal(result.failed, true);
+  assert.deepEqual(result.queue, ["A", "B"]);
+});
