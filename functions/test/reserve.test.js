@@ -182,3 +182,31 @@ test("frontend loads shared planner and parses with both dated reserve panels", 
   new vm.Script(html.slice(html.lastIndexOf("<script>")+8,html.lastIndexOf("</script>")));
   assert.match(html,/id="tomorrowReservePanel"/u); assert.match(html,/reservePlans\.js\?v=/u);
 });
+test("skipping records a forfeited chance, shifts FIFO and updates tomorrow without refilling today", () => {
+  const s=state({history:[record("2026-10-23"),record("2026-10-24")]}); plans.ensure(s,options);
+  const use=plans.skip(s,{...options,expected:"M1",replaced:"M12"});
+  assert.equal(use.action,"skipped");
+  assert.equal(use.replaced,"");
+  assert.deepEqual(s.reserveQueue,["M2","M3","M4","M5"]);
+  assert.equal(s.tomorrowReserveQueue.length,5);
+  assert.ok(!s.tomorrowReserveQueue.includes("M1"));
+  assert.equal(s.history[0].reserveUses[0].action,"skipped");
+  plans.refresh(s,"2026-10-23",options);
+  assert.ok(!s.reserveQueue.includes("M1"));
+  assert.ok(!s.tomorrowReserveQueue.includes("M1"));
+});
+test("skip rejects a stale first member without consuming another person's chance", () => {
+  const s=state(); plans.ensure(s,options);
+  assert.throws(()=>plans.skip(s,{...options,expected:"M2"}),/變更/u);
+  assert.equal(s.reserveQueue[0],"M1");
+  assert.equal(s.reserveUses.length,0);
+});
+test("filled and skipped actions remain distinct while legacy records still display as filled", () => {
+  const s=state(); plans.ensure(s,options);
+  assert.equal(plans.consume(s,options).action,"filled");
+  assert.equal(plans.skip(s,options).action,"skipped");
+  assert.deepEqual(s.reserveUses.map(use=>use.action),["filled","skipped"]);
+  const html=fs.readFileSync(path.join(__dirname,"../../index.html"),"utf8");
+  assert.match(html,/id="skipReserveBtn"/u);
+  assert.match(html,/use\.action === "skipped"/u);
+});

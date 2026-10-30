@@ -583,7 +583,7 @@
   <script src="history-publication-ui.js"></script>
   <script src="line-schedules-ui.js"></script>
   <script src="functions/lib/memberIdentity.js"></script>
-  <script src="functions/lib/reservePlans.js?v=two-day-plans-v1"></script>
+  <script src="functions/lib/reservePlans.js?v=two-day-plans-v2-skip"></script>
   <script src="draw-role-exclusions.js?v=weekday-restrictions-v1"></script>
   <script>
     window.addEventListener("error", function (event) {
@@ -1232,7 +1232,7 @@
         ${record.specialDay ? `<div class="message warn">特別日規則：船艙抽籤只扣船長池；守護天使池與船艙 4 池不扣，補位池照常扣除。</div>` : ""}
         <div class="result-line"><div class="result-role">當次補位快照</div><ol>${(record.reserveRemaining || record.reserves || []).map(name => `<li>${escapeHtml(name)}</li>`).join("") || "尚無補位快照"}</ol></div>
         ${record.lineReserves ? `<div class="hint">LINE 通知補位：${record.lineReserves.map((name, i) => `${i + 1}. ${escapeHtml(name)}`).join("、")}</div>` : ""}
-        ${(record.reserveUses || []).map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${escapeHtml(use.member)} 補上${use.replaced ? `，替補 ${escapeHtml(use.replaced)}` : "（未指定對象）"}</div>`).join("")}
+        ${(record.reserveUses || []).map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${reserveUseDescription(use)}</div>`).join("")}
         ${warnings}
         <div class="hint">建立時間：<button class="link-btn" data-detail-id="${escapeHtml(record.id)}">${escapeHtml(formatDateTime(record.createdAt))}</button></div>
       `;
@@ -1246,17 +1246,32 @@
       updateAccessUi();
     }
 
+    function reserveUseDescription(use) {
+      const name = escapeHtml(use.member);
+      if (use.action === "skipped") return `${name} 跳過（放棄本次機會）`;
+      return `${name} 補上${use.replaced ? `，替補 ${escapeHtml(use.replaced)}` : "（未指定對象）"}`;
+    }
+
     function renderReserveControls() {
       const record = state.history.find(r => r.date === todayString());
       const today = state.reservePlanDate || todayString();
       const tomorrow = state.tomorrowReserveDate || ReservePlans.nextDay(today);
-      $("reservePanel").innerHTML = `<div><span class="pill">${escapeHtml(today)}</span><span class="pill">${state.reserveQueue.length} / 5 人</span></div>${state.reserveQueue.map((ref, index) => `<div class="result-line"><div class="result-role">補位 #${index + 1}</div><div class="reserve-name"><span class="result-name">${escapeHtml(displayMemberReference(ref))}</span>${index === 0 ? '<button id="useReserveBtn" class="btn small requires-auth">補上</button>' : ""}</div></div>`).join("")}${state.reserveQueue.length ? "" : '<p class="empty">尚無補位，按「補滿今日」即可補滿名單。</p>'}${(state.reserveUses || []).slice(-5).reverse().map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${escapeHtml(use.member)} 補上${use.replaced ? `，替補 ${escapeHtml(use.replaced)}` : "（未指定對象）"}</div>`).join("")}`;
+      $("reservePanel").innerHTML = `<div><span class="pill">${escapeHtml(today)}</span><span class="pill">${state.reserveQueue.length} / 5 人</span></div>${state.reserveQueue.map((ref, index) => `<div class="result-line"><div class="result-role">補位 #${index + 1}</div><div class="reserve-name"><span class="result-name">${escapeHtml(displayMemberReference(ref))}</span>${index === 0 ? '<span class="line-actions"><button id="useReserveBtn" class="btn small requires-auth">補上</button><button id="skipReserveBtn" class="btn secondary small requires-auth">跳過</button></span>' : ""}</div></div>`).join("")}${state.reserveQueue.length ? "" : '<p class="empty">尚無補位，按「補滿今日」即可補滿名單。</p>'}${(state.reserveUses || []).slice(-5).reverse().map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${reserveUseDescription(use)}</div>`).join("")}`;
       $("tomorrowReservePanel").innerHTML = `<div><span class="pill">${escapeHtml(tomorrow)}</span><span class="pill">${state.tomorrowReserveQueue.length} / 5 人</span></div>${state.tomorrowReserveQueue.map((ref, index) => `<div class="result-line"><div class="result-role">預定 #${index + 1}</div><div class="result-name">${escapeHtml(displayMemberReference(ref))}</div></div>`).join("")}${state.history.some(r => r.date === tomorrow) ? "" : '<p class="hint">明日船艙尚未抽出；抽出後會自動排除已上船的人。</p>'}`;
       if (!state.reserveQueue.length) return;
       const box = document.createElement("div");
       box.className = "pool-controls";
       box.innerHTML = `<div><label for="reserveReplaceSelect">替補對象（選填，按 #1 的「補上」確認）</label><select id="reserveReplaceSelect" class="requires-auth-control"><option value="">不指定替補對象</option>${(record ? record.cabin4 : []).map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}</select></div>`;
       $("reservePanel").appendChild(box);
+      $("skipReserveBtn").addEventListener("click", async () => {
+        const expected = state.reserveQueue[0];
+        try {
+          if (!isUnlocked) throw new Error("請先解鎖操作。");
+          if (!confirm(`確定跳過 ${displayMemberReference(expected)}？此人將放棄本次機會，由下一位遞補。`)) return;
+          await mutateReservePlans(working => ReservePlans.skip(working, {expected, pick: randomIndex}));
+          setMessage("reserveMessage", "已記錄跳過，後面依序遞補；今日未補抽新人，明日名單已同步更新。", "ok");
+        } catch (error) { setMessage("reserveMessage", error.message, "danger"); }
+      });
       $("useReserveBtn").addEventListener("click", async () => {
         const expected = state.reserveQueue[0];
         const replaced = $("reserveReplaceSelect").value;
@@ -2448,7 +2463,7 @@
       historyCabinDisplays(record).forEach((name, index) =>
         rows.push([`船艙 4 - ${index + 1}`, name]));
       (record.reserves || []).forEach((name, index) => rows.push([`補位 ${index + 1}`, name]));
-      (record.reserveUses || []).forEach(use => rows.push(["補上紀錄", use.member, use.replaced || "未指定", formatDateTime(use.at)]));
+      (record.reserveUses || []).forEach(use => rows.push([use.action === "skipped" ? "跳過紀錄" : "補上紀錄", use.member, use.action === "skipped" ? "放棄本次機會" : use.replaced || "未指定", formatDateTime(use.at)]));
       rows.push([]);
 
       const consumedCaptain = uniqueStrings(record.consumed?.captain || []);

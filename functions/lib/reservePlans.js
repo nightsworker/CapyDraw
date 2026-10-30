@@ -152,7 +152,8 @@
     else state.tomorrowReserveSignature = tomorrowSignature(state, date);
     return before.filter(ref => !state[key].includes(ref));
   }
-  function consume(state, {expected, replaced = "", now = new Date(), pick = randomIndex} = {}) {
+  function consume(state, {expected, replaced = "", action = "filled", now = new Date(), pick = randomIndex} = {}) {
+    if (!["filled", "skipped"].includes(action)) throw new Error("補位操作不正確。");
     ensure(state, {now, pick});
     if (!state.reserveQueue.length || (expected && state.reserveQueue[0] !== expected)) {
       throw new Error("補位名單已變更或無可用人選，請重新操作。");
@@ -161,12 +162,15 @@
     if (replaced && (!record || !(record.cabin4 || []).includes(replaced))) throw new Error("替補對象必須是今日第四船艙成員。");
     const ref = state.reserveQueue.shift();
     const use = {member: memberName(state, ref), ...(identityMode(state) ? {memberId: ref} : {}),
-      replaced, date: state.reservePlanDate, at: new Date(now).toISOString()};
+      action, replaced, date: state.reservePlanDate, at: new Date(now).toISOString()};
     state.reserveUses = [...(state.reserveUses || []), use];
     if (record) record.reserveUses = [...(record.reserveUses || []), use];
     snapshot(state, state.reservePlanDate, state.reserveQueue);
     reconcileTomorrow(state, state.tomorrowReserveDate, pick);
     return use;
   }
-  return {day, nextDay, allowedMembers, eligibleMembers, ensure, refresh, consume, recordFor};
+  function skip(state, options = {}) {
+    return consume(state, {...options, action: "skipped", replaced: ""});
+  }
+  return {day, nextDay, allowedMembers, eligibleMembers, ensure, refresh, consume, skip, recordFor};
 });
