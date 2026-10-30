@@ -443,7 +443,7 @@
             </div>
           </div>
         </div>
-        <div class="card"><h3>補位池</h3><p class="hint">每天重新抽 5 人，排除前一天補位及當日船長、守護天使、第四船艙。只有補上或跳過才會移入已補過池；可抽人數不足時整池重置。會長不在池內，每個缺額維持 30% 機率。</p><h4>目前可抽</h4><div class="name-cloud" id="reservePoolView"></div><h4>已補過／已跳過</h4><div class="name-cloud" id="reserveUsedPoolView"></div></div>
+        <div class="card"><h3>補位池</h3><p class="hint">每天重新抽 5 人，一般成員排除前一天補位及當日船長、守護天使、第四船艙。只有補上或跳過才會移入已補過池；可抽人數不足時整池重置。會長不受兩個池子及前一天名單影響，每個缺額為 20% 機率。</p><h4>目前可抽</h4><div class="name-cloud" id="reservePoolView"></div><h4>已補過／已跳過</h4><div class="name-cloud" id="reserveUsedPoolView"></div></div>
         <div class="actions"><button class="btn warning requires-auth" id="resetPoolsBtn">重置所有池子</button></div>
       </div>
     </section>
@@ -583,7 +583,7 @@
   <script src="history-publication-ui.js"></script>
   <script src="line-schedules-ui.js"></script>
   <script src="functions/lib/memberIdentity.js"></script>
-  <script src="functions/lib/reservePlans.js?v=daily-reserves-v3"></script>
+  <script src="functions/lib/reservePlans.js?v=daily-reserves-v4-chief20"></script>
   <script src="draw-role-exclusions.js?v=weekday-restrictions-v1"></script>
   <script>
     window.addEventListener("error", function (event) {

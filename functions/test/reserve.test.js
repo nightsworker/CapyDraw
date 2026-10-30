@@ -165,8 +165,8 @@ test("used members remain unavailable while at least five eligible active member
   assert.deepEqual(s.reserveUsedPool, ["M6"]);
 });
 
-test("president chance remains 30 percent per vacancy and cannot repeat the next day", () => {
-  for (const [roll, chosen] of [[29, true], [30, false]]) {
+test("president chance is 20 percent per vacancy and can repeat the next day", () => {
+  for (const [roll, chosen] of [[19, true], [20, false]]) {
     const s = state();
     plans.ensure(s, {now:NOW, pick:max => max === 100 ? roll : 0});
     assert.equal(s.tomorrowReserveQueue.includes("P"), chosen);
@@ -175,7 +175,19 @@ test("president chance remains 30 percent per vacancy and cannot repeat the next
   }
   const withPresidentToday = state({reserveQueue:["P","M1","M2","M3","M4"]});
   plans.ensure(withPresidentToday, {now:NOW, pick:() => 0});
-  assert.ok(!withPresidentToday.tomorrowReserveQueue.includes("P"));
+  assert.ok(withPresidentToday.tomorrowReserveQueue.includes("P"));
+});
+
+test("using or skipping the president never changes either normal reserve pool", () => {
+  for (const action of ["filled", "skipped"]) {
+    const s = state({reserveQueue:["P","M1","M2","M3","M4"]});
+    plans.ensure(s, options);
+    const active = [...s.reservePool];
+    const used = [...s.reserveUsedPool];
+    plans.consume(s, {...options, expected:"P", action});
+    assert.deepEqual(s.reservePool, active);
+    assert.deepEqual(s.reserveUsedPool, used);
+  }
 });
 
 test("published tomorrow list is immutable even if a later ship change conflicts", () => {
@@ -283,7 +295,7 @@ test("frontend loads daily planner and exposes active and used reserve pools", (
   new vm.Script(html.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</script>")));
   assert.match(html, /id="tomorrowReservePanel"/u);
   assert.match(html, /id="reserveUsedPoolView"/u);
-  assert.match(html, /daily-reserves-v3/u);
+  assert.match(html, /daily-reserves-v4-chief20/u);
   assert.match(html, /id="skipReserveBtn"/u);
 });
 

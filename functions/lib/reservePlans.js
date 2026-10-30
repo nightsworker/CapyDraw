@@ -126,8 +126,9 @@
   }
   function fill(state, date, queue, previous, randomIndex) {
     const eligible = new Set(eligibleMembers(state, date));
-    const excluded = new Set([...aboardMembers(state, date), ...references(state, previous || [])]);
     const chief = president(state);
+    const excluded = new Set([...aboardMembers(state, date),
+      ...references(state, previous || []).filter(ref => ref !== chief)]);
     queue = references(state, queue || [])
       .filter(ref => eligible.has(ref) && !excluded.has(ref)).slice(0, 5);
     const occupied = new Set([...excluded, ...queue]);
@@ -138,7 +139,7 @@
     }
     while (queue.length < 5) {
       let picked;
-      if (chief && eligible.has(chief) && !occupied.has(chief) && randomIndex(100) < 30) picked = chief;
+      if (chief && eligible.has(chief) && !occupied.has(chief) && randomIndex(100) < 20) picked = chief;
       else {
         available = availableNormal(state, eligible, occupied);
         if (!available.length) break;
@@ -159,7 +160,8 @@
     return Math.floor(Math.random() * max);
   }
   function planSignature(state, date, previous) {
-    return JSON.stringify([date, eligibleMembers(state, date), aboardMembers(state, date), references(state, previous || [])]);
+    return JSON.stringify(["daily-v4-chief20-repeat", date, eligibleMembers(state, date),
+      aboardMembers(state, date), references(state, previous || [])]);
   }
   function reconcileTomorrow(state, date, pick, {fresh = false} = {}) {
     const previous = storedOriginal(state, "reserveOriginalQueue", "reserveQueue");
