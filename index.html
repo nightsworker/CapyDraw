@@ -443,7 +443,7 @@
             </div>
           </div>
         </div>
-        <div class="card"><h3>補位池</h3><p class="hint">沿用第四船艙排除及週間限制，會長不在池內。每個缺額有 30% 機率抽中符合資格且不在名單的會長。</p><div class="name-cloud" id="reservePoolView"></div></div>
+        <div class="card"><h3>補位池</h3><p class="hint">每天重新抽 5 人，排除前一天補位及當日船長、守護天使、第四船艙。只有補上或跳過才會移入已補過池；可抽人數不足時整池重置。會長不在池內，每個缺額維持 30% 機率。</p><h4>目前可抽</h4><div class="name-cloud" id="reservePoolView"></div><h4>已補過／已跳過</h4><div class="name-cloud" id="reserveUsedPoolView"></div></div>
         <div class="actions"><button class="btn warning requires-auth" id="resetPoolsBtn">重置所有池子</button></div>
       </div>
     </section>
@@ -583,7 +583,7 @@
   <script src="history-publication-ui.js"></script>
   <script src="line-schedules-ui.js"></script>
   <script src="functions/lib/memberIdentity.js"></script>
-  <script src="functions/lib/reservePlans.js?v=two-day-plans-v2-skip"></script>
+  <script src="functions/lib/reservePlans.js?v=daily-reserves-v3"></script>
   <script src="draw-role-exclusions.js?v=weekday-restrictions-v1"></script>
   <script>
     window.addEventListener("error", function (event) {
@@ -668,9 +668,13 @@
       captainPool: [],
       guardianPool: [],
       reservePool: [],
+      reserveUsedPool: [],
+      reservePoolVersion: null,
       reserveQueue: [],
+      reserveOriginalQueue: [],
       reservePlanDate: null,
       tomorrowReserveQueue: [],
+      tomorrowReserveOriginalQueue: [],
       tomorrowReserveDate: null,
       reserveUses: [],
       cabin4Pool: [],
@@ -870,8 +874,11 @@
       const chief = usesMemberIdentity(working) ? working.presidentMemberId : working.presidentName;
       const refs = values => usesMemberIdentity(working) ? mapIdentityReferences(values || [], working.members) : uniqueStrings(values || []);
       working.reservePool = refs(working.reservePool).filter(ref => allowed.has(ref) && ref !== chief);
+      working.reserveUsedPool = refs(working.reserveUsedPool).filter(ref => allowed.has(ref) && ref !== chief);
       working.reserveQueue = refs(working.reserveQueue).filter(ref => allowed.has(ref)).slice(0, 5);
+      working.reserveOriginalQueue = refs(working.reserveOriginalQueue).filter(ref => allowed.has(ref));
       working.tomorrowReserveQueue = refs(working.tomorrowReserveQueue).filter(ref => allowed.has(ref)).slice(0, 5);
+      working.tomorrowReserveOriginalQueue = refs(working.tomorrowReserveOriginalQueue).filter(ref => allowed.has(ref));
     }
 
     function fillReserves(working, record = null) {
@@ -1229,7 +1236,7 @@
         <div class="result-line"><div class="result-role">船長</div><div class="result-name">${escapeHtml(historyMemberDisplay(record, "captain"))}</div></div>
         <div class="result-line"><div class="result-role">守護天使</div><div class="result-name">${escapeHtml(historyMemberDisplay(record, "guardian"))}</div></div>
         <div class="result-line"><div class="result-role">船艙 4</div><div class="member-list">${historyCabinDisplays(record).map(name => `<span class="member-chip">${escapeHtml(name)}</span>`).join("")}</div></div>
-        ${record.specialDay ? `<div class="message warn">特別日規則：船艙抽籤只扣船長池；守護天使池與船艙 4 池不扣，補位池照常扣除。</div>` : ""}
+        ${record.specialDay ? `<div class="message warn">特別日規則：船艙抽籤只扣船長池；守護天使池與船艙 4 池不扣。補位只有實際補上或跳過才會扣除資格。</div>` : ""}
         <div class="result-line"><div class="result-role">當次補位快照</div><ol>${(record.reserveRemaining || record.reserves || []).map(name => `<li>${escapeHtml(name)}</li>`).join("") || "尚無補位快照"}</ol></div>
         ${record.lineReserves ? `<div class="hint">LINE 通知補位：${record.lineReserves.map((name, i) => `${i + 1}. ${escapeHtml(name)}`).join("、")}</div>` : ""}
         ${(record.reserveUses || []).map(use => `<div class="hint">${escapeHtml(formatDateTime(use.at))}：${reserveUseDescription(use)}</div>`).join("")}
@@ -1269,7 +1276,7 @@
           if (!isUnlocked) throw new Error("請先解鎖操作。");
           if (!confirm(`確定跳過 ${displayMemberReference(expected)}？此人將放棄本次機會，由下一位遞補。`)) return;
           await mutateReservePlans(working => ReservePlans.skip(working, {expected, pick: randomIndex}));
-          setMessage("reserveMessage", "已記錄跳過，後面依序遞補；今日未補抽新人，明日名單已同步更新。", "ok");
+          setMessage("reserveMessage", "已記錄跳過並移入已補過池；今日未補抽新人，明日名單不受影響。", "ok");
         } catch (error) { setMessage("reserveMessage", error.message, "danger"); }
       });
       $("useReserveBtn").addEventListener("click", async () => {
@@ -1279,7 +1286,7 @@
           if (!isUnlocked) throw new Error("請先解鎖操作。");
           if (!confirm(`確定由 ${displayMemberReference(expected)} 補上${replaced ? `，替補 ${replaced}` : "（未指定對象）"}？`)) return;
           await mutateReservePlans(working => ReservePlans.consume(working, {expected, replaced, pick: randomIndex}));
-          setMessage("reserveMessage", "已記錄補上並更新明日名單；今日未補抽新人。", "ok");
+          setMessage("reserveMessage", "已記錄補上並移入已補過池；今日未補抽新人，明日名單不受影響。", "ok");
         } catch (error) { setMessage("reserveMessage", error.message, "danger"); }
       });
     }
@@ -1683,6 +1690,7 @@
       renderPoolView("guardianPoolView", state.guardianPool);
       renderPoolView("cabin4PoolView", state.cabin4Pool);
       renderPoolView("reservePoolView", state.reservePool);
+      renderPoolView("reserveUsedPoolView", state.reserveUsedPool);
       renderPoolControls();
       Object.keys(ROLE_EXCLUSION_CONFIG).forEach(renderRoleExclusions);
       renderWeekdayRestrictions();
@@ -2949,6 +2957,8 @@
           state.guardianPool = shuffle(state.highWarMembers);
           state.cabin4Pool = shuffle(state.guildMembers);
           state.reservePool = shuffle(getReserveEligibleMembers(state));
+          state.reserveUsedPool = [];
+          state.reservePoolVersion = 2;
           await saveCloud(state);
           alert("池子已重置。");
         } catch (error) { alert(error.message); }

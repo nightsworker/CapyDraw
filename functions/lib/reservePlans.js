@@ -6,6 +6,8 @@
 })(typeof globalThis === "object" ? globalThis : this, function createReservePlans(identity) {
   "use strict";
 
+  const POOL_VERSION = 2;
+
   function day(now = new Date()) {
     return new Date(new Date(now).getTime() + 8 * 3600000).toISOString().slice(0, 10);
   }
@@ -36,6 +38,10 @@
     if (!identityMode(state) && chief && !members.includes(chief)) members.push(chief);
     return members.filter(ref => !excluded.has(ref));
   }
+  function normalMembers(state) {
+    const chief = president(state);
+    return allowedMembers(state).filter(ref => ref !== chief);
+  }
   function eligibleMembers(state, date) {
     const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay() || 7;
     const blocked = new Set(Object.values(state.roleWeekdayRestrictions || {})
@@ -54,52 +60,93 @@
       snapshot.guardian && snapshot.guardian.memberId, ...(snapshot.cabin4 || []).map(member => member.memberId)]) :
       references(state, [record.captain, record.guardian, ...(record.cabin4 || [])]);
   }
-  function usedMembers(state, date) {
-    const dates = [date, nextDay(date, -1)];
-    const uses = [...(state.reserveUses || []), ...(state.history || []).flatMap(record =>
+  function actionUses(state) {
+    return [...(state.reserveUses || []), ...(state.history || []).flatMap(record =>
       (record.reserveUses || []).map(use => ({...use, date: use.date || record.date})))];
-    return references(state, uses.filter(use => dates.includes(use.date)).map(use => use.memberId || use.member));
   }
   function memberName(state, ref) {
     return identityMode(state) ? identity.memberPlayerName(state.members[ref]) : ref;
   }
-  function snapshot(state, date, queue) {
+  function originalForRecord(state, record) {
+    if (!record) return [];
+    const values = record.memberIdentity && Array.isArray(record.memberIdentity.reserves) ?
+      record.memberIdentity.reserves.map(member => member.memberId) : record.reserves || [];
+    return references(state, values);
+  }
+  function storedOriginal(state, originalKey, queueKey) {
+    const original = references(state, state[originalKey] || []);
+    return original.length ? original : references(state, state[queueKey] || []);
+  }
+  function originalForDate(state, date) {
+    if (state.reservePlanDate === date) return storedOriginal(state, "reserveOriginalQueue", "reserveQueue");
+    if (state.tomorrowReserveDate === date) {
+      return storedOriginal(state, "tomorrowReserveOriginalQueue", "tomorrowReserveQueue");
+    }
+    return originalForRecord(state, recordFor(state, date));
+  }
+  function isPublished(state, date) {
+    const record = recordFor(state, date);
+    return Boolean(record && ((record.lineReserves || []).length || record.lineSentAt || record.lineSendCount));
+  }
+  function snapshot(state, date, queue, original = queue) {
     const record = recordFor(state, date);
     if (!record) return;
-    record.reserves = queue.map(ref => memberName(state, ref));
-    record.reserveRemaining = [...record.reserves];
+    record.reserves = original.map(ref => memberName(state, ref));
+    record.reserveRemaining = queue.map(ref => memberName(state, ref));
     if (identityMode(state) && record.memberIdentity) {
-      record.memberIdentity.reserves = queue.map(ref => identity.createHistoryMemberSnapshot(state.members[ref]));
+      record.memberIdentity.reserves = original.map(ref => identity.createHistoryMemberSnapshot(state.members[ref]));
     }
     record.warnings = (record.warnings || []).filter(warning => !warning.startsWith("補位人數不足"));
     if (queue.length < 5) record.warnings.push("補位人數不足：目前合格人選無法補滿 5 人。");
   }
-  function fill(state, date, queue, randomIndex) {
+  function migratePools(state, today) {
+    const normal = normalMembers(state);
+    const normalSet = new Set(normal);
+    if (state.reservePoolVersion !== POOL_VERSION) {
+      const usedToday = new Set(references(state, actionUses(state)
+        .filter(use => use.date === today).map(use => use.memberId || use.member)));
+      state.reserveUsedPool = normal.filter(ref => usedToday.has(ref));
+      state.reservePool = normal.filter(ref => !usedToday.has(ref));
+      state.reservePoolVersion = POOL_VERSION;
+      return;
+    }
+    state.reserveUsedPool = references(state, state.reserveUsedPool || []).filter(ref => normalSet.has(ref));
+    const used = new Set(state.reserveUsedPool);
+    state.reservePool = references(state, state.reservePool || [])
+      .filter(ref => normalSet.has(ref) && !used.has(ref));
+    const known = new Set([...state.reservePool, ...state.reserveUsedPool]);
+    state.reservePool.push(...normal.filter(ref => !known.has(ref)));
+  }
+  function availableNormal(state, eligible, excluded) {
+    return state.reservePool.filter(ref => eligible.has(ref) && !excluded.has(ref));
+  }
+  function recycleUsedPool(state) {
+    state.reservePool = unique([...(state.reservePool || []), ...(state.reserveUsedPool || [])]);
+    state.reserveUsedPool = [];
+  }
+  function fill(state, date, queue, previous, randomIndex) {
     const eligible = new Set(eligibleMembers(state, date));
-    const excluded = new Set([...aboardMembers(state, date), ...usedMembers(state, date)]);
+    const excluded = new Set([...aboardMembers(state, date), ...references(state, previous || [])]);
     const chief = president(state);
-    const normal = allowedMembers(state).filter(ref => ref !== chief);
-    const poolAllowed = new Set(normal);
-    state.reservePool = references(state, state.reservePool || []).filter(ref => poolAllowed.has(ref));
-    queue = references(state, queue || []).filter(ref => eligible.has(ref) && !excluded.has(ref)).slice(0, 5);
+    queue = references(state, queue || [])
+      .filter(ref => eligible.has(ref) && !excluded.has(ref)).slice(0, 5);
+    const occupied = new Set([...excluded, ...queue]);
+    let available = availableNormal(state, eligible, occupied);
+    if (available.length < 5 - queue.length && (state.reserveUsedPool || []).length) {
+      recycleUsedPool(state);
+      available = availableNormal(state, eligible, occupied);
+    }
     while (queue.length < 5) {
-      const occupied = new Set([...excluded, ...queue]);
       let picked;
       if (chief && eligible.has(chief) && !occupied.has(chief) && randomIndex(100) < 30) picked = chief;
       else {
-        let available = state.reservePool.filter(ref => eligible.has(ref) && !occupied.has(ref));
-        if (!available.length) {
-          const missing = normal.filter(ref => !state.reservePool.includes(ref));
-          state.reservePool.push(...missing);
-          available = state.reservePool.filter(ref => eligible.has(ref) && !occupied.has(ref));
-        }
+        available = availableNormal(state, eligible, occupied);
         if (!available.length) break;
         picked = available[randomIndex(available.length)];
-        state.reservePool = state.reservePool.filter(ref => ref !== picked);
       }
       queue.push(picked);
+      occupied.add(picked);
     }
-    snapshot(state, date, queue);
     return queue;
   }
   function randomIndex(max) {
@@ -111,33 +158,61 @@
     }
     return Math.floor(Math.random() * max);
   }
-  function tomorrowSignature(state, date) {
-    return JSON.stringify([date, eligibleMembers(state, date), aboardMembers(state, date), usedMembers(state, date)]);
+  function planSignature(state, date, previous) {
+    return JSON.stringify([date, eligibleMembers(state, date), aboardMembers(state, date), references(state, previous || [])]);
   }
-  function reconcileTomorrow(state, date, pick, force = false, seed = null) {
-    const signature = tomorrowSignature(state, date);
-    if (force || signature !== state.tomorrowReserveSignature) {
-      state.tomorrowReserveQueue = fill(state, date, seed || state.tomorrowReserveQueue || state.reserveQueue, pick);
+  function reconcileTomorrow(state, date, pick, {fresh = false} = {}) {
+    const previous = storedOriginal(state, "reserveOriginalQueue", "reserveQueue");
+    const signature = planSignature(state, date, previous);
+    if (isPublished(state, date)) {
       state.tomorrowReserveSignature = signature;
-    } else snapshot(state, date, state.tomorrowReserveQueue || []);
+      snapshot(state, date, state.tomorrowReserveQueue || [],
+        storedOriginal(state, "tomorrowReserveOriginalQueue", "tomorrowReserveQueue"));
+      return;
+    }
+    if (fresh || signature !== state.tomorrowReserveSignature) {
+      const seed = fresh ? [] : state.tomorrowReserveQueue || [];
+      state.tomorrowReserveQueue = fill(state, date, seed, previous, pick);
+      state.tomorrowReserveOriginalQueue = [...state.tomorrowReserveQueue];
+      state.tomorrowReserveSignature = signature;
+    }
+    snapshot(state, date, state.tomorrowReserveQueue || [],
+      storedOriginal(state, "tomorrowReserveOriginalQueue", "tomorrowReserveQueue"));
   }
   function ensure(state, {now = new Date(), pick = randomIndex} = {}) {
     const today = day(now);
     const tomorrow = nextDay(today);
-    const initial = !state.reservePlanDate;
     if (state.reservePlanDate && state.reservePlanDate > today) return state;
+    migratePools(state, today);
     if (state.reservePlanDate !== today) {
-      const seed = initial ? state.reserveQueue || [] : state.tomorrowReserveQueue || state.reserveQueue || [];
-      state.reserveQueue = fill(state, today, seed, pick);
+      if (state.tomorrowReserveDate === today && (state.tomorrowReserveQueue || []).length) {
+        state.reserveQueue = [...state.tomorrowReserveQueue];
+        state.reserveOriginalQueue = storedOriginal(
+          state, "tomorrowReserveOriginalQueue", "tomorrowReserveQueue");
+      } else if (!state.reservePlanDate && (state.reserveQueue || []).length) {
+        state.reserveQueue = fill(state, today, state.reserveQueue, [], pick);
+        state.reserveOriginalQueue = [...state.reserveQueue];
+      } else {
+        const previous = originalForDate(state, nextDay(today, -1));
+        state.reserveQueue = fill(state, today, [], previous, pick);
+        state.reserveOriginalQueue = [...state.reserveQueue];
+      }
       state.reservePlanDate = today;
-      reconcileTomorrow(state, tomorrow, pick, true, state.reserveQueue);
+      snapshot(state, today, state.reserveQueue, state.reserveOriginalQueue);
+      state.tomorrowReserveQueue = [];
+      state.tomorrowReserveOriginalQueue = [];
+      state.tomorrowReserveSignature = null;
+      state.tomorrowReserveDate = tomorrow;
+      reconcileTomorrow(state, tomorrow, pick, {fresh: true});
     } else {
       const allowed = new Set(allowedMembers(state));
-      state.reserveQueue = references(state, state.reserveQueue || []).filter(ref => allowed.has(ref));
-      snapshot(state, today, state.reserveQueue);
+      state.reserveQueue = references(state, state.reserveQueue || []).filter(ref => allowed.has(ref)).slice(0, 5);
+      state.reserveOriginalQueue = storedOriginal(state, "reserveOriginalQueue", "reserveQueue")
+        .filter(ref => allowed.has(ref));
+      snapshot(state, today, state.reserveQueue, state.reserveOriginalQueue);
+      state.tomorrowReserveDate = tomorrow;
       reconcileTomorrow(state, tomorrow, pick);
     }
-    state.tomorrowReserveDate = tomorrow;
     return state;
   }
   function refresh(state, date, options = {}) {
@@ -145,11 +220,26 @@
     if (![state.reservePlanDate, state.tomorrowReserveDate].includes(date)) {
       throw new Error("補位僅維護今日與明日兩份名單；更後面的船艙會在進入明日時自動建立補位。");
     }
-    const key = date === state.reservePlanDate ? "reserveQueue" : "tomorrowReserveQueue";
+    if (date === state.tomorrowReserveDate && isPublished(state, date)) {
+      throw new Error("明日補位已經透過 LINE 公布，名單不能再變更。");
+    }
+    const isToday = date === state.reservePlanDate;
+    const key = isToday ? "reserveQueue" : "tomorrowReserveQueue";
+    const originalKey = isToday ? "reserveOriginalQueue" : "tomorrowReserveOriginalQueue";
+    const previous = isToday ? unique([
+      ...originalForDate(state, nextDay(date, -1)),
+      ...storedOriginal(state, "tomorrowReserveOriginalQueue", "tomorrowReserveQueue"),
+    ]) : storedOriginal(state, "reserveOriginalQueue", "reserveQueue");
     const before = [...state[key]];
-    state[key] = fill(state, date, before, options.pick || randomIndex);
-    if (key === "reserveQueue") reconcileTomorrow(state, state.tomorrowReserveDate, options.pick || randomIndex);
-    else state.tomorrowReserveSignature = tomorrowSignature(state, date);
+    state[key] = fill(state, date, before, previous, options.pick || randomIndex);
+    if (isToday) {
+      const additions = state[key].filter(ref => !before.includes(ref));
+      state[originalKey] = unique([...(state[originalKey] || before), ...additions]);
+    } else {
+      state[originalKey] = [...state[key]];
+      state.tomorrowReserveSignature = planSignature(state, date, previous);
+    }
+    snapshot(state, date, state[key], state[originalKey]);
     return before.filter(ref => !state[key].includes(ref));
   }
   function consume(state, {expected, replaced = "", action = "filled", now = new Date(), pick = randomIndex} = {}) {
@@ -161,12 +251,17 @@
     const record = recordFor(state, state.reservePlanDate);
     if (replaced && (!record || !(record.cabin4 || []).includes(replaced))) throw new Error("替補對象必須是今日第四船艙成員。");
     const ref = state.reserveQueue.shift();
+    const chief = president(state);
+    if (ref !== chief) {
+      state.reservePool = references(state, state.reservePool || []).filter(member => member !== ref);
+      state.reserveUsedPool = unique([...references(state, state.reserveUsedPool || []), ref]);
+    }
     const use = {member: memberName(state, ref), ...(identityMode(state) ? {memberId: ref} : {}),
       action, replaced, date: state.reservePlanDate, at: new Date(now).toISOString()};
     state.reserveUses = [...(state.reserveUses || []), use];
     if (record) record.reserveUses = [...(record.reserveUses || []), use];
-    snapshot(state, state.reservePlanDate, state.reserveQueue);
-    reconcileTomorrow(state, state.tomorrowReserveDate, pick);
+    snapshot(state, state.reservePlanDate, state.reserveQueue,
+      storedOriginal(state, "reserveOriginalQueue", "reserveQueue"));
     return use;
   }
   function skip(state, options = {}) {

@@ -107,7 +107,7 @@ test("parser preserves Chinese, emoji and full-width parentheses", () => {
   });
 });
 
-test("F/G/H: captain and guardian show game IDs while cabin 4 only shows mentions", () => {
+test("F/G/H: captain, guardian and cabin 4 show game IDs with mentions", () => {
   const bindings = {
     rain: makeBinding("Rain - 流鬼", "U_RAIN"),
     hank: makeBinding("@Hank - 挖系小嗨", "U_HANK", "@Hank"),
@@ -122,8 +122,7 @@ test("F/G/H: captain and guardian show game IDs while cabin 4 only shows mention
 
   assert.match(result.message.text, /8\/11船長：流鬼 \{mention0\}/);
   assert.match(result.message.text, /守護天使：挖系小嗨 \{mention1\}/);
-  assert.match(result.message.text, /第四船艙：\{mention2\}/);
-  assert.doesNotMatch(result.message.text, /第四船艙：[^\n]*阿金/);
+  assert.match(result.message.text, /第四船艙：阿金 \{mention2\}/);
   assert.equal(result.message.substitution.mention0.mentionee.userId, "U_RAIN");
   assert.equal(result.message.substitution.mention1.mentionee.userId, "U_HANK");
   assert.equal(result.message.substitution.mention2.mentionee.userId, "U_KIM");
@@ -138,7 +137,7 @@ test("unbound players use game ID plus plain @LINE name and are reported", () =>
   }, {}, GROUP_ID);
   assert.match(result.message.text, /船長：流鬼 @Rain/);
   assert.match(result.message.text, /守護天使：挖系小嗨 @@Hank/);
-  assert.match(result.message.text, /第四船艙：@KevenWz/);
+  assert.match(result.message.text, /第四船艙：少冰養老 @KevenWz/);
   assert.deepEqual(result.unboundMembers, ["Rain", "@Hank", "KevenWz"]);
 });
 

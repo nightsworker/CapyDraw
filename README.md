@@ -394,17 +394,18 @@ Admin endpoints：`getLineSchedules`、`createLineSchedule`、`updateLineSchedul
 4. 按「發送到 LINE」。前端只傳 `recordId`；後端會重讀真正的 history record。
 5. 在 LINE 中點擊被標記的名字，應出現該群組成員的 profile，這才是 `textV2` substitution mention，不是普通 `@名字`。
 
-船長與守護天使會顯示「遊戲 ID + 真正 mention」，第四船艙只顯示真正 mention。未綁定玩家會以普通 `@LINE名稱` 顯示，但不會阻止整則訊息發送；網站同時列出 `unboundMembers`。成功後 record 會新增 `lineSentAt`、`lineSendCount` 與 `lastLineSendStatus`。再次發送同一筆紀錄時，前端會先要求確認，但允許補發。
+船長、守護天使、第四船艙與補位都會顯示「遊戲 ID + 真正 mention」。未綁定玩家會以「遊戲 ID + 普通 `@LINE名稱`」顯示，但不會阻止整則訊息發送；網站同時列出 `unboundMembers`。成功後 record 會新增 `lineSentAt`、`lineSendCount` 與 `lastLineSendStatus`。再次發送同一筆紀錄時，前端會先要求確認，但允許補發。
 
 LINE 的真正 mention 要求官方帳號、接收者與所有被 mention 的使用者都在同一群組；單一訊息最多 20 個 mention。船艙與 5 位補位合計最多建立 12 個。
 
 ## 今日與明日補位
 
-- `reservePlanDate`、`reserveQueue` 是今日可使用的補位；`tomorrowReserveDate`、`tomorrowReserveQueue` 是明日預定名單，共用獨立的 `reservePool`。
-- 今日按「補上」只移除今日 #1，不立即補抽今日；明日若包含同一人，會同步移除並補滿。可選擇今日第四船艙替補對象，或不指定。
-- 今日 #1 未出現時可按「跳過」，記錄為放棄本次機會並移除，由下一順位遞補；今日不立即補抽，明日同步剔除並補滿。跳過和補上會在紀錄及 Excel 中分別標示。
-- 台灣時間換日後，後端每分鐘排程先將明日名單升為今日，再依新明日的船艙結果產生新名單，無須開啟網站；重試不會重複換日。
-- 抽明日船艙只更新明日名單；提前抽後天或更晚的船艙不會改動今日與明日名單。新日期進入明日時才建立補位。
-- 舊抽籤紀錄在進入今日或明日時會自動補上補位資料。若尚無船艙結果，先建立預定補位，之後抽船艙時再剔除衝突人選。
-- LINE 排程排入及實際發送前都會使用最新明日預定名單；`lineReserves` 和 `lineReserveIdentity` 保存實際送出的版本。
-- 永久排除及星期限制依各日期套用，會長逐格 30% 入選且不在一般補位池。今日已補上的人不再進入今日或明日名單。
+- `reservePlanDate`、`reserveQueue` 是今日尚未處理的補位；`tomorrowReserveDate`、`tomorrowReserveQueue` 是明日預定名單。每天都重新抽一組，不延續今日剩餘順位。
+- 明日名單會排除今日完整補位名單，也會排除明日船長、守護天使、第四船艙、永久排除及星期限制人員；同一人不能連續兩天進入補位名單。
+- 抽進每日名單不會消耗資格。只有今日 #1 按「補上」或「跳過」時，才從 `reservePool` 移入 `reserveUsedPool`，今日不立即補抽，且不修改已經產生的明日名單。
+- `reservePool` 經過當日排除後不足以補滿 5 人時，`reserveUsedPool` 會一次全部回到可抽池，開始下一輪。
+- 「補上」可選擇今日第四船艙替補對象或不指定；「跳過」代表未出現並放棄本次機會。兩者會在紀錄及 Excel 中分別標示。
+- 台灣時間換日後，後端每分鐘排程先將明日名單升為今日，再重新抽出下一份明日名單，無須開啟網站；重試不會重複換日。
+- 尚未 LINE 公布的明日名單會在抽出明日船艙後剔除衝突並補滿；LINE 公布後名單凍結，今日補位操作也不會再改動它。`lineReserves` 和 `lineReserveIdentity` 保存實際送出的版本。
+- 提前抽後天或更晚的船艙不會改動今日與明日名單；該日期進入明日時才建立補位。
+- 會長維持逐格 30% 入選且不在一般補位池，但仍受「不可與前一天補位重複」及當日船艙角色排除限制。

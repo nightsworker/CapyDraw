@@ -551,9 +551,9 @@ function buildDrawLineMessage(record, bindings, groupId, {useCurrentReserves = f
   const lines = [
     `${escapeTextV2Literal(formatDrawDate(record.date))}船長：${renderMember(captainMember, true)}`,
     `守護天使：${renderMember(guardianMember, true)}`,
-    `第四船艙：${cabinMembers.map((name) => renderMember(name, false)).join(" ")}`,
+    `第四船艙：${cabinMembers.map((name) => renderMember(name, true)).join(" ")}`,
     ...(Array.isArray(reserves) && reserves.length ?
-      ["補位順序：", ...reserves.map((name, index) => `${index + 1}. ${renderMember(name, false)}`)] : []),
+      ["補位順序：", ...reserves.map((name, index) => `${index + 1}. ${renderMember(name, true)}`)] : []),
     "",
     "船長如果要指定發船時間，請提早告知我。",
     "",
