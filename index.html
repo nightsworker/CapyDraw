@@ -251,7 +251,7 @@
     <section id="settingsPanel" class="tab-panel active">
       <div class="card">
         <h2>會員主檔</h2>
-        <p class="hint">永久 Member ID 是唯一 identity；遊戲 ID 與 LINE 名稱可以分別修改，移除採 soft delete，不會刪除歷史或 LINE binding。</p>
+        <p class="hint">永久 Member ID 是唯一 identity；遊戲 ID 與 LINE 名稱可以分別修改。已有綁定的會員可從 LINE Profile 更新名稱；移除採 soft delete，不會刪除歷史或 LINE binding。</p>
         <div class="message" id="memberMasterStatus"></div>
         <div class="grid-2">
           <div>
@@ -1656,6 +1656,7 @@
               <td>${member.active ? "✅ 啟用" : "⏸️ 已移除"}</td>
               <td>
                 <button class="btn secondary small requires-auth requires-member-master" data-edit-member="${escapeHtml(member.memberId)}">編輯資料</button>
+                <button class="btn secondary small requires-auth requires-member-master requires-line-admin" data-refresh-member-line-name="${escapeHtml(member.memberId)}">更新 LINE 名稱</button>
                 <button class="btn ${member.active ? "danger" : "secondary"} small requires-auth requires-member-master" data-toggle-member="${escapeHtml(member.memberId)}" data-enabled="${member.active ? "false" : "true"}">${member.active ? "移除會員" : "重新啟用"}</button>
               </td>
             </tr>`).join("")}</tbody>
@@ -1674,6 +1675,10 @@
 
       document.querySelectorAll("[data-edit-member]").forEach(button => {
         button.addEventListener("click", () => editMemberDetails(button.dataset.editMember));
+      });
+      document.querySelectorAll("[data-refresh-member-line-name]").forEach(button => {
+        button.addEventListener("click", () => refreshMemberLineName(
+          button.dataset.refreshMemberLineName));
       });
       document.querySelectorAll("[data-toggle-member]").forEach(button => {
         button.addEventListener("click", () => setMemberActive(
@@ -2407,6 +2412,25 @@
         setMessage("memberMessage", `已更新 #${memberId} 的遊戲 ID 與 LINE 名稱；Member ID、history 與 LINE binding 都沒有改變。`, "ok");
       } catch (error) {
         setMessage("memberMessage", error.message, "danger");
+      }
+    }
+
+    async function refreshMemberLineName(memberId) {
+      const current = state.members[memberId];
+      if (!current) return;
+      lineAdminSaving = true;
+      updateAccessUi();
+      setMessage("memberMessage", `正在讀取 ${current.gameName} 的 LINE Profile 名稱...`, "warn");
+      try {
+        const result = await callLineAdminFunction("refreshMemberLineName", {body: {memberId}});
+        await refreshFromCloud();
+        renderMemberMaster();
+        setMessage("memberMessage", `已將 ${current.gameName} 的 LINE 名稱更新為「${result.lineName}」。`, "ok");
+      } catch (error) {
+        setMessage("memberMessage", `更新失敗：${error.message}`, "danger");
+      } finally {
+        lineAdminSaving = false;
+        updateAccessUi();
       }
     }
 

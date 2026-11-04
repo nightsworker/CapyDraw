@@ -45,6 +45,7 @@ const {
   planAdminBinding,
   planLineBotAdminChange,
   resolveSyncMemberSource,
+  selectMemberBindingIdentity,
   selectAdminUnbindBindings,
 } = require("../lib/line-sync");
 
@@ -1008,6 +1009,35 @@ test("getLineBindings rows include the LINE Bot admin state without exposing lin
   assert.deepEqual(rows.map((row) => row.isLineBotAdmin), [true, true, false]);
   assert.equal(rows.every((row) => !Object.hasOwn(row, "lineUserId")), true);
   assert.equal(rows.every((row) => row.maskedLineUserId && !row.maskedLineUserId.includes("U_CHIA")), true);
+});
+
+test("member Profile refresh resolves one exact bound LINE identity", () => {
+  const member = {memberId: "3436651", gameName: "agou", lineNameHint: "Edward", active: true};
+  const selected = selectMemberBindingIdentity({
+    member,
+    bindings: {
+      first: createBindingRecord({member, userId: "U_JUN", displayName: "俊宏",
+        groupId: GROUP_ID, now: NOW}),
+    },
+    groupId: GROUP_ID,
+  });
+  assert.deepEqual(selected, {status: "success", lineUserId: "U_JUN"});
+  assert.equal(selectMemberBindingIdentity({member, bindings: {}, groupId: GROUP_ID}).status,
+    "binding-not-found");
+  assert.equal(selectMemberBindingIdentity({member, bindings: {}, groupId: null}).status,
+    "default-group-not-found");
+});
+
+test("member Profile refresh rejects conflicting bound LINE identities", () => {
+  const member = {memberId: "3436651", gameName: "agou", lineNameHint: "Edward", active: true};
+  const make = (userId) => createBindingRecord({
+    member, userId, displayName: "俊宏", groupId: GROUP_ID, now: NOW,
+  });
+  assert.equal(selectMemberBindingIdentity({
+    member,
+    bindings: {first: make("U_ONE"), second: make("U_TWO")},
+    groupId: GROUP_ID,
+  }).status, "ambiguous-binding");
 });
 
 test("the same LINE userId has one consistent admin state across multiple game IDs", () => {

@@ -386,6 +386,15 @@ test("frontend exposes stable CRUD for both game ID and LINE name", () => {
   assert.match(indexSource, /gameName: validation\.gameName, lineNameHint/u);
 });
 
+test("member master can refresh a LINE name through the authenticated backend", () => {
+  assert.match(indexSource, /data-refresh-member-line-name=/u);
+  assert.match(indexSource, /async function refreshMemberLineName/u);
+  assert.match(indexSource,
+    /callLineAdminFunction\("refreshMemberLineName", \{body: \{memberId\}\}\)/u);
+  assert.match(indexSource,
+    /data-refresh-member-line-name[^>]+requires-line-admin|requires-line-admin[^>]+data-refresh-member-line-name/u);
+});
+
 test("getLineBindings admin rows expose memberId but never raw lineUserId", () => {
   const master = {1537124: member("1537124")};
   const rows = buildLineBindingAdminRows({memberNames: master,

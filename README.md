@@ -15,7 +15,7 @@ guildDraw/main/members/{memberId} = {
 }
 ```
 
-`members` 是會員 master；`gameName` 與 `lineNameHint` 可以分別修改，`active=false` 代表 soft delete。停用不會刪除 history 或 LINE binding，重新啟用同一 `memberId` 後可恢復抽籤資格。正式 proposal 包含 45 位現役 canonical member，以及三位只為保留歷史 LINE identity 的 inactive member：`1474493`（璇璇很可愛）、`875114`（MingWong）、`3612290`（賓妹）。網站的會員設定頁允許新增 numeric ID、編輯遊戲 ID 與 LINE 名稱、停用與重新啟用，不提供 hard delete，也不會依 array index 推測誰改名。
+`members` 是會員 master；`gameName` 與 `lineNameHint` 可以分別修改，`active=false` 代表 soft delete。停用不會刪除 history 或 LINE binding，重新啟用同一 `memberId` 後可恢復抽籤資格。正式 proposal 包含 45 位現役 canonical member，以及三位只為保留歷史 LINE identity 的 inactive member：`1474493`（璇璇很可愛）、`875114`（MingWong）、`3612290`（賓妹）。網站的會員設定頁允許新增 numeric ID、編輯遊戲 ID 與 LINE 名稱、從既有 binding 重新讀取 LINE Profile 名稱、停用與重新啟用，不提供 hard delete，也不會依 array index 推測誰改名。
 
 `highWarMemberIds`、`captainPool`、`guardianPool`、`cabin4Pool`、`captainExcludedMembers`、`guardianExcludedMembers`、`cabin4ExcludedMembers` 與 `presidentMemberId` 都以 `memberId` 保存。UI 顯示 `gameName (#memberId)`；高戰名單的重新排序或替換不會改動任何舊 history 身份。
 
@@ -69,6 +69,7 @@ Functions v2 部署在 `asia-southeast1`（新加坡），與目前 Realtime Dat
 - `sendDrawToLine`：驗證 Firebase ID Token 及 `ADMIN_UID`，依 `recordId` 從 RTDB 重讀抽籤紀錄，再用 LINE `textV2` 發送真正 mention。
 - `backfillDrawLinePublished`：供 `ADMIN_UID` 管理者為 migration 前已確實發布到 LINE 的單筆舊抽籤補登 publication metadata；不會重新發送 LINE。
 - `getLineBindings`：供管理者讀取遮罩後的綁定狀態。
+- `refreshMemberLineName`：供管理者依 Member ID 的正式群組 binding 重新讀取 LINE Profile 名稱，並只更新會員主檔的 `lineNameHint`。
 - `removeLineBinding`：供管理者解除指定綁定；前端不會直接寫入 `lineBindings`。
 - `getLineGroups`：供 `ADMIN_UID` 管理者讀取 Bot 已知群組，只回傳 opaque group key 與遮罩後的 groupId。
 - `setDefaultLineGroup`：供 `ADMIN_UID` 管理者從網站明確更換正式 LINE 群組，並安全嘗試搬移可在新群驗證的既有 binding。

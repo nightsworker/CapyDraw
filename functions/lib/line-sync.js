@@ -57,6 +57,20 @@ function buildLineBindingAdminRows({memberNames, bindings, groupId, adminLineUse
   }));
 }
 
+function selectMemberBindingIdentity({member, bindings, groupId}) {
+  if (!member || !member.memberId) return {status: "member-not-found"};
+  if (!groupId) return {status: "default-group-not-found"};
+  const matching = listBindingRecords(bindings).filter((binding) =>
+    binding.lineGroupId === groupId && bindingMatchesMember(binding, member));
+  if (!matching.length) return {status: "binding-not-found"};
+  if (matching.some((binding) => !isFirebaseSafeKey(binding.lineUserId))) {
+    return {status: "invalid-binding"};
+  }
+  const lineUserIds = [...new Set(matching.map((binding) => binding.lineUserId))];
+  if (lineUserIds.length !== 1) return {status: "ambiguous-binding"};
+  return {status: "success", lineUserId: lineUserIds[0]};
+}
+
 function planLineBotAdminChange({binding, defaultGroupId, enabled}) {
   if (!binding || typeof binding !== "object") return {status: "binding-not-found"};
   if (!binding.lineUserId || !isFirebaseSafeKey(binding.lineUserId) ||
@@ -444,5 +458,6 @@ module.exports = {
   planAdminBinding,
   planLineBotAdminChange,
   resolveSyncMemberSource,
+  selectMemberBindingIdentity,
   selectAdminUnbindBindings,
 };

@@ -73,6 +73,7 @@ const {
   planAdminBinding,
   planLineBotAdminChange,
   resolveSyncMemberSource,
+  selectMemberBindingIdentity,
   selectAdminUnbindBindings,
 } = require("./lib/line-sync");
 const {
@@ -1826,6 +1827,78 @@ exports.getLineBindings = onRequest({region: REGION}, async (req, res) =>
       adminLineUserIds: settings.adminLineUserIds,
     });
     json(res, 200, {ok: true, hasDefaultGroup: Boolean(groupId), members});
+  }));
+
+exports.refreshMemberLineName = onRequest({
+  region: REGION,
+  secrets: [LINE_CHANNEL_ACCESS_TOKEN],
+}, async (req, res) =>
+  withAdminRequest(req, res, ["POST"], async () => {
+    const memberId = req.body && typeof req.body.memberId === "string" ?
+      req.body.memberId.trim() : "";
+    if (!/^\d+$/u.test(memberId)) {
+      json(res, 400, {ok: false, error: "Member ID 格式不正確。"});
+      return;
+    }
+
+    const db = getDatabase();
+    const [mainSnapshot, bindingsSnapshot, settingsSnapshot] = await Promise.all([
+      db.ref("guildDraw/main").get(),
+      db.ref("guildDraw/lineBindings").get(),
+      db.ref("guildDraw/lineSettings").get(),
+    ]);
+    const main = mainSnapshot.val() || {};
+    const members = normalizeMembersMaster(main.members);
+    const member = hasActivatedMembersMaster(main) ? members[memberId] : null;
+    if (!member) {
+      json(res, 404, {ok: false, error: "會員主檔中找不到這個 Member ID。"});
+      return;
+    }
+
+    const selected = selectMemberBindingIdentity({
+      member,
+      bindings: bindingsSnapshot.val() || {},
+      groupId: settingsSnapshot.child("defaultGroupId").val(),
+    });
+    const selectionErrors = {
+      "default-group-not-found": [409, "尚未設定正式 LINE 群組。"],
+      "binding-not-found": [404, "此會員目前沒有正式群組的 LINE 綁定。"],
+      "invalid-binding": [409, "此會員的 LINE 綁定資料不完整，請先重新綁定。"],
+      "ambiguous-binding": [409, "此會員存在互相衝突的 LINE 綁定，已停止更新。"],
+    };
+    if (selected.status !== "success") {
+      const [status, error] = selectionErrors[selected.status] ||
+        [409, "無法確認此會員的 LINE 綁定。"];
+      json(res, status, {ok: false, error});
+      return;
+    }
+
+    const groupId = settingsSnapshot.child("defaultGroupId").val();
+    const profile = await getGroupMemberProfile(
+      groupId,
+      selected.lineUserId,
+      LINE_CHANNEL_ACCESS_TOKEN.value(),
+    );
+    const lineName = String(profile && profile.displayName || "").trim();
+    if (!lineName || lineName.length > 120 ||
+        (profile.userId && profile.userId !== selected.lineUserId)) {
+      json(res, 404, {
+        ok: false,
+        error: "無法取得此綁定帳號的 LINE Profile，請確認成員仍在正式群組。",
+      });
+      return;
+    }
+
+    const memberRef = db.ref(`guildDraw/main/members/${memberId}`);
+    const transaction = await memberRef.transaction((current) => {
+      if (!current || typeof current !== "object") return;
+      return {...current, lineNameHint: lineName};
+    });
+    if (!transaction.committed) {
+      json(res, 409, {ok: false, error: "會員資料已變更，請重新整理後再試。"});
+      return;
+    }
+    json(res, 200, {ok: true, memberId, lineName});
   }));
 
 exports.removeLineBinding = onRequest({region: REGION}, async (req, res) =>
