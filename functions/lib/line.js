@@ -186,24 +186,24 @@ function parseAdminBindArguments(args, message) {
     const hasPosition = Number.isInteger(mentionee.index) && Number.isInteger(mentionee.length) &&
       mentionee.index >= 0 && mentionee.length > 0;
     let sourceLineName;
-    let targetGameId;
+    let targetSelector;
 
     if (commandPrefix && hasPosition) {
       if (mentionee.index !== commandPrefix[0].length) {
         return {status: "invalid-mention-position"};
       }
       sourceLineName = text.slice(mentionee.index, mentionee.index + mentionee.length).trim();
-      targetGameId = text.slice(mentionee.index + mentionee.length).trim() || null;
+      targetSelector = text.slice(mentionee.index + mentionee.length).trim() || null;
     } else {
       const parts = input.split(/\s+/u);
       sourceLineName = parts.shift() || "";
-      targetGameId = parts.join(" ").trim() || null;
+      targetSelector = parts.join(" ").trim() || null;
     }
 
     return {
       status: "success",
       sourceLineName,
-      targetGameId,
+      targetSelector,
       mentionedUserId: mentionee.userId.trim(),
       usedMention: true,
     };
@@ -214,7 +214,7 @@ function parseAdminBindArguments(args, message) {
   return {
     status: "success",
     sourceLineName,
-    targetGameId: parts.join(" ").trim() || null,
+    targetSelector: parts.join(" ").trim() || null,
     mentionedUserId: null,
     usedMention: false,
   };
@@ -278,8 +278,8 @@ function buildBotHelpText({bindingLocked = false, isAdmin = false} = {}) {
       "!解除鎖定",
       "重新開放會員自行修改綁定",
       "",
-      "!幫綁 @對方 <遊戲ID>",
-      "將指定遊戲帳號綁給被 @的成員",
+      "!幫綁 @對方 <遊戲ID或LINE名稱>",
+      "將指定帳號綁給被 @的成員",
       "",
       "!幫解除 <LINE名稱>",
       "替指定成員解除綁定",

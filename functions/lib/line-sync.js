@@ -168,6 +168,19 @@ function memberValues(memberNames) {
   return [];
 }
 
+function buildBindingProfileUpdates(bindingUpdates, memberLineNames) {
+  const updates = {};
+  Object.entries(bindingUpdates && typeof bindingUpdates === "object" ? bindingUpdates : {})
+    .forEach(([key, value]) => { updates[`guildDraw/lineBindings/${key}`] = value; });
+  Object.entries(memberLineNames && typeof memberLineNames === "object" ? memberLineNames : {})
+    .forEach(([memberId, lineName]) => {
+      const id = String(memberId || "").trim();
+      const name = String(lineName || "").trim();
+      if (/^\d+$/u.test(id) && name) updates[`guildDraw/main/members/${id}/lineNameHint`] = name;
+    });
+  return updates;
+}
+
 function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
   const members = memberValues(memberNames);
   const uniqueProfiles = [...new Map((profiles || [])
@@ -175,6 +188,7 @@ function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
     .map((profile) => [profile.userId, profile])).values()];
   const records = listBindingRecords(bindings);
   const updates = {};
+  const memberLineNames = {};
   const ambiguousLineNames = new Set();
   const lineNameUsers = new Map();
 
@@ -224,6 +238,7 @@ function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
           boundAt: existing.boundAt,
         });
         updates[existing.id] = updated;
+        if (member.memberId) memberLineNames[member.memberId] = profile.displayName;
         Object.assign(existing, updated);
         alreadyBound += 1;
         return;
@@ -246,6 +261,7 @@ function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
         now,
       });
       updates[id] = created;
+      if (member.memberId) memberLineNames[member.memberId] = profile.displayName;
       records.push({id, ...created});
       added += 1;
     });
@@ -259,6 +275,7 @@ function buildMemberSyncPlan({memberNames, bindings, profiles, groupId, now}) {
   const boundGuildAccounts = rows.filter((row) => row.bound).length;
   return {
     updates,
+    memberLineNames,
     scannedMembers: uniqueProfiles.length,
     added,
     alreadyBound,
@@ -410,6 +427,7 @@ function buildSyncReply(result, mode) {
 }
 
 module.exports = {
+  buildBindingProfileUpdates,
   buildLineBindingAdminRows,
   buildMemberSyncPlan,
   buildObservedMemberRecord,

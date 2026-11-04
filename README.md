@@ -208,7 +208,7 @@ LINE Bot 管理員另外可使用：
 
 - `!鎖定`：停止一般會員自行使用 `!綁定`、`!解除`。
 - `!解除鎖定`：重新開放會員自行修改綁定。
-- `!幫綁 @對方 <遊戲ID>`：以真正 LINE mention 將指定遊戲帳號綁給該成員。
+- `!幫綁 @對方 <遊戲ID或LINE名稱>`：以真正 LINE mention 將指定帳號綁給該成員。
 - `!幫解除 <LINE名稱>`：只解除指定 LINE 名稱在正式群組中的 binding。
 
 `!` prefix 用來避免一般聊天誤觸 Bot。輸入前後可以有空白；只有以上述 `!` 開頭的正式指令才會進入 command handler。`綁定`、`bind Rain`、`綁定狀態`、`line list`、`解除綁定` 等舊版無 prefix 指令都只視為一般聊天，再依人格、彩蛋與 ambient 規則決定回覆或保持沉默。
@@ -243,9 +243,11 @@ guildDraw/lineSettings/bindingLocked
 
 所有管理員修改指令都必須在 `defaultGroupId` 執行，並沿用 `guildDraw/lineSettings/adminLineUserIds`，不會拿 Firebase `ADMIN_UID` 和 LINE userId 比較。`!清單` 會顯示目前是「已鎖定」或「開放中」；`!說明` 會依鎖定狀態顯示提示，且只有 LINE Bot 管理員會看到管理員指令區塊。
 
-`!幫綁 @對方 <遊戲ID>` 會從 webhook 的 true mention 取得對方 LINE userId，再以大小寫敏感的完整遊戲 ID 精準選擇一個會員角色。遊戲 ID 不做 fuzzy、contains、case folding 或 typo 猜測；找不到或出現重複遊戲 ID 時會停止，不會猜測身份。
+`!幫綁 @對方 <遊戲ID或LINE名稱>` 會從 webhook 的 true mention 取得對方 LINE userId。後面的選擇文字會先以大小寫敏感的完整遊戲 ID 精準選擇單一帳號；找不到遊戲 ID 時，才以會員主檔中的完整 LINE 名稱選擇該名稱下的所有帳號。兩者都不做 fuzzy、contains、case folding 或 typo 猜測；遊戲 ID 重複時會停止，不會猜測身份。
 
-後端優先採用 `message.mention.mentionees` 中該成員的 userId，並從目前正式群組重新取得 profile，不依文字 displayName 猜 userId。為相容無 mention 的管理操作，`!幫綁 <LINE名稱> <遊戲ID>` 仍會掃描 LINE 完整群組成員；若帳號權限無法取得完整清單，沿用 `lineObservedMembers` cache。來源名稱找不到或對應多個不同 userId 時一律拒絕，並要求管理員改用 true mention。若目標遊戲帳號已綁到其他 userId，只回報 conflict，不會覆蓋。
+後端優先採用 `message.mention.mentionees` 中該成員的 userId，並從目前正式群組重新取得 profile，不依文字 displayName 猜 userId。綁定成功時，所選會員主檔的 LINE 名稱會一併更新為該 LINE Profile 當下的真實顯示名稱；自行綁定與 `!同步` 也遵守相同規則。binding 與會員主檔以同一筆 root update 寫入，避免只更新其中一邊。
+
+為相容無 mention 的管理操作，`!幫綁 <LINE名稱> <遊戲ID或LINE名稱>` 仍會掃描 LINE 完整群組成員；若帳號權限無法取得完整清單，沿用 `lineObservedMembers` cache。來源名稱找不到或對應多個不同 userId 時一律拒絕，並要求管理員改用 true mention。若目標會員身份已綁到其他 userId，只回報 conflict，不會覆蓋。
 
 `!幫解除 <LINE名稱>` 同樣採 exact match，只刪除目前正式群組中該 `lineName` 的實際 binding，不會解除其他名稱。一般及管理員的綁定、解除成功訊息都會列出 LINE 名稱、每個遊戲 ID 及實際處理數量。
 

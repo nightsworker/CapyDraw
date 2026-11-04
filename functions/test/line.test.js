@@ -32,6 +32,7 @@ const {
   verifyLineSignature,
 } = require("../lib/line");
 const {
+  buildBindingProfileUpdates,
   buildLineBindingAdminRows,
   buildMemberSyncPlan,
   buildObservedMemberRecord,
@@ -396,6 +397,34 @@ test("member sync binds all exact game IDs for one LINE identity", () => {
   assert.deepEqual(new Set(Object.values(result.updates).map((row) => row.lineUserId)), new Set(["U_CHIA"]));
 });
 
+test("member sync records the live LINE Profile name for member master updates", () => {
+  const result = buildMemberSyncPlan({
+    memberNames: {
+      3436651: {memberId: "3436651", gameName: "agou", lineNameHint: "俊宏", active: true},
+    },
+    bindings: {},
+    profiles: [{userId: "U_JUN", displayName: "俊宏"}],
+    groupId: GROUP_ID,
+    now: NOW,
+  });
+  assert.deepEqual(result.memberLineNames, {3436651: "俊宏"});
+});
+
+test("binding and live Profile names are combined into one root update", () => {
+  assert.deepEqual(buildBindingProfileUpdates({
+    bindingA: {memberId: "3436651", lineUserId: "U_JUN"},
+    bindingB: null,
+  }, {
+    3436651: "俊宏",
+    invalid: "不應寫入",
+    2481528: "",
+  }), {
+    "guildDraw/lineBindings/bindingA": {memberId: "3436651", lineUserId: "U_JUN"},
+    "guildDraw/lineBindings/bindingB": null,
+    "guildDraw/main/members/3436651/lineNameHint": "俊宏",
+  });
+});
+
 test("member sync skips non-guild LINE members", () => {
   const result = buildMemberSyncPlan({
     memberNames: ["Rain - 流鬼"],
@@ -557,7 +586,7 @@ test("help documents member, lock, and admin command visibility", () => {
   const lockedHelp = buildBotHelpText({bindingLocked: true});
   assert.match(lockedHelp, /目前 LINE 綁定已鎖定/);
   const adminHelp = buildBotHelpText({bindingLocked: true, isAdmin: true});
-  ["!同步", "!鎖定", "!解除鎖定", "!幫綁 @對方 <遊戲ID>", "!幫解除 <LINE名稱>"].forEach((command) => {
+  ["!同步", "!鎖定", "!解除鎖定", "!幫綁 @對方 <遊戲ID或LINE名稱>", "!幫解除 <LINE名稱>"].forEach((command) => {
     assert.equal(adminHelp.includes(command), true);
   });
   const lines = help.split("\n");
@@ -669,24 +698,24 @@ test("admin bind parser uses exact command tokens and arguments", () => {
   assert.notEqual(parseBotCommand("!幫解除 @Hank").command, "unbind");
 });
 
-test("A/B: admin bind arguments separate the LINE identity from the exact game ID", () => {
+test("A/B: admin bind arguments separate the LINE identity from the target selector", () => {
   assert.deepEqual(parseAdminBindArguments("Rain"), {
     status: "success",
     sourceLineName: "Rain",
-    targetGameId: null,
+    targetSelector: null,
     mentionedUserId: null,
     usedMention: false,
   });
   assert.deepEqual(parseAdminBindArguments("Rain 流鬼"), {
     status: "success",
     sourceLineName: "Rain",
-    targetGameId: "流鬼",
+    targetSelector: "流鬼",
     mentionedUserId: null,
     usedMention: false,
   });
 });
 
-test("C: true mention metadata supplies the LINE userId and keeps the exact game ID", () => {
+test("C: true mention metadata supplies the LINE userId and keeps the exact selector", () => {
   const text = "!幫綁 @Rain 流鬼";
   const parsed = parseAdminBindArguments("@Rain 流鬼", {
     type: "text",
@@ -701,11 +730,26 @@ test("C: true mention metadata supplies the LINE userId and keeps the exact game
   assert.deepEqual(parsed, {
     status: "success",
     sourceLineName: "@Rain",
-    targetGameId: "流鬼",
+    targetSelector: "流鬼",
     mentionedUserId: "U_RAIN",
     usedMention: true,
   });
   assert.equal(parseAdminBindArguments("@Rain 流鬼").usedMention, false);
+});
+
+test("true mention keeps a LINE-name selector containing spaces", () => {
+  const text = "!幫綁 @Rain 台東 小米";
+  const parsed = parseAdminBindArguments("@Rain 台東 小米", {
+    type: "text",
+    text,
+    mention: {mentionees: [{
+      type: "user",
+      userId: "U_RAIN",
+      index: text.indexOf("@Rain"),
+      length: "@Rain".length,
+    }]},
+  });
+  assert.equal(parsed.targetSelector, "台東 小米");
 });
 
 test("admin bind refuses multiple true user mentions", () => {
@@ -871,6 +915,27 @@ test("admin can bind agou by exact game ID even when its roster LINE hint differ
   const [created] = Object.values(plan.updates);
   assert.equal(created.gameId, "agou");
   assert.equal(created.lineDisplayName, "俊宏");
+});
+
+test("admin can select every account by exact member-master LINE name", () => {
+  const members = {
+    1001: {memberId: "1001", gameName: "角色一", lineNameHint: "舊名稱", active: true},
+    1002: {memberId: "1002", gameName: "角色二", lineNameHint: "舊名稱", active: true},
+  };
+  const plan = planAdminBinding({
+    memberNames: members,
+    bindings: {},
+    observedMembers: {},
+    sourceLineName: "@新名稱",
+    targetGuildLineName: "舊名稱",
+    sourceIdentity: {userId: "U_NEW", displayName: "新名稱", groupId: GROUP_ID},
+    groupId: GROUP_ID,
+    now: NOW,
+  });
+  assert.equal(plan.status, "success");
+  assert.deepEqual(plan.members.map((member) => member.memberId), ["1001", "1002"]);
+  assert.equal(Object.keys(plan.updates).length, 2);
+  assert.ok(Object.values(plan.updates).every((binding) => binding.lineUserId === "U_NEW"));
 });
 
 test("I-K: admin bind requires an admin/default group but remains allowed while locked", () => {

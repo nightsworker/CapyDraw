@@ -57,6 +57,7 @@ const {
 } = require("./lib/line");
 const {hasActivatedMembersMaster, normalizeMembersMaster} = require("./lib/memberIdentity");
 const {
+  buildBindingProfileUpdates,
   buildLineBindingAdminRows,
   buildMemberSyncPlan,
   buildObservedMemberRecord,
@@ -916,7 +917,7 @@ function syncErrorMessage(error) {
   return "❌ LINE 成員同步暫時失敗，請稍後再試。";
 }
 
-async function handleSyncCommand({event, token, db, settings, bindings, bindingsRef, members, replier}) {
+async function handleSyncCommand({event, token, db, settings, bindings, members, replier}) {
   const groupId = event.source.groupId;
   const userId = event.source.userId;
   const access = decideLineSyncAccess(
@@ -944,7 +945,8 @@ async function handleSyncCommand({event, token, db, settings, bindings, bindings
       groupId,
       now: new Date().toISOString(),
     });
-    if (Object.keys(result.updates).length) await bindingsRef.update(result.updates);
+    const updates = buildBindingProfileUpdates(result.updates, result.memberLineNames);
+    if (Object.keys(updates).length) await db.ref().update(updates);
     await replier.text(buildSyncReply(result, source.mode), "success");
   } catch (error) {
     logger.warn("LINE member sync failed", {
@@ -1022,11 +1024,11 @@ async function loadAdminBindSourceProfiles(groupId, token, observedMembers) {
 }
 
 async function handleAdminBindCommand({
-  event, command, token, db, members, bindings, bindingsRef, replier,
+  event, command, token, db, members, bindings, replier,
 }) {
   const parsed = parseAdminBindArguments(command.args, event.message);
   if (parsed.status === "missing-arguments") {
-    await replier.text("請輸入：\n!幫綁 @對方 <遊戲ID>", "failure");
+    await replier.text("請輸入：\n!幫綁 @對方 <遊戲ID或LINE名稱>", "failure");
     return;
   }
   if (parsed.status !== "success") {
@@ -1034,7 +1036,7 @@ async function handleAdminBindCommand({
       "⚠️ 請只真正 @一位要綁定的成員，",
       "並將 @對方 放在第一個參數：",
       "",
-      "!幫綁 @對方 <遊戲ID>",
+      "!幫綁 @對方 <遊戲ID或LINE名稱>",
     ].join("\n"), "failure");
     return;
   }
@@ -1043,10 +1045,10 @@ async function handleAdminBindCommand({
   const observedMembers = observedSnapshot.val() || {};
   let sourceIdentity = null;
   let sourceProfiles = [];
-  const targetGameId = parsed.targetGameId;
+  const targetSelector = parsed.targetSelector;
 
-  if (!targetGameId) {
-    await replier.text("請指定一個遊戲 ID：\n!幫綁 @對方 <遊戲ID>", "failure");
+  if (!targetSelector) {
+    await replier.text("請指定遊戲 ID 或 LINE 名稱：\n!幫綁 @對方 <遊戲ID或LINE名稱>", "failure");
     return;
   }
 
@@ -1066,16 +1068,18 @@ async function handleAdminBindCommand({
     };
   }
 
-  const targetMembers = findMembersByGameId(members, targetGameId);
-  if (!targetMembers.length) {
-    await replier.text(
-      `❌ 找不到遊戲 ID「${targetGameId}」。`,
-      "not-found",
-    );
+  const gameIdMatches = findMembersByGameId(members, targetSelector);
+  if (gameIdMatches.length > 1) {
+    await replier.text(`⚠️ 找到多個遊戲 ID「${targetSelector}」，請先在會員主檔修正重複名稱。`, "failure");
     return;
   }
-  if (targetMembers.length > 1) {
-    await replier.text(`⚠️ 找到多個遊戲 ID「${targetGameId}」，請先在會員主檔修正重複名稱。`, "failure");
+  const targetMembers = gameIdMatches.length ? gameIdMatches :
+    findMembersByLineName(members, targetSelector);
+  if (!targetMembers.length) {
+    await replier.text(
+      `❌ 找不到遊戲 ID 或 LINE 名稱「${targetSelector}」。`,
+      "not-found",
+    );
     return;
   }
   if (!parsed.usedMention) {
@@ -1089,7 +1093,7 @@ async function handleAdminBindCommand({
     sourceProfiles,
     sourceIdentity,
     sourceLineName: parsed.sourceLineName,
-    targetGameId,
+    ...(gameIdMatches.length ? {targetGameId: targetSelector} : {targetGuildLineName: targetSelector}),
     groupId,
     now: new Date().toISOString(),
   });
@@ -1098,7 +1102,7 @@ async function handleAdminBindCommand({
       `⚠️ 找不到 LINE 名稱為「${parsed.sourceLineName}」的成員。`,
       "請直接 @要綁定的本人：",
       "",
-      `!幫綁 @對方 ${targetGameId}`,
+      `!幫綁 @對方 ${targetSelector}`,
     ].join("\n"), "not-found");
     return;
   }
@@ -1107,13 +1111,13 @@ async function handleAdminBindCommand({
       `⚠️ 找到多個 LINE 名稱為「${parsed.sourceLineName}」的成員。`,
       "請直接 @要綁定的本人：",
       "",
-      `!幫綁 @對方 ${targetGameId}`,
+      `!幫綁 @對方 ${targetSelector}`,
     ].join("\n"), "failure");
     return;
   }
   if (plan.status === "binding-conflict") {
     await replier.text([
-      `⚠️ 遊戲 ID「${targetGameId}」目前已經綁定其他 LINE 帳號。`,
+      `⚠️「${targetSelector}」目前已有帳號綁定其他 LINE 身份。`,
       "",
       "如需重新指定，請先：",
       "",
@@ -1126,7 +1130,11 @@ async function handleAdminBindCommand({
     return;
   }
 
-  if (Object.keys(plan.updates).length) await bindingsRef.update(plan.updates);
+  const memberLineNames = Object.fromEntries(plan.members
+    .filter((member) => member.memberId)
+    .map((member) => [member.memberId, plan.identity.displayName]));
+  const updates = buildBindingProfileUpdates(plan.updates, memberLineNames);
+  if (Object.keys(updates).length) await db.ref().update(updates);
   await replier.text(buildAdminBindingSuccessText(plan.members, plan.identity.displayName));
 }
 
@@ -1260,12 +1268,12 @@ async function handleBindingCommand(event, command, token, observedProfile, send
   }
 
   if (command.command === "sync") {
-    await handleSyncCommand({event, token, db, settings, bindings, bindingsRef, members, replier});
+    await handleSyncCommand({event, token, db, settings, bindings, members, replier});
     return;
   }
 
   if (command.command === "admin-bind") {
-    await handleAdminBindCommand({event, command, token, db, members, bindings, bindingsRef, replier});
+    await handleAdminBindCommand({event, command, token, db, members, bindings, replier});
     return;
   }
 
@@ -1305,7 +1313,7 @@ async function handleBindingCommand(event, command, token, observedProfile, send
   }
   const conflictingBindings = bindingEntries.filter((binding) =>
     binding.lineGroupId === groupId &&
-    binding.lineName === canonicalLineName &&
+    matches.some((member) => bindingMatchesMember(binding, member)) &&
     binding.lineUserId !== userId);
   if (conflictingBindings.length) {
     await replier.text(`❌ LINE 名稱「${requestedLineName}」已由其他 LINE 帳號綁定。`, "failure");
@@ -1313,6 +1321,10 @@ async function handleBindingCommand(event, command, token, observedProfile, send
   }
 
   if (!profile) profile = await getGroupMemberProfile(groupId, userId, token);
+  if (!profile || !profile.displayName) {
+    await replier.text("❌ 無法取得你的 LINE Profile 名稱，請稍後再試。", "failure");
+    return;
+  }
   const now = new Date().toISOString();
   if (groupAction.canClaim) {
     const claimResult = await defaultGroupRef.transaction((current) =>
@@ -1340,8 +1352,15 @@ async function handleBindingCommand(event, command, token, observedProfile, send
       boundAt: existing && existing.boundAt,
     });
   });
-  await bindingsRef.update(updates);
-  await replier.text(buildBindingSuccessText(matches));
+  const memberLineNames = Object.fromEntries(matches
+    .filter((member) => member.memberId)
+    .map((member) => [member.memberId, profile.displayName]));
+  const rootUpdates = buildBindingProfileUpdates(updates, memberLineNames);
+  await db.ref().update(rootUpdates);
+  await replier.text(buildBindingSuccessText(matches.map((member) => ({
+    ...member,
+    lineNameHint: profile.displayName,
+  }))));
 }
 
 async function processLineWebhookEvent(event, payload, token) {
