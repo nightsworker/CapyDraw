@@ -37,6 +37,7 @@ const {sanitizePublishedDrawRecord} = require("../lib/drawKnowledge");
 
 const GROUP_ID = "C_GROUP";
 const indexSource = fs.readFileSync(path.resolve(__dirname, "../../index.html"), "utf8");
+const functionsIndexSource = fs.readFileSync(path.resolve(__dirname, "../index.js"), "utf8");
 
 function member(memberId, overrides = {}) {
   return {...canonicalMaster()[memberId], ...overrides};
@@ -393,6 +394,13 @@ test("member master can refresh a LINE name through the authenticated backend", 
     /callLineAdminFunction\("refreshMemberLineName", \{body: \{memberId\}\}\)/u);
   assert.match(indexSource,
     /data-refresh-member-line-name[^>]+requires-line-admin|requires-line-admin[^>]+data-refresh-member-line-name/u);
+  const endpoint = functionsIndexSource.match(
+    /exports\.refreshMemberLineName[\s\S]*?(?=\nexports\.removeLineBinding)/u);
+  assert.ok(endpoint);
+  assert.match(endpoint[0], /secrets: \[LINE_CHANNEL_ACCESS_TOKEN\]/u);
+  assert.match(endpoint[0], /db\.ref\(\)\.update\(\{/u);
+  assert.match(endpoint[0], /guildDraw\/main\/members\/\$\{memberId\}\/lineNameHint/u);
+  assert.doesNotMatch(endpoint[0], /\.transaction\(/u);
 });
 
 test("getLineBindings admin rows expose memberId but never raw lineUserId", () => {

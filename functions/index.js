@@ -1889,15 +1889,9 @@ exports.refreshMemberLineName = onRequest({
       return;
     }
 
-    const memberRef = db.ref(`guildDraw/main/members/${memberId}`);
-    const transaction = await memberRef.transaction((current) => {
-      if (!current || typeof current !== "object") return;
-      return {...current, lineNameHint: lineName};
+    await db.ref().update({
+      [`guildDraw/main/members/${memberId}/lineNameHint`]: lineName,
     });
-    if (!transaction.committed) {
-      json(res, 409, {ok: false, error: "會員資料已變更，請重新整理後再試。"});
-      return;
-    }
     json(res, 200, {ok: true, memberId, lineName});
   }));
 
