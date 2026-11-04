@@ -6,6 +6,7 @@ const {
   bindingMatchesMember,
   buildMemberBindingRows,
   createBindingRecord,
+  findMembersByGameId,
   findMembersByLineName,
   listBindingRecords,
   maskLineUserId,
@@ -298,14 +299,17 @@ function planAdminBinding({
   sourceProfiles,
   sourceIdentity,
   sourceLineName,
+  targetGameId,
   targetGuildLineName,
   lineName,
   groupId,
   now,
 }) {
   const resolvedSourceLineName = String(sourceLineName || lineName || "").trim();
+  const resolvedTargetGameId = String(targetGameId || "").trim();
   const resolvedTargetGuildLineName = String(targetGuildLineName || lineName || "").trim();
-  const members = findMembersByLineName(memberNames, resolvedTargetGuildLineName);
+  const members = resolvedTargetGameId ? findMembersByGameId(memberNames, resolvedTargetGameId) :
+    findMembersByLineName(memberNames, resolvedTargetGuildLineName);
   if (!members.length) return {status: "guild-member-not-found", members, updates: {}};
   let identities;
   if (sourceIdentity) {
@@ -329,7 +333,7 @@ function planAdminBinding({
   const records = listBindingRecords(bindings);
   const hasConflict = records.some((binding) =>
     binding.lineGroupId === groupId &&
-    binding.lineName === members[0].lineName &&
+    members.some((member) => bindingMatchesMember(binding, member)) &&
     binding.lineUserId !== identity.lineUserId);
   if (hasConflict) {
     return {status: "binding-conflict", members, identity, updates: {}};
@@ -356,6 +360,7 @@ function planAdminBinding({
     members,
     identity,
     sourceLineName: identity.displayName,
+    targetGameId: members[0].gameId,
     targetGuildLineName: members[0].lineName,
     updates,
   };

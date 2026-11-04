@@ -15,7 +15,7 @@ guildDraw/main/members/{memberId} = {
 }
 ```
 
-`members` 是會員 master；`gameName` 可以改名，`active=false` 代表 soft delete。停用不會刪除 history 或 LINE binding，重新啟用同一 `memberId` 後可恢復抽籤資格。正式 proposal 包含 45 位現役 canonical member，以及三位只為保留歷史 LINE identity 的 inactive member：`1474493`（璇璇很可愛）、`875114`（MingWong）、`3612290`（賓妹）。網站的會員設定頁只允許新增 numeric ID、修改遊戲名稱、停用與重新啟用，不提供 hard delete，也不會依 array index 推測誰改名。
+`members` 是會員 master；`gameName` 與 `lineNameHint` 可以分別修改，`active=false` 代表 soft delete。停用不會刪除 history 或 LINE binding，重新啟用同一 `memberId` 後可恢復抽籤資格。正式 proposal 包含 45 位現役 canonical member，以及三位只為保留歷史 LINE identity 的 inactive member：`1474493`（璇璇很可愛）、`875114`（MingWong）、`3612290`（賓妹）。網站的會員設定頁允許新增 numeric ID、編輯遊戲 ID 與 LINE 名稱、停用與重新啟用，不提供 hard delete，也不會依 array index 推測誰改名。
 
 `highWarMemberIds`、`captainPool`、`guardianPool`、`cabin4Pool`、`captainExcludedMembers`、`guardianExcludedMembers`、`cabin4ExcludedMembers` 與 `presidentMemberId` 都以 `memberId` 保存。UI 顯示 `gameName (#memberId)`；高戰名單的重新排序或替換不會改動任何舊 history 身份。
 
@@ -208,7 +208,7 @@ LINE Bot 管理員另外可使用：
 
 - `!鎖定`：停止一般會員自行使用 `!綁定`、`!解除`。
 - `!解除鎖定`：重新開放會員自行修改綁定。
-- `!幫綁 <LINE名稱> [名單名稱]`：以真正 LINE identity 替指定公會名單名稱建立綁定；兩個名稱相同時可省略第二個參數。
+- `!幫綁 @對方 <遊戲ID>`：以真正 LINE mention 將指定遊戲帳號綁給該成員。
 - `!幫解除 <LINE名稱>`：只解除指定 LINE 名稱在正式群組中的 binding。
 
 `!` prefix 用來避免一般聊天誤觸 Bot。輸入前後可以有空白；只有以上述 `!` 開頭的正式指令才會進入 command handler。`綁定`、`bind Rain`、`綁定狀態`、`line list`、`解除綁定` 等舊版無 prefix 指令都只視為一般聊天，再依人格、彩蛋與 ambient 規則決定回覆或保持沉默。
@@ -243,9 +243,9 @@ guildDraw/lineSettings/bindingLocked
 
 所有管理員修改指令都必須在 `defaultGroupId` 執行，並沿用 `guildDraw/lineSettings/adminLineUserIds`，不會拿 Firebase `ADMIN_UID` 和 LINE userId 比較。`!清單` 會顯示目前是「已鎖定」或「開放中」；`!說明` 會依鎖定狀態顯示提示，且只有 LINE Bot 管理員會看到管理員指令區塊。
 
-`!幫綁 <LINE名稱> [名單名稱]` 會將來源 LINE identity 與目標公會名單分開處理。單參數 `!幫綁 Rain` 等價於 `!幫綁 Rain Rain`；雙參數 `!幫綁 Rain Rian` 則以 displayName `Rain` 的真正 LINE userId，綁定所有 canonical `Rian - <遊戲 ID>`。目標名單名稱維持大小寫與 `@` 都敏感的 exact match，不做 fuzzy、contains、case folding、移除 `@` 或 typo 猜測。
+`!幫綁 @對方 <遊戲ID>` 會從 webhook 的 true mention 取得對方 LINE userId，再以大小寫敏感的完整遊戲 ID 精準選擇一個會員角色。遊戲 ID 不做 fuzzy、contains、case folding 或 typo 猜測；找不到或出現重複遊戲 ID 時會停止，不會猜測身份。
 
-管理員也可真正 mention 對方後輸入 `!幫綁 @對方 名單名稱`。此時後端優先採用 `message.mention.mentionees` 中該成員的 userId，並從目前正式群組重新取得 profile，不依文字 displayName 猜 userId。沒有 true mention 時才掃描 LINE 完整群組成員；若帳號權限無法取得完整清單，沿用 `lineObservedMembers` cache。來源名稱找不到或對應多個不同 userId 時一律拒絕，並要求管理員改用 true mention。若任何目標遊戲帳號已綁到其他 userId，也只回報 conflict，不會部分寫入或覆蓋。
+後端優先採用 `message.mention.mentionees` 中該成員的 userId，並從目前正式群組重新取得 profile，不依文字 displayName 猜 userId。為相容無 mention 的管理操作，`!幫綁 <LINE名稱> <遊戲ID>` 仍會掃描 LINE 完整群組成員；若帳號權限無法取得完整清單，沿用 `lineObservedMembers` cache。來源名稱找不到或對應多個不同 userId 時一律拒絕，並要求管理員改用 true mention。若目標遊戲帳號已綁到其他 userId，只回報 conflict，不會覆蓋。
 
 `!幫解除 <LINE名稱>` 同樣採 exact match，只刪除目前正式群組中該 `lineName` 的實際 binding，不會解除其他名稱。一般及管理員的綁定、解除成功訊息都會列出 LINE 名稱、每個遊戲 ID 及實際處理數量。
 

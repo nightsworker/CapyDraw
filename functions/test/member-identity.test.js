@@ -378,10 +378,12 @@ test("soft delete strategy never rewrites history or LINE binding records", () =
   assert.doesNotMatch(handler[0], /lineBindings|state\.history\s*=/u);
 });
 
-test("frontend removed index-based rename inference and exposes stable CRUD", () => {
+test("frontend exposes stable CRUD for both game ID and LINE name", () => {
   assert.doesNotMatch(indexSource, /function buildRenameMap|oldList\[i\]|newList\[i\]/u);
-  for (const id of ["newMemberId", "newMemberGameName", "addMemberBtn", "membersTableWrap",
+  for (const id of ["newMemberId", "newMemberGameName", "newMemberLineName", "addMemberBtn", "membersTableWrap",
     "highWarMemberChoices", "presidentMemberId"]) assert.match(indexSource, new RegExp(`id="${id}"`, "u"));
+  assert.match(indexSource, /async function editMemberDetails/u);
+  assert.match(indexSource, /gameName: validation\.gameName, lineNameHint/u);
 });
 
 test("getLineBindings admin rows expose memberId but never raw lineUserId", () => {

@@ -251,7 +251,7 @@
     <section id="settingsPanel" class="tab-panel active">
       <div class="card">
         <h2>會員主檔</h2>
-        <p class="hint">永久 Member ID 是唯一 identity；遊戲名稱可以修改，移除採 soft delete，不會刪除歷史或 LINE binding。</p>
+        <p class="hint">永久 Member ID 是唯一 identity；遊戲 ID 與 LINE 名稱可以分別修改，移除採 soft delete，不會刪除歷史或 LINE binding。</p>
         <div class="message" id="memberMasterStatus"></div>
         <div class="grid-2">
           <div>
@@ -259,8 +259,12 @@
             <input id="newMemberId" class="requires-member-master" inputmode="numeric" placeholder="例：1443678" />
           </div>
           <div>
-            <label for="newMemberGameName">遊戲名稱</label>
+            <label for="newMemberGameName">遊戲 ID</label>
             <input id="newMemberGameName" class="requires-member-master" placeholder="例：挖系小嗨" />
+          </div>
+          <div>
+            <label for="newMemberLineName">LINE 名稱</label>
+            <input id="newMemberLineName" class="requires-member-master" placeholder="例：@Hank" />
           </div>
         </div>
         <div class="actions">
@@ -1643,14 +1647,15 @@
 
       $("membersTableWrap").innerHTML = `
         <table>
-          <thead><tr><th>Member ID</th><th>遊戲名稱</th><th>狀態</th><th>操作</th></tr></thead>
+          <thead><tr><th>Member ID</th><th>遊戲 ID</th><th>LINE 名稱</th><th>狀態</th><th>操作</th></tr></thead>
           <tbody>${members.map(member => `
             <tr>
               <td><span class="line-id">${escapeHtml(member.memberId)}</span></td>
               <td>${escapeHtml(member.gameName)}</td>
+              <td>${escapeHtml(member.lineNameHint || "—")}</td>
               <td>${member.active ? "✅ 啟用" : "⏸️ 已移除"}</td>
               <td>
-                <button class="btn secondary small requires-auth requires-member-master" data-rename-member="${escapeHtml(member.memberId)}">修改名稱</button>
+                <button class="btn secondary small requires-auth requires-member-master" data-edit-member="${escapeHtml(member.memberId)}">編輯資料</button>
                 <button class="btn ${member.active ? "danger" : "secondary"} small requires-auth requires-member-master" data-toggle-member="${escapeHtml(member.memberId)}" data-enabled="${member.active ? "false" : "true"}">${member.active ? "移除會員" : "重新啟用"}</button>
               </td>
             </tr>`).join("")}</tbody>
@@ -1667,8 +1672,8 @@
         "選擇特別日固定守護");
       $("presidentMemberId").value = state.presidentMemberId || "";
 
-      document.querySelectorAll("[data-rename-member]").forEach(button => {
-        button.addEventListener("click", () => renameMemberGameName(button.dataset.renameMember));
+      document.querySelectorAll("[data-edit-member]").forEach(button => {
+        button.addEventListener("click", () => editMemberDetails(button.dataset.editMember));
       });
       document.querySelectorAll("[data-toggle-member]").forEach(button => {
         button.addEventListener("click", () => setMemberActive(
@@ -2343,7 +2348,12 @@
       });
       if (!validation.ok) {
         setMessage("memberMessage", validation.reason === "invalid-member-id" ?
-          "Member ID 必須是純數字。" : "請輸入 1～120 字的遊戲名稱。", "danger");
+          "Member ID 必須是純數字。" : "請輸入 1～120 字的遊戲 ID。", "danger");
+        return;
+      }
+      const lineNameHint = standardizeName($("newMemberLineName").value);
+      if (!lineNameHint || lineNameHint.length > 120) {
+        setMessage("memberMessage", "請輸入 1～120 字的 LINE 名稱。", "danger");
         return;
       }
       try {
@@ -2353,7 +2363,7 @@
         state.members[validation.memberId] = {
           memberId: validation.memberId,
           gameName: validation.gameName,
-          lineNameHint: validation.gameName,
+          lineNameHint,
           active: true
         };
         state.captainPool.push(validation.memberId);
@@ -2363,29 +2373,38 @@
         await saveCloud(state);
         $("newMemberId").value = "";
         $("newMemberGameName").value = "";
+        $("newMemberLineName").value = "";
         setMessage("memberMessage", `已新增 ${memberLabel(state.members[validation.memberId])}。`, "ok");
       } catch (error) {
         setMessage("memberMessage", error.message, "danger");
       }
     }
 
-    async function renameMemberGameName(memberId) {
+    async function editMemberDetails(memberId) {
       const current = state.members[memberId];
       if (!current) return;
-      const gameName = prompt(`修改 #${memberId} 的遊戲名稱：`, current.gameName);
+      const gameName = prompt(`修改 #${memberId} 的遊戲 ID：`, current.gameName);
       if (gameName === null) return;
       const validation = validateMemberInput({memberId, gameName});
       if (!validation.ok) {
-        setMessage("memberMessage", "遊戲名稱不可空白，且最多 120 字。", "danger");
+        setMessage("memberMessage", "遊戲 ID 不可空白，且最多 120 字。", "danger");
+        return;
+      }
+      const lineNameInput = prompt(`修改 #${memberId} 的 LINE 名稱：`, current.lineNameHint || "");
+      if (lineNameInput === null) return;
+      const lineNameHint = standardizeName(lineNameInput);
+      if (!lineNameHint || lineNameHint.length > 120) {
+        setMessage("memberMessage", "LINE 名稱不可空白，且最多 120 字。", "danger");
         return;
       }
       try {
         await refreshFromCloud();
         if (!state.members[memberId]) throw new Error("會員已不存在，請重新整理。");
-        state.members[memberId] = {...state.members[memberId], gameName: validation.gameName};
+        state.members[memberId] = {...state.members[memberId],
+          gameName: validation.gameName, lineNameHint};
         state = normalizeState(state);
         await saveCloud(state);
-        setMessage("memberMessage", `已更新 #${memberId}；Member ID、history 與 LINE binding 都沒有改變。`, "ok");
+        setMessage("memberMessage", `已更新 #${memberId} 的遊戲 ID 與 LINE 名稱；Member ID、history 與 LINE binding 都沒有改變。`, "ok");
       } catch (error) {
         setMessage("memberMessage", error.message, "danger");
       }

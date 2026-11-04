@@ -81,6 +81,13 @@ function findMembersByLineName(memberNames, lineName) {
   return members.filter((member) => member.lineName === exactQuery);
 }
 
+function findMembersByGameId(memberNames, gameId) {
+  const members = normalizeGuildMembers(memberNames);
+  const exactQuery = String(gameId || "").trim();
+  if (!exactQuery) return [];
+  return members.filter((member) => member.gameId === exactQuery);
+}
+
 function verifyLineSignature(rawBody, signature, channelSecret) {
   if (!Buffer.isBuffer(rawBody) || !signature || !channelSecret) return false;
   const expected = crypto
@@ -161,7 +168,7 @@ function parseBotCommand(text) {
   return commandResult(command, args);
 }
 
-function parseAdminBindArguments(args, message, {memberNames} = {}) {
+function parseAdminBindArguments(args, message) {
   const input = String(args || "").trim();
   if (!input) return {status: "missing-arguments"};
 
@@ -179,36 +186,26 @@ function parseAdminBindArguments(args, message, {memberNames} = {}) {
     const hasPosition = Number.isInteger(mentionee.index) && Number.isInteger(mentionee.length) &&
       mentionee.index >= 0 && mentionee.length > 0;
     let sourceLineName;
-    let targetGuildLineName;
+    let targetGameId;
 
     if (commandPrefix && hasPosition) {
       if (mentionee.index !== commandPrefix[0].length) {
         return {status: "invalid-mention-position"};
       }
       sourceLineName = text.slice(mentionee.index, mentionee.index + mentionee.length).trim();
-      targetGuildLineName = text.slice(mentionee.index + mentionee.length).trim() || null;
+      targetGameId = text.slice(mentionee.index + mentionee.length).trim() || null;
     } else {
       const parts = input.split(/\s+/u);
       sourceLineName = parts.shift() || "";
-      targetGuildLineName = parts.join(" ").trim() || null;
+      targetGameId = parts.join(" ").trim() || null;
     }
 
     return {
       status: "success",
       sourceLineName,
-      targetGuildLineName,
+      targetGameId,
       mentionedUserId: mentionee.userId.trim(),
       usedMention: true,
-    };
-  }
-
-  if (findMembersByLineName(memberNames, input).length) {
-    return {
-      status: "success",
-      sourceLineName: input,
-      targetGuildLineName: input,
-      mentionedUserId: null,
-      usedMention: false,
     };
   }
 
@@ -217,7 +214,7 @@ function parseAdminBindArguments(args, message, {memberNames} = {}) {
   return {
     status: "success",
     sourceLineName,
-    targetGuildLineName: parts.join(" ").trim() || sourceLineName,
+    targetGameId: parts.join(" ").trim() || null,
     mentionedUserId: null,
     usedMention: false,
   };
@@ -281,9 +278,8 @@ function buildBotHelpText({bindingLocked = false, isAdmin = false} = {}) {
       "!解除鎖定",
       "重新開放會員自行修改綁定",
       "",
-      "!幫綁 <LINE名稱> [名單名稱]",
-      "代替成員完成綁定",
-      "名稱不同時可使用：!幫綁 @對方 名單名稱",
+      "!幫綁 @對方 <遊戲ID>",
+      "將指定遊戲帳號綁給被 @的成員",
       "",
       "!幫解除 <LINE名稱>",
       "替指定成員解除綁定",
@@ -450,23 +446,16 @@ function buildAdminBindingSuccessText(members, sourceLineName) {
   const parsedMembers = (Array.isArray(members) ? members : [])
     .map(normalizeLineMember)
     .filter((member) => member.fullName);
-  const targetGuildLineName = parsedMembers[0] ? parsedMembers[0].lineName : "";
-  const actualLineName = String(sourceLineName || targetGuildLineName).trim();
+  const actualLineName = String(sourceLineName || "").trim();
   const lines = [
     "✅ 管理員綁定完成",
     "",
     "LINE：",
     actualLineName,
     "",
-    "公會名單：",
-    targetGuildLineName,
-    "",
     "遊戲 ID：",
     ...parsedMembers.map((member) => `• ${member.gameId}`),
   ];
-  if (actualLineName !== targetGuildLineName) {
-    lines.push("", "ℹ️ LINE 名稱與公會登記名稱不同。");
-  }
   return lines.join("\n");
 }
 
@@ -635,6 +624,7 @@ module.exports = {
   decideLineGroupAction,
   extractBindingCommand,
   findBindingForMember,
+  findMembersByGameId,
   findMembersByLineName,
   formatDrawDate,
   isGroupMessageEvent,
