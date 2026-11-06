@@ -55,7 +55,11 @@ const {
   splitTextMessages,
   verifyLineSignature,
 } = require("./lib/line");
-const {hasActivatedMembersMaster, normalizeMembersMaster} = require("./lib/memberIdentity");
+const {
+  hasActivatedMembersMaster,
+  normalizeMembersMaster,
+  updateHistoryLineNameSnapshots,
+} = require("./lib/memberIdentity");
 const {
   buildBindingProfileUpdates,
   buildLineBindingAdminRows,
@@ -1889,10 +1893,22 @@ exports.refreshMemberLineName = onRequest({
       return;
     }
 
+    const historyUpdates = {};
+    const updatedDrawRecords = updateHistoryLineNameSnapshots(
+      main.history,
+      memberId,
+      lineName,
+      ({recordKey, path}) => {
+        historyUpdates[
+          `guildDraw/main/history/${recordKey}/${path.join("/")}/lineNameSnapshot`
+        ] = lineName;
+      },
+    );
     await db.ref().update({
       [`guildDraw/main/members/${memberId}/lineNameHint`]: lineName,
+      ...historyUpdates,
     });
-    json(res, 200, {ok: true, memberId, lineName});
+    json(res, 200, {ok: true, memberId, lineName, updatedDrawRecords});
   }));
 
 exports.removeLineBinding = onRequest({region: REGION}, async (req, res) =>

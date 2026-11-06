@@ -20,6 +20,7 @@ const {
   normalizeMembersMaster,
   resolveCanonicalMember,
   resolveLegacyBindingMember,
+  updateHistoryLineNameSnapshots,
   validateMemberInput,
 } = require("../lib/memberIdentity");
 const {
@@ -235,6 +236,47 @@ test("renaming a member does not alter an old nameSnapshot", () => {
   assert.equal(createHistoryMemberSnapshot(renamed).nameSnapshot, "ABC");
 });
 
+test("LINE name corrections update identity snapshots without changing draw results", () => {
+  const target = {memberId: "5120819", nameSnapshot: "李虎虎之旅",
+    lineNameSnapshot: "李虎虎之旅"};
+  const other = {memberId: "1537124", nameSnapshot: "流鬼", lineNameSnapshot: "Rain"};
+  const history = [{
+    memberIdentity: {
+      captain: {...target},
+      guardian: {...other},
+      cabin4: [{...target}],
+      reserves: [{...target}],
+    },
+    lineReserveIdentity: [{...target}],
+  }, {
+    memberIdentity: {captain: {...other}, guardian: {...target}, cabin4: []},
+  }, {
+    captain: "李虎虎之旅",
+    guardian: "Rain - 流鬼",
+    cabin4: [],
+  }];
+  const paths = [];
+  const updated = updateHistoryLineNameSnapshots(
+    history, "5120819", "李柏賢", ({recordKey, path}) =>
+      paths.push(`${recordKey}/${path.join("/")}`));
+  assert.equal(updated, 2);
+  assert.equal(history[0].memberIdentity.captain.lineNameSnapshot, "李柏賢");
+  assert.equal(history[0].memberIdentity.cabin4[0].lineNameSnapshot, "李柏賢");
+  assert.equal(history[0].memberIdentity.reserves[0].lineNameSnapshot, "李柏賢");
+  assert.equal(history[0].lineReserveIdentity[0].lineNameSnapshot, "李柏賢");
+  assert.equal(history[1].memberIdentity.guardian.lineNameSnapshot, "李柏賢");
+  assert.equal(history[0].memberIdentity.captain.nameSnapshot, "李虎虎之旅");
+  assert.equal(history[0].memberIdentity.guardian.lineNameSnapshot, "Rain");
+  assert.equal(history[2].captain, "李虎虎之旅");
+  assert.deepEqual(paths, [
+    "0/memberIdentity/captain",
+    "0/memberIdentity/cabin4/0",
+    "0/memberIdentity/reserves/0",
+    "0/lineReserveIdentity/0",
+    "1/memberIdentity/guardian",
+  ]);
+});
+
 test("a new draw after rename snapshots the new gameName", () => {
   const snapshot = createHistoryMemberSnapshot(member("1537124", {gameName: "新流鬼"}));
   assert.equal(snapshot.memberId, "1537124");
@@ -400,6 +442,8 @@ test("member master can refresh a LINE name through the authenticated backend", 
   assert.match(endpoint[0], /secrets: \[LINE_CHANNEL_ACCESS_TOKEN\]/u);
   assert.match(endpoint[0], /db\.ref\(\)\.update\(\{/u);
   assert.match(endpoint[0], /guildDraw\/main\/members\/\$\{memberId\}\/lineNameHint/u);
+  assert.match(endpoint[0], /updateHistoryLineNameSnapshots/u);
+  assert.match(endpoint[0], /updatedDrawRecords/u);
   assert.doesNotMatch(endpoint[0], /\.transaction\(/u);
 });
 

@@ -371,7 +371,7 @@
           <li><strong>一般日：</strong>船長從公會成員池抽 1 人；守護天使從高戰池抽 1 人；船艙 4 從公會成員池抽 5 人，並排除當日船長與守護天使。</li>
           <li><strong>三個池子獨立：</strong>船長池、守護天使池、船艙 4 池互不影響，各自抽完才重複。</li>
           <li><strong>特別日：</strong>如果船長抽到高戰名單中的人，守護天使固定為會長，船艙 4 自動塞入剩餘 5 位高戰；當天只扣船長池，其餘池子不扣。</li>
-          <li><strong>永久 identity：</strong>改名只更新會員主檔的 gameName；pool、排除與 LINE binding 都以 Member ID 關聯，過去 history 顯示自己的 nameSnapshot。</li>
+          <li><strong>永久 identity：</strong>遊戲 ID 的改名只影響新抽籤，過去 history 保留自己的 nameSnapshot；LINE 名稱若由管理員修正，會依 Member ID 同步既有結果的 lineNameSnapshot。</li>
         </ol>
         <div class="actions">
           <button class="btn requires-auth requires-member-master" id="saveSettingsBtn">儲存高戰與特別日設定</button>
@@ -658,6 +658,7 @@
       normalizeMembersMaster,
       resolveMember,
       uniqueIds,
+      updateHistoryLineNameSnapshots,
       validateMemberInput
     } = window.CapyDrawMemberIdentity;
 
@@ -2405,11 +2406,13 @@
       try {
         await refreshFromCloud();
         if (!state.members[memberId]) throw new Error("會員已不存在，請重新整理。");
+        const updatedDrawRecords = updateHistoryLineNameSnapshots(
+          state.history, memberId, lineNameHint);
         state.members[memberId] = {...state.members[memberId],
           gameName: validation.gameName, lineNameHint};
         state = normalizeState(state);
         await saveCloud(state);
-        setMessage("memberMessage", `已更新 #${memberId} 的遊戲 ID 與 LINE 名稱；Member ID、history 與 LINE binding 都沒有改變。`, "ok");
+        setMessage("memberMessage", `已更新 #${memberId} 的遊戲 ID 與 LINE 名稱；同步修正 ${updatedDrawRecords} 筆既有抽籤的 LINE 名稱，Member ID、抽籤人選與 LINE binding 均未改變。`, "ok");
       } catch (error) {
         setMessage("memberMessage", error.message, "danger");
       }
@@ -2425,7 +2428,7 @@
         const result = await callLineAdminFunction("refreshMemberLineName", {body: {memberId}});
         await refreshFromCloud();
         renderMemberMaster();
-        setMessage("memberMessage", `已將 ${current.gameName} 的 LINE 名稱更新為「${result.lineName}」。`, "ok");
+        setMessage("memberMessage", `已將 ${current.gameName} 的 LINE 名稱更新為「${result.lineName}」，並同步修正 ${Number(result.updatedDrawRecords) || 0} 筆既有抽籤結果。`, "ok");
       } catch (error) {
         setMessage("memberMessage", `更新失敗：${error.message}`, "danger");
       } finally {

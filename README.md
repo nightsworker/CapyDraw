@@ -15,7 +15,7 @@ guildDraw/main/members/{memberId} = {
 }
 ```
 
-`members` 是會員 master；`gameName` 與 `lineNameHint` 可以分別修改，`active=false` 代表 soft delete。停用不會刪除 history 或 LINE binding，重新啟用同一 `memberId` 後可恢復抽籤資格。正式 proposal 包含 45 位現役 canonical member，以及三位只為保留歷史 LINE identity 的 inactive member：`1474493`（璇璇很可愛）、`875114`（MingWong）、`3612290`（賓妹）。網站的會員設定頁允許新增 numeric ID、編輯遊戲 ID 與 LINE 名稱、從既有 binding 重新讀取 LINE Profile 名稱、停用與重新啟用，不提供 hard delete，也不會依 array index 推測誰改名。
+`members` 是會員 master；`gameName` 與 `lineNameHint` 可以分別修改，`active=false` 代表 soft delete。停用不會刪除 history 或 LINE binding，重新啟用同一 `memberId` 後可恢復抽籤資格。正式 proposal 包含 45 位現役 canonical member，以及三位只為保留歷史 LINE identity 的 inactive member：`1474493`（璇璇很可愛）、`875114`（MingWong）、`3612290`（賓妹）。網站的會員設定頁允許新增 numeric ID、編輯遊戲 ID 與 LINE 名稱、從既有 binding 重新讀取 LINE Profile 名稱、停用與重新啟用，不提供 hard delete，也不會依 array index 推測誰改名。明確修正 LINE 名稱時，會依 Member ID 同步既有 history 的 LINE snapshot，但不改寫當次遊戲 ID、角色或抽籤人選。
 
 `highWarMemberIds`、`captainPool`、`guardianPool`、`cabin4Pool`、`captainExcludedMembers`、`guardianExcludedMembers`、`cabin4ExcludedMembers` 與 `presidentMemberId` 都以 `memberId` 保存。UI 顯示 `gameName (#memberId)`；高戰名單的重新排序或替換不會改動任何舊 history 身份。
 
@@ -29,7 +29,7 @@ memberIdentity: {
 }
 ```
 
-畫面與 LINE 發布優先讀 `memberIdentity`；`memberId` 用於身份與 mention lookup，`nameSnapshot` 用於永久呈現當次抽籤時的名字。之後改名只影響新抽籤，不能改寫舊 history。
+畫面與 LINE 發布優先讀 `memberIdentity`；`memberId` 用於身份與 mention lookup，`nameSnapshot` 用於永久呈現當次抽籤時的遊戲 ID。遊戲 ID 改名只影響新抽籤；管理員明確修正 LINE 名稱時，可依 Member ID 更新舊 history 的 `lineNameSnapshot`，但不能改寫 `nameSnapshot`、角色或抽籤人選。
 
 LINE binding 在新 schema 以 `memberId` 為 source of truth，同一 LINE user 可綁定多個 `memberId`（例如同一玩家的多個角色）。舊 binding 仍以完全相符的 canonical 名稱 fallback，因此部署相容程式碼不要求既有玩家重新綁定；會員停用也不會自動移除 binding。
 
@@ -69,7 +69,7 @@ Functions v2 部署在 `asia-southeast1`（新加坡），與目前 Realtime Dat
 - `sendDrawToLine`：驗證 Firebase ID Token 及 `ADMIN_UID`，依 `recordId` 從 RTDB 重讀抽籤紀錄，再用 LINE `textV2` 發送真正 mention。
 - `backfillDrawLinePublished`：供 `ADMIN_UID` 管理者為 migration 前已確實發布到 LINE 的單筆舊抽籤補登 publication metadata；不會重新發送 LINE。
 - `getLineBindings`：供管理者讀取遮罩後的綁定狀態。
-- `refreshMemberLineName`：供管理者依 Member ID 的正式群組 binding 重新讀取 LINE Profile 名稱，並只更新會員主檔的 `lineNameHint`。
+- `refreshMemberLineName`：供管理者依 Member ID 的正式群組 binding 重新讀取 LINE Profile 名稱，原子更新會員主檔的 `lineNameHint`，以及既有抽籤中可確認為同一 Member ID 的 `lineNameSnapshot`。
 - `removeLineBinding`：供管理者解除指定綁定；前端不會直接寫入 `lineBindings`。
 - `getLineGroups`：供 `ADMIN_UID` 管理者讀取 Bot 已知群組，只回傳 opaque group key 與遮罩後的 groupId。
 - `setDefaultLineGroup`：供 `ADMIN_UID` 管理者從網站明確更換正式 LINE 群組，並安全嘗試搬移可在新群驗證的既有 binding。

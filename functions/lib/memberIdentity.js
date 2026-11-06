@@ -328,6 +328,43 @@
       `${normalized.lineNameSnapshot} - ${normalized.nameSnapshot}` : normalized.nameSnapshot;
   }
 
+  function updateHistoryLineNameSnapshots(history, memberId, lineName, onUpdate) {
+    const normalizedId = normalizeMemberId(memberId);
+    const normalizedLineName = normalizeText(lineName);
+    if (!normalizedId || !normalizedLineName) return 0;
+    let updatedRecords = 0;
+    Object.entries(history && typeof history === "object" ? history : {}).forEach(
+      ([recordKey, record]) => {
+        if (!record || typeof record !== "object") return;
+        let recordUpdated = false;
+        const updateSnapshot = (snapshot, path) => {
+          if (!snapshot || typeof snapshot !== "object" ||
+              normalizeMemberId(snapshot.memberId) !== normalizedId ||
+              normalizeText(snapshot.lineNameSnapshot) === normalizedLineName) return;
+          snapshot.lineNameSnapshot = normalizedLineName;
+          recordUpdated = true;
+          if (typeof onUpdate === "function") {
+            onUpdate({recordKey, path, lineName: normalizedLineName});
+          }
+        };
+        const identity = record.memberIdentity && typeof record.memberIdentity === "object" ?
+          record.memberIdentity : {};
+        updateSnapshot(identity.captain, ["memberIdentity", "captain"]);
+        updateSnapshot(identity.guardian, ["memberIdentity", "guardian"]);
+        ["cabin4", "reserves"].forEach((role) => {
+          Object.entries(identity[role] && typeof identity[role] === "object" ? identity[role] : {})
+            .forEach(([index, snapshot]) =>
+              updateSnapshot(snapshot, ["memberIdentity", role, index]));
+        });
+        Object.entries(record.lineReserveIdentity &&
+          typeof record.lineReserveIdentity === "object" ? record.lineReserveIdentity : {})
+          .forEach(([index, snapshot]) =>
+            updateSnapshot(snapshot, ["lineReserveIdentity", index]));
+        if (recordUpdated) updatedRecords += 1;
+      });
+    return updatedRecords;
+  }
+
   function analyzeValues(values, label) {
     const rows = memberValues(values).map((value, index) => {
       const result = resolveCanonicalMember(value);
@@ -544,6 +581,7 @@
     resolveLegacyBindingMember,
     resolveMember,
     uniqueIds,
+    updateHistoryLineNameSnapshots,
     validateMemberInput,
   };
 });
