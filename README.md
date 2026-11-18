@@ -397,7 +397,7 @@ Admin endpoints：`getLineSchedules`、`createLineSchedule`、`updateLineSchedul
 4. 按「發送到 LINE」。前端只傳 `recordId`；後端會重讀真正的 history record。
 5. 在 LINE 中點擊被標記的名字，應出現該群組成員的 profile，這才是 `textV2` substitution mention，不是普通 `@名字`。
 
-船長、守護天使、第四船艙與補位都會顯示「遊戲 ID + 真正 mention」。未綁定玩家會以「遊戲 ID + 普通 `@LINE名稱`」顯示，但不會阻止整則訊息發送；網站同時列出 `unboundMembers`。成功後 record 會新增 `lineSentAt`、`lineSendCount` 與 `lastLineSendStatus`。再次發送同一筆紀錄時，前端會先要求確認，但允許補發。
+船長、守護天使、第四船艙與補位都會顯示「遊戲 ID + 真正 mention」；第四船艙與補位採編號且每位各占一行。未綁定玩家會以「遊戲 ID + 普通 `@LINE名稱`」顯示，但不會阻止整則訊息發送；網站同時列出 `unboundMembers`。成功後 record 會新增 `lineSentAt`、`lineSendCount` 與 `lastLineSendStatus`。再次發送同一筆紀錄時，前端會先要求確認，但允許補發。
 
 LINE 的真正 mention 要求官方帳號、接收者與所有被 mention 的使用者都在同一群組；單一訊息最多 20 個 mention。船艙與 5 位補位合計最多建立 12 個。
 

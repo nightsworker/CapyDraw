@@ -537,12 +537,20 @@ function buildDrawLineMessage(record, bindings, groupId, {useCurrentReserves = f
     Array.isArray(record.cabin4) ? record.cabin4 : [];
   const reserves = useCurrentReserves ? (identity && identity.reserves) || record.reserves || [] :
     record.lineReserveIdentity || record.lineReserves || (identity && identity.reserves) || record.reserves || [];
+  const captainLine =
+    `${escapeTextV2Literal(formatDrawDate(record.date))}船長：${renderMember(captainMember, true)}`;
+  const guardianLine = `守護天使：${renderMember(guardianMember, true)}`;
+  const cabinLines = cabinMembers.map((name, index) =>
+    `${index + 1}. ${renderMember(name, true)}`);
+  const reserveLines = Array.isArray(reserves) ? reserves.map((name, index) =>
+    `${index + 1}. ${renderMember(name, true)}`) : [];
   const lines = [
-    `${escapeTextV2Literal(formatDrawDate(record.date))}船長：${renderMember(captainMember, true)}`,
-    `守護天使：${renderMember(guardianMember, true)}`,
-    `第四船艙：${cabinMembers.map((name) => renderMember(name, true)).join(" ")}`,
-    ...(Array.isArray(reserves) && reserves.length ?
-      ["補位順序：", ...reserves.map((name, index) => `${index + 1}. ${renderMember(name, true)}`)] : []),
+    captainLine,
+    guardianLine,
+    "",
+    "第四船艙：",
+    ...cabinLines,
+    ...(reserveLines.length ? ["", "補位順序：", ...reserveLines] : []),
     "",
     "船長如果要指定發船時間，請提早告知我。",
     "",
